@@ -71,6 +71,7 @@ class ARX(Forecaster):
         self._method = method
         self._model = LinearRegression()
         self._lu = ARX.__BOUND
+        self._modelName = f"ARX(p={self.args["p"]}, q={self.args["q"]}, n_exo={self._n_exo}), method={method}"
         if not hasattr(self, '_tForms'):  self._tForms = {"tForm_y": None}
         
         if self._X is None:
@@ -246,7 +247,7 @@ class ARX(Forecaster):
                 yfh = self._model.predict(xy)
             yf[:, h - 1] = self._rectify(yfh)
 
-        self._Yf[t_st: t_en, 1:-1] = yf    
+        self._Yf[t_st: t_en, 1:-1] = yf if self._yForm is None else self._yForm.inverse_transform(yf)    
         return yf
 
     def _forge(self, X_window: np.ndarray, yf: np.ndarray, h: int) -> np.ndarray:
@@ -284,10 +285,8 @@ class ARX(Forecaster):
         xy = np.column_stack((x_trend, x_endo_act, x_endo_fcast))
 
         if self._n_exo > 0:
-            x_exo = np.column_stack([
-                self._hide(X_window[:, idx_exo + j * self.args['q']: idx_exo + (j + 1) * self.args['q']], h)
-                for j in range(self._n_exo)
-            ])
+            x_exo = np.column_stack([self._hide(X_window[:, idx_exo + j * self.args['q']: idx_exo + (j + 1) * self.args['q']], h)
+                                     for j in range(self._n_exo)])
             xy = np.column_stack((xy, x_exo))
         return xy
 

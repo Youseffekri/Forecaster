@@ -134,4 +134,5 @@ class AR_YW(Forecaster):
                 end=t + self.hh - 1,
                 dynamic=self._dynamic
             )
+        self._Yf[t_st: t_en, 1:-1] = yf    
         return yf
