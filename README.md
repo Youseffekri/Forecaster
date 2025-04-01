@@ -20,7 +20,7 @@ pip install -r requirements.txt
 2. Run the example script:
 
 ```bash
-python Example_Covid19.py
+python .\forecasting\Example_Covid19.py
 ```
 
 ## Models

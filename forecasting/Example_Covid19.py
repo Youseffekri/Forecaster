@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 
 import torch
@@ -29,7 +29,7 @@ def AR_YW_test(args, hh, y, method_type = 0):
     qof = model.diagnose_all(yf)
     print(f"yf.shape = {yf.shape}")
     print(f"QoF:\n{qof}")
-    print(f"params = [{', '.join(f'{x:.6f}' for x in model.get_params())}]")
+    print(f"params = [{', '.join(f'{x:.6f}' for x in model.params)}]")
 
     print("rollValidate")
     yf = model.rollValidate()
@@ -40,33 +40,36 @@ def AR_YW_test(args, hh, y, method_type = 0):
 
 def ARX_test(args, hh, y, z = None, method_type=1):
     methods = ["sm_ols", "sk_lr"]
-    model = ARX(args, y, hh, z, method=methods[method_type])
-    # tForm = None #StandardScaler
-    # model = ARX.rescale(args, y, hh, z, method=methods[method_type], tForm=tForm)
-    np.savetxt("X_ARX.csv", model.X, delimiter=",", fmt="%.6f")
+    print(f"\nARX(p={args["p"]}, n_exo={z.shape[1]}, q={args["q"]}), spec={args["spec"]}, skip={args["skip"]}, method={methods[method_type]}")       
 
+    # model = ARX(args, y, hh, z, method=methods[method_type])
+    tForm = StandardScaler
+    model = ARX.rescale(args, y, hh, z, method=methods[method_type], tForm=tForm)
     model.train()
     yf = model.forecast()
     qof = model.diagnose_all(yf)
     print(f"X.shape = {model.X.shape}, yf.shape = {yf.shape}")
     print(f"QoF:\n{qof}")
-    print(f"params = [{', '.join(f'{x:.6f}' for x in model.get_params())}]")
+    print(f"params = [{', '.join(f'{x:.6f}' for x in model.params)}]")
+    # print(f"model.Yf = \n{model.Yf}")
 
     print("rollValidate")
     yf = model.rollValidate()
     qof = model.diagnose_all(yf, TnT = True)
     print(f"yf.shape = {yf.shape}")
     print(f"QoF:\n{qof}")
+    # print(f"model.Yf = \n{model.Yf}")
 
 
-
-def ARX_Symb_test(args, hh, y, z = None, cross=False, method_type=1):
+def ARX_Symb_test(args, hh, y, z = None, method_type=1):
     methods = ["sm_ols", "sk_lr"]
+    print(f"\nARX_Symb(p={args["p"]}, n_exo={z.shape[1]}, q={args["q"]}), spec={args["spec"]}, skip={args["skip"]}, method={methods[method_type]}")       
+
     ff = [lambda x: np.power(x, 1.5)]
     gg = []
-    model = ARX_Symb(args, y, hh, z, cross, ff, gg, method=methods[method_type])
-    # tForm = None # StandardScaler
-    # model = ARX_Symb.rescale(args, y, hh, z, cross, method=methods[method_type], tForm=tForm)
+    # model = ARX_Symb(args, y, hh, z, ff, gg, method=methods[method_type])
+    tForm = StandardScaler
+    model = ARX_Symb.rescale(args, y, hh, z, ff, gg, method=methods[method_type], tForm=tForm)
     np.savetxt("X_ARX_Symb.csv", model.X, delimiter=",", fmt="%.6f")
     print(f"X.shape = {model.X.shape}")
     
@@ -75,21 +78,23 @@ def ARX_Symb_test(args, hh, y, z = None, cross=False, method_type=1):
     qof = model.diagnose_all(yf)
     print(f"X.shape = {model.X.shape}, yf.shape = {yf.shape}")
     print(f"QoF:\n{qof}")
-    # print(f"params = [{', '.join(f'{x:.6f}' for x in model.get_params())}]")
-    
+    # print(f"params = [{', '.join(f'{x:.6f}' for x in model.params)}]")
+    # print(f"model.Yf = \n{model.Yf}")
+
     print("rollValidate")
     yf = model.rollValidate()
     qof = model.diagnose_all(yf, TnT = True)
     print(f"yf.shape = {yf.shape}")
     print(f"QoF:\n{qof}")
+    # print(f"model.Yf = \n{model.Yf}")
 
 
-def MHAttnRegressor_test(args, hh, y, z, cross):
+def MHAttnRegressor_test(args, hh, y, z):
     batch_size = 116
     cross = 1
-    # model = ARX_Symb(args, y, hh, z, cross)
+    # model = ARX_Symb(args, y, hh, z)
     tForm = None # StandardScaler
-    model = ARX_Symb.rescale(args, y, hh, z, cross, tForm=tForm)
+    model = ARX_Symb.rescale(args, y, hh, z, tForm=tForm)
 
     X, y = model.X, model.y.reshape(-1, 1)
     print(f"X.shape = {X.shape}")
@@ -137,18 +142,17 @@ if __name__ == "__main__":
     args = dotdict()
     args.skip = 2
     args.spec = 1
-    args.p = 2
-    args.q = 1
+    args.p = 6
+    args.q = 4
+    args.cross = False
     hh = 6
-    cross = False
     # AR_YW_test(args, hh, y, method_type=1)
     # AR_YW_test(args, hh, y, method_type=2)
     AR_YW_test(args, hh, y, method_type=0)
     # ARX_test(args, hh, y, method_type=0)
-    # ARX_test(args, hh, y, z)
-    # ARX_Symb_test(args, hh, y, z, cross)
-    # MHAttnRegressor_test(args, hh, y, z, cross)
-
+    ARX_test(args, hh, y, z)
+    ARX_Symb_test(args, hh, y, z)
+    # MHAttnRegressor_test(args, hh, y, z)
 
     
 
