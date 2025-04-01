@@ -42,9 +42,11 @@ class Forecaster(ABC):
     te_size : int
         Size of testing set.   
     Yf : np.ndarray, shape (n_samples, hh + 2)
-        Forecasts for all time points t & horizons 1 to hh
+        Forecasts for all time points t & horizons 1 to hh in the original scale of data
+    modelName : str
+        The name for the model    
     yForm : Scaler
-            Optional transformation objects for scaling y and yp.
+        Optional transformation objects for scaling y and yp.
     __TE_RATIO : float, default = 0.2
         Ratio of testing set to full dataset.
 
@@ -90,7 +92,8 @@ class Forecaster(ABC):
         self._nneg = True
         self._tr_size = int((1.0 - self.__TE_RATIO) * len(y))
         self._te_size = len(y) - self._tr_size
-        self._reset_Yf()
+        self._Yf = initial_Yf(self._y, self.hh)
+        self._modelName = "Model"
         self._yForm = None
 
     def _set_X(self, X: np.ndarray) -> None:
@@ -149,7 +152,11 @@ class Forecaster(ABC):
         """
         Initializes the Yf matrix based on the current y and forecast horizon hh.
         """
-        self._Yf = initial_Yf(self._y, self.hh)
+        y = self._Yf[:, 0]
+        y_fcast = np.zeros((self._Yf.shape[0], self._Yf.shape[1]-2))
+        time = self._Yf[:, -1]
+
+        self._Yf = np.column_stack([y, y_fcast, time])
 
     def _set_params(self, params: np.ndarray) -> None:
         """
@@ -190,6 +197,16 @@ class Forecaster(ABC):
             raise ValueError("Model parameters are not set. Call train first.")
         return self._params
 
+    @property
+    def modelName(self):
+        """
+        Returns
+        -------
+        str
+            The name for the model 
+        """
+        return self._modelName
+    
     @abstractmethod
     def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None):
         """
@@ -363,3 +380,21 @@ class Forecaster(ABC):
             else:
                 yf[i:, :] = self.forecast(t)
         return yf
+
+
+    def inSample_Test(self, showParams: bool = False, showYf: bool = False):
+        print(f"In-Sample Test: {self.modelName}")
+        self.train()
+        y_fcast = self.forecast()
+        qof = self.diagnose_all(y_fcast)
+        print(f"QoF:\n{qof}")
+        if showParams: print(f"params = {self.params}")
+        if showYf: print(f"Yf = \n{self.Yf}")
+
+    def trainNtest_Test(self, showParams: bool = False, showYf: bool = False):
+        print(f"Roll Validate Test: {self.modelName}")
+        y_fcast = self.rollValidate()
+        qof = self.diagnose_all(y_fcast, TnT = True)
+        print(f"QoF:\n{qof}")
+        if showParams: print(f"params = {self.params}")
+        if showYf: print(f"Yf = \n{self.Yf}")

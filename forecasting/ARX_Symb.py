@@ -89,14 +89,16 @@ class ARX_Symb(ARX):
         """
         functions = [lambda x: np.power(x, 1.5),
                      lambda x: np.power(x, 0.5),
-                     np.log1p,
-                     np.sin,
-                     np.cos]
+                     np.log1p]
+                    #  ,
+                    #  lambda x: np.sin(x*np.pi/40),
+                    #  lambda x: np.cos(x*np.pi/40)]
 
         self._tForms = {"tForm_y": None}
         self._tForms["fEndo"] = fEndo if fEndo is not None else functions
         self._tForms["fExo"]  = fExo if fExo is not None else functions
-        super().__init__(args, y, hh, z, method, X)  
+        super().__init__(args, y, hh, z, method, X)
+        self._modelName = f"ARX_Symb(p={self.args["p"]}, q={self.args["q"]}, n_exo={self._n_exo}), method={method}" 
     
     @classmethod
     def rescale(cls, 
