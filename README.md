@@ -15,15 +15,16 @@ A modular time series forecasting framework that integrates symbolic regression,
 ```bash
 git clone https://github.com/Youseffekri/Forecaster.git
 ```
+```bash
+cd Forecaster
+```
 
 
 2. Install dependencies:
 ```bash
-cd Forecaster
-```
-```bash
 pip install -r requirements.txt
 ```
+
 
 3. Run the example script:
 ```bash
