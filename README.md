@@ -21,7 +21,6 @@ git clone https://github.com/Youseffekri/Forecaster.git
 ```bash
 cd Forecaster
 ```
-
 ```bash
 pip install -r requirements.txt
 ```
