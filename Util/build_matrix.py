@@ -1,11 +1,8 @@
 """
-Utility functions for building input matrices and handling missing values 
-in time series forecasting models.
+Matrix Utilities for Time Series Forecasting
 
-Includes:
-- Backcasting and backfilling methods
-- Trend and lag matrix builders
-- Initial forecast matrix creation
+Provides utility functions to construct lagged and trend-based feature matrices,
+and handle missing initial values via backcasting and backfilling.
 
 Author: Yousef Fekri Dabanloo
 Date: 2025-03-05
@@ -13,20 +10,21 @@ Version: 1.0
 License: MIT License
 """
 
+
 import numpy as np
 
 q_mean = 2  # Number of prior values used for weighted average in backcasting
 
 def backcast(y_: np.ndarray, i: int = 0) -> float:
     """
-    Computes a weighted average of previous values in reverse order.
+    Computes a weighted backward average using previous values.
 
     Parameters
     ----------
-    y_ : np.ndarray
+    y_ : np.ndarray, shape (n_samples,)
         Input time series.
     i : int, default=0
-        Starting index to apply the backcast.
+        Starting index for backcasting.
 
     Returns
     -------
@@ -41,17 +39,17 @@ def backcast(y_: np.ndarray, i: int = 0) -> float:
 
 def backfill(zj: np.ndarray) -> np.ndarray:
     """
-    Fills initial zeros in a 1D array using weighted backcasting.
+    Replaces leading zeros in a 1D array using weighted backcasting.
 
     Parameters
     ----------
-    zj : np.ndarray
-        A 1D array (e.g., column of exogenous variable) with possible leading zeros.
+    zj : np.ndarray, shape (n_samples,)
+        A 1D array with possible leading zeros.
 
     Returns
     -------
-    np.ndarray
-        A 1D array with initial zeros replaced by backcasted values.
+    np.ndarray, shape (n_samples,)
+        Array with initial zeros replaced by estimated values.
     """
     z_j = zj.copy().astype(float)
     z_j = np.concatenate(([0.0], z_j))
@@ -64,17 +62,17 @@ def backfill(zj: np.ndarray) -> np.ndarray:
 
 def backfill_matrix(z: np.ndarray) -> np.ndarray:
     """
-    Applies backfill to each column of a 2D matrix.
+    Applies backfilling column-wise to a matrix.
 
     Parameters
     ----------
-    z : np.ndarray
-        Matrix of exogenous variables with possible initial zeros.
+    z : np.ndarray, shape (n_samples, n_features)
+        Matrix of exogenous variables with potential initial zeros.
 
     Returns
     -------
-    np.ndarray
-        Backfilled version of input matrix.
+    np.ndarray, shape (n_samples, n_features)
+        Matrix with each column backfilled independently.
     """
     z_bfill = z.copy().astype(float)
     for j in range(z.shape[1]):
@@ -83,7 +81,7 @@ def backfill_matrix(z: np.ndarray) -> np.ndarray:
 
 def build_trend_matrix(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
     """
-    Builds a trend component matrix for time series modeling.
+    Constructs a matrix of trend components (e.g., linear, quadratic, sine, cosine).
 
     Parameters
     ----------
@@ -97,12 +95,12 @@ def build_trend_matrix(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
             4 = Sine
             5 = Cosine
     lwave : int, default=20
-        Wavelength used for sine/cosine components.
+        Wavelength used for periodic trends (sine and cosine).
 
     Returns
     -------
-    np.ndarray
-        Trend matrix of shape (m, spec - 1).
+    np.ndarray, shape (m, spec - 1)
+        Trend matrix matching the specified trend type.
     """
     m2 = m / 2.0
     w = (2 * np.pi) / lwave  
@@ -121,19 +119,19 @@ def build_trend_matrix(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
 
 def build_lagged_matrix(x: np.ndarray, lag: int) -> np.ndarray:
     """
-    Constructs a lagged feature matrix from a 1D time series.
+    Constructs a lagged matrix from a 1D time series.
 
     Parameters
     ----------
-    x : np.ndarray
+    x : np.ndarray, shape (n_samples,)
         1D time series data.
     lag : int
-        Number of lag steps.
+        Number of lags (columns) to generate.
 
     Returns
     -------
-    np.ndarray
-        A 2D matrix of shape (len(x), lag) where each column is a lagged version of x.
+    np.ndarray, shape (n_samples, lag)
+        Lagged matrix where each column i contains x shifted by i+1 time steps.
     """
     first = x[0]
     ones_ = first * np.ones(lag)
@@ -141,26 +139,26 @@ def build_lagged_matrix(x: np.ndarray, lag: int) -> np.ndarray:
     xx = np.column_stack([xRow[i:len(xRow) - lag + i + 1] for i in range(lag)])
     return xx
 
-def initial_Yf(y: np.ndarray, hh: int) -> np.ndarray:
+
+
+def build_matrix_Y(y: np.ndarray, hh: int) -> np.ndarray:
     """
-    Creates an initial forecast matrix with placeholder values.
+    Builds a matrix of future target values for multi-step forecasting.
 
     Parameters
     ----------
     y : np.ndarray, shape (n_samples,)
-        The response vector (time series data).
+        1D time series target data.
     hh : int
-        The maximum forecasting horizon (h = 1 to hh).
+        Maximum forecasting horizon.
 
     Returns
     -------
-    np.ndarray, shape (n_samples, hh + 2)
-        A matrix where:
-        - First column contains the original time series y.
-        - Next hh columns are initialized to zeros (for forecasts).
-        - Last column contains the time index.
+    np.ndarray, shape (n_samples, hh)
+        Target matrix where column i contains the i-step ahead value of `y`.
     """
-    y_fcast = np.zeros((y.shape[0], hh))
-    time = np.arange(0, y.shape[0]).reshape(-1, 1)
-    yf = np.hstack([y.reshape(-1, 1), y_fcast, time])
-    return yf
+    zeros_ = np.zeros(hh-1)
+    yRow = np.concatenate((y, zeros_))
+    Y = np.column_stack([yRow[i:len(yRow) - hh + i + 1] for i in range(hh)])
+    return Y
+

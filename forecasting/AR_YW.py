@@ -1,14 +1,17 @@
 """
 AR_YW Forecaster Module
 
-This module defines the AR_YW class, which implements a Yule-Walker-based 
-autoregressive forecasting model.
+This module defines the AR_YW class, which implements an autoregressive (AR) 
+forecasting model using Yule-Walker equations for parameter estimation.
+
+Supports multiple estimation methods including statsmodels OLS, Yule-Walker MLE, and adjusted Yule-Walker.
 
 Author: Yousef Fekri Dabanloo
 Date: 2025-03-05
 Version: 1.0
 License: MIT License
 """
+
 
 from typing import Any, Dict, Optional
 import numpy as np
@@ -20,8 +23,12 @@ from forecasting.Forecaster import Forecaster
 
 class AR_YW(Forecaster):
     """
-    Implements an Autoregressive (AR) model using Yule-Walker equations 
-    for parameter estimation.
+    Autoregressive model (AR) using Yule-Walker equations for parameter estimation.
+
+    Supports the following autoregressive estimation methods:
+    - "sm_ols": Ordinary Least Squares via statsmodels' AutoReg
+    - "mle": Maximum Likelihood Estimation (Yule-Walker)
+    - "adjusted": Adjusted Yule-Walker method for bias correction
 
     Attributes
     ----------
@@ -31,21 +38,10 @@ class AR_YW(Forecaster):
         Estimation method used to compute parameters ('sm_ols', 'mle', or 'adjusted').
     dynamic : bool
         Whether to use dynamic forecasting (default True).
-    y : np.ndarray
-        Response vector (endogenous time series).
-    params : Optional[np.ndarray]
-        Model parameters after training.
-    tr_size : int
-        Size of the training dataset.
-    te_size : int
-        Size of the testing dataset.
-    Yf : np.ndarray
-        Forecast output matrix of shape (n_samples, hh + 2).
 
-    Notes
-    -----
-    The actual implementation uses leading underscores for internal attributes 
-    (e.g., _model, _method, _dynamic, _y, _params).
+    See Also
+    --------
+    Forecaster : For base forecasting logic and shared attributes like y, X, Yf, tr_size, etc.
     """
 
     def __init__(self, args: Dict[str, Any], y: np.ndarray, hh: int, method: str):
@@ -55,45 +51,42 @@ class AR_YW(Forecaster):
         Parameters
         ----------
         args : dict
-            Model configuration parameters, including:
-            - 'skip' (int, default=0): Number of initial observations to skip.
-            - 'p' (int): Number of lags for the endogenous variable (lags 1 to p).
-        y : np.ndarray
-            Target time series (endogenous values), shape (n_samples,).
+            Dictionary of model configuration parameters, including:
+            "spec" (int): Type of trend component to include in the model:
+                1=Constant, 2=Linear, 3=Quadratic, 4=Sine, 5=Cosine.
+            - "p" (int): Number of lags for the endogenous variable (lags 1 to p).
+            - "q" (int): Number of lags for each exogenous variable (lags 1 to q).
+            - "cross" (bool): Whether to add ENDO-EXO cross terms.
+            - "skip" (int, default=0): Number of initial observations to skip.
+        y : np.ndarray, shape (n_samples,)
+            The input endogenous time series data.   
         hh : int
-            Forecast horizon (number of future steps).
-        method : {"sm_ols", "mle", "adjusted"}
-            Estimation method:
-            - "sm_ols" : Statsmodels Ordinary Least Squares.
-            - "mle" : Maximum Likelihood Estimation.
-            - "adjusted" : Adjusted Yule-Walker method.
+            The maximum forecasting horizon (h = 1 to hh).
         """
         super().__init__(args, y, hh)
-        self._method = method
         self._model = AutoReg(y, lags=self.args['p'])
+        self._method = method
         self._dynamic = True
 
         if self.args['skip'] < self.args['p']:
-            print("Warning: 'skip' cannot be less than 'p'. Setting 'skip' to 'p'.")
+            print("Warning: 'skip' < 'p' is not allowed. Automatically setting 'skip' to 'p'.")
             self.args['skip'] = self.args['p']
 
-        print(f"\nAR_YW(p={self.args['p']}), skip={self.args['skip']}, method={self._method}")
+        print(f"\n{self.__class__.__name__}(p={self.args['p']}), method={self._method}")
 
     def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None):
         """
         Trains the AR model using the specified Yule-Walker method.
 
-        Parameters
-        ----------
-        y_ : Optional[np.ndarray], default=None
-            Target time series. If None, uses the internal stored series.
-        X_ : Optional[np.ndarray], default=None
-            Not used in this model (included for interface compatibility).
-
-        Notes
-        -----
         Sets the estimated model parameters using either statsmodels OLS 
         or the Yule-Walker estimation method.
+
+        Parameters
+        ----------
+        y_ : Optional[np.ndarray], shape (n_samples,)
+            The response vector (endogenous time series) used for training.
+        X_ : Optional[np.ndarray], shape (n_samples, n_lagged_columns)
+            Input matrix including lagged endogenous and exogenous variables.
         """
         if y_ is None:
             y_ = self._y
@@ -108,31 +101,38 @@ class AR_YW(Forecaster):
 
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
         """
-        Generates a multi-step forecast matrix for all time points from t_start to t_end.
+        Generates a multi-step forecast matrix. This method updates the forecast values in `Yf`.
 
         Parameters
         ----------
-        t_start : int, default=-1
-            Start index for forecasting. If -1, uses the configured 'skip' value.
-        t_end : int, default=-1
-            End index for forecasting (exclusive). If -1, uses the length of the time series.
+        t_start : int
+            Start index for forecasting. If -1, defaults to self.args["skip"].
+        t_end : int
+            End index for forecasting (exclusive). If -1, defaults to the length of the target series.
 
         Returns
         -------
-        np.ndarray
-            Forecast matrix of shape (t_end - t_start, hh), 
-            containing predictions for each horizon h = 1 to hh.
+        y_fcast : np.ndarray, shape (n_forecast_steps, hh)
+            Matrix of forecasts for each time step and each horizon.
+
+        Raises
+        ------
+        ValueError
+            If the model has not been trained.
         """
-        t_st = t_start if t_start > -1 else self.args["skip"]
-        t_en = t_end if t_end > -1 else len(self._y)
-        yf = np.zeros((t_en - t_st, self.hh))
+
+        if self._params is None:
+            raise ValueError("The model has not been trained. Call train first.")
+        
+        t_st, t_en = self._adjust_range(t_start, t_end)
+        y_fcast = np.zeros((t_en - t_st, self.hh))
 
         for t in range(t_st, t_en):
-            yf[t - t_st] = self._model.predict(
+            y_fcast[t - t_st] = self._model.predict(
                 params=self.params,
                 start=t,
                 end=t + self.hh - 1,
                 dynamic=self._dynamic
             )
-        self._Yf[t_st: t_en, 1:-1] = yf    
-        return yf
+        self._Yf[t_st: t_en, 1:-1] = y_fcast    
+        return y_fcast
