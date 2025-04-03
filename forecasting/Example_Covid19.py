@@ -19,43 +19,36 @@ from forecasting.ARX import ARX
 from forecasting.ARX_Symb import ARX_Symb
 from forecasting.MHAttnRegressor import MHAttnRegressor
 
-np.set_printoptions(linewidth=200, precision=6, suppress=True)
+np.set_printoptions(linewidth=200, precision=4, suppress=True)
 
-def AR_YW_test(args, hh, y, method_type = 0):
-    methods = ["sm_ols", "mle", "adjusted"]
-    model = AR_YW(args, y, hh, methods[method_type])
+def AR_YW_test(args, hh, y, method="sm_ols"):
+    model = AR_YW(args, y, hh, method)
     model.inSample_Test(showParams=True, showYf=True)
     model.trainNtest_Test(showParams=True, showYf=True)
 
 
-def ARX_test(args, hh, y, z = None, method_type=1):
-    methods = ["sm_ols", "sk_lr"]
-    # model = ARX(args, y, hh, z, method=methods[method_type])
-    tForm = StandardScaler
-    model = ARX.rescale(args, y, hh, z, method=methods[method_type], tForm=tForm)
+def ARX_test(args, hh, y, xe = None, method="sm_ols"):
+    # model = ARX(args, y, hh, xe, method=method)
+    model = ARX.rescale(args, y, hh, xe, method=method, tForm=StandardScaler)
     model.inSample_Test(showParams=True, showYf=True)
     model.trainNtest_Test(showParams=True, showYf=True)
 
-def ARX_Symb_test(args, hh, y, z = None, method_type=1):
-    methods = ["sm_ols", "sk_lr"]
+
+def ARX_Symb_test(args, hh, y, xe = None, method="sm_ols"):
     ff = [lambda x: np.power(x, 1.5)]
     gg = []
-    # model = ARX_Symb(args, y, hh, z, ff, gg, method=methods[method_type])
-    tForm = StandardScaler
-    model = ARX_Symb.rescale(args, y, hh, z, ff, gg, method=methods[method_type], tForm=tForm)
+    # model = ARX_Symb(args, y, hh, xe, ff, gg, method=method)
+    model = ARX_Symb.rescale(args, y, hh, xe, ff, gg, method=method, tForm=StandardScaler)
     model.inSample_Test(showParams=True, showYf=True)
     model.trainNtest_Test(showParams=True, showYf=True)
 
 
-def MHAttnRegressor_test(args, hh, y, z):
+def MHAttnRegressor_test(args, hh, y, xe):
     batch_size = 116
-    # model = ARX_Symb(args, y, hh, z)
-    tForm = StandardScaler
-    model = ARX_Symb.rescale(args, y, hh, z, tForm=tForm)
+    # model = ARX_Symb(args, y, hh, xe)
+    model = ARX_Symb.rescale(args, y, hh, xe, tForm=StandardScaler)
 
     X, y = model.X, model.y.reshape(-1, 1)
-    print(f"X.shape = {X.shape}")
-    np.savetxt("X_ARX_Symb.csv", model.X, delimiter=",", fmt="%.6f")
     X_torch = torch.tensor(X, dtype=torch.float32)
     y_torch = torch.tensor(y, dtype=torch.float32)
     train_ratio = 1.0
@@ -81,21 +74,21 @@ def MHAttnRegressor_test(args, hh, y, z):
 
     num_fs = 20
     feature_scores = heatMap.mean(dim=0).numpy()
-    feature_scores_withIntercept = np.insert(feature_scores, 0, 1.0)
-    feature_scores_sorted = sorted(list(enumerate(feature_scores_withIntercept)), key=lambda x: x[1], reverse=True)
+    # feature_scores_withIntercept = np.insert(feature_scores, 0, 1.0)
+    feature_scores_sorted = sorted(list(enumerate(feature_scores)), key=lambda x: x[1], reverse=True)
     selected = [(i, round(float(score), 6)) for i, score in feature_scores_sorted[:num_fs]]
     selected_idx = [i for i, _ in selected]
-    print(f"selected for Scala: {selected}")
+    print(f"selected columns: {selected}")
     print(selected_idx)
 
 if __name__ == "__main__":
 
     dataLoad = pd.read_csv('data/covid_19_weekly.csv')
     data_y = dataLoad[['new_deaths']].iloc[:116].reset_index(drop=True)
-    data_z = dataLoad[['icu_patients', 'hosp_patients']].iloc[:116].reset_index(drop=True)
+    data_xe = dataLoad[['icu_patients', 'hosp_patients']].iloc[:116].reset_index(drop=True)
     y  = data_y['new_deaths'].to_numpy()
-    # z = data_z[['icu_patients', 'hosp_patients']].to_numpy()
-    z = data_z[['icu_patients']].to_numpy()
+    # xe = data_xe[['icu_patients', 'hosp_patients']].to_numpy()
+    xe = data_xe[['icu_patients']].to_numpy()
 
     args = dotdict()
     args.skip = 2
@@ -104,13 +97,14 @@ if __name__ == "__main__":
     args.q = 4
     args.cross = False
     hh = 6
-    # AR_YW_test(args, hh, y, method_type=1)
-    # AR_YW_test(args, hh, y, method_type=2)
-    # AR_YW_test(args, hh, y, method_type=0)
-    ARX_test(args, hh, y, method_type=0)
-    # ARX_test(args, hh, y, z)
-    # ARX_Symb_test(args, hh, y, z)
-    # MHAttnRegressor_test(args, hh, y, z)
+    methods = ["sm_ols", "mle", "adjusted"]
+    # AR_YW_test(args, hh, y)
+    # AR_YW_test(args, hh, y, method=methods[1])
+    AR_YW_test(args, hh, y, method=methods[2])
+    ARX_test(args, hh, y, xe)
+    # ARX_test(args, hh, y, xe, method="sk_lr")
+    ARX_Symb_test(args, hh, y, xe)
+    # MHAttnRegressor_test(args, hh, y, xe)
 
 
     
