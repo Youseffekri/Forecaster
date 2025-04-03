@@ -12,7 +12,6 @@ Version: 1.0
 License: MIT License
 """
 
-
 from typing import Any, Dict, Optional
 import numpy as np
 import statsmodels.api as sm
@@ -27,8 +26,8 @@ class AR_YW(Forecaster):
 
     Supports the following autoregressive estimation methods:
     - "sm_ols": Ordinary Least Squares via statsmodels' AutoReg
-    - "mle": Maximum Likelihood Estimation (Yule-Walker)
-    - "adjusted": Adjusted Yule-Walker method for bias correction
+    - "mle": Maximum Likelihood Estimation via Yule-Walker
+    - "adjusted": Bias-adjusted Yule-Walker method for bias correction
 
     Attributes
     ----------
@@ -36,8 +35,8 @@ class AR_YW(Forecaster):
         Autoregressive model instance from statsmodels.
     method : str
         Estimation method used to compute parameters ('sm_ols', 'mle', or 'adjusted').
-    dynamic : bool
-        Whether to use dynamic forecasting (default True).
+    dynamic : bool, default = True
+        Whether to use dynamic forecasting.
 
     See Also
     --------
@@ -51,17 +50,13 @@ class AR_YW(Forecaster):
         Parameters
         ----------
         args : dict
-            Dictionary of model configuration parameters, including:
-            "spec" (int): Type of trend component to include in the model:
-                1=Constant, 2=Linear, 3=Quadratic, 4=Sine, 5=Cosine.
-            - "p" (int): Number of lags for the endogenous variable (lags 1 to p).
-            - "q" (int): Number of lags for each exogenous variable (lags 1 to q).
-            - "cross" (bool): Whether to add ENDO-EXO cross terms.
-            - "skip" (int, default=0): Number of initial observations to skip.
+            Dictionary of model configuration parameters.
         y : np.ndarray, shape (n_samples,)
             The input endogenous time series data.   
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
+        method : {"sm_ols", "mle", "adjusted"}
+            Method used to estimate AR parameters.    
         """
         super().__init__(args, y, hh)
         self._model = AutoReg(y, lags=self.args['p'])
@@ -72,7 +67,6 @@ class AR_YW(Forecaster):
             print("Warning: 'skip' < 'p' is not allowed. Automatically setting 'skip' to 'p'.")
             self.args['skip'] = self.args['p']
 
-        print(f"\n{self.__class__.__name__}(p={self.args['p']}), method={self._method}")
 
     def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None):
         """
@@ -112,15 +106,15 @@ class AR_YW(Forecaster):
 
         Returns
         -------
-        y_fcast : np.ndarray, shape (n_forecast_steps, hh)
-            Matrix of forecasts for each time step and each horizon.
+        np.ndarray, shape (n_forecast_steps, hh)
+            Forecast matrix where each row corresponds to a time step and each column 
+            corresponds to a forecast horizon.
 
         Raises
         ------
         ValueError
             If the model has not been trained.
         """
-
         if self._params is None:
             raise ValueError("The model has not been trained. Call train first.")
         
@@ -128,11 +122,10 @@ class AR_YW(Forecaster):
         y_fcast = np.zeros((t_en - t_st, self.hh))
 
         for t in range(t_st, t_en):
-            y_fcast[t - t_st] = self._model.predict(
-                params=self.params,
-                start=t,
-                end=t + self.hh - 1,
-                dynamic=self._dynamic
-            )
+            y_fcast[t - t_st] = self._model.predict(params=self.params,
+                                                    start=t,
+                                                    end=t + self.hh - 1,
+                                                    dynamic=self._dynamic)
+
         self._Yf[t_st: t_en, 1:-1] = y_fcast    
         return y_fcast

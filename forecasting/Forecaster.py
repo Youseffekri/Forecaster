@@ -18,6 +18,7 @@ from sklearn.base import TransformerMixin
 
 from Util.tools import diagnose
 
+
 class Forecaster(ABC):
     """
     Abstract base class for time series forecasting models.
@@ -45,15 +46,13 @@ class Forecaster(ABC):
     Yf : np.ndarray, shape (n_samples, hh + 2)
         Forecast matrix containing the raw input `y`, forecast outputs in the same scale 
         as the input `y`, and time indices.
-    modelName : str
-        The name for the model    
     yForm : Optional[Type[TransformerMixin]]
         Optional transformation used for scaling `y` and forecast outputs.
         e.g., MinMaxScaler or StandardScaler.
     TE_RATIO : float, default = 0.2
         Ratio of the testing set to the full dataset.
-    lu : tuple(float, float)
-        Default bounds for MinMaxScaler's feature_range
+    lu : tuple of float, default=(0, 4)
+        Default feature range used for MinMaxScaler.
 
     Notes
     -----
@@ -83,13 +82,12 @@ class Forecaster(ABC):
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
         """
-        self.args = {
-            "spec": args.get("spec", 1),
-            "p": args.get("p", 6),
-            "q": args.get("q", 0),
-            "cross": args.get("cross", False),
-            **args
-        }
+        self.args = {"spec": args.get("spec", 1),
+                     "p": args.get("p", 6),
+                     "q": args.get("q", 0),
+                     "cross": args.get("cross", False),
+                     **args}
+        
         self.args["skip"] = args.get("skip", self.args["p"])
         self.hh = hh
         self._y = y
@@ -99,8 +97,8 @@ class Forecaster(ABC):
         self._tr_size = int((1.0 - self._TE_RATIO) * len(y))
         self._te_size = len(y) - self._tr_size
         self._Yf = self.initialize_forecast_matrix()
-        self._modelName = "Model"
         self._yForm = None
+
 
     def _set_X(self, X: np.ndarray) -> None:
         """
@@ -121,9 +119,12 @@ class Forecaster(ABC):
         """
         if not isinstance(X, np.ndarray):
             raise TypeError("X must be a NumPy array.")
+        
         if X.size == 0:
             raise ValueError("X cannot be empty.")
+        
         self._X = X
+
 
     @property
     def X(self) -> Optional[np.ndarray]:
@@ -134,6 +135,7 @@ class Forecaster(ABC):
             The input matrix.
         """
         return self._X
+
 
     @property
     def y(self) -> np.ndarray:
@@ -153,7 +155,7 @@ class Forecaster(ABC):
 
         Returns
         -------
-        Yf : np.ndarray, shape (n_samples, hh + 2)
+        np.ndarray, shape (n_samples, hh + 2)
             Forecast matrix where:
             - Column 0 stores the original unscaled time series `y`.
             - Columns 1 to hh are initialized to zeros (to hold forecast values).
@@ -169,6 +171,7 @@ class Forecaster(ABC):
         Yf = np.column_stack([self._y, y_fcast, time])
         return Yf
 
+
     def _reset_Yf(self) -> None:
         """
         Resets the forecast columns in the Yf matrix to zero.
@@ -177,17 +180,19 @@ class Forecaster(ABC):
         y_fcast = np.zeros((self._Yf.shape[0], self._Yf.shape[1]-2))
         self._Yf = np.column_stack([y, y_fcast, time])
 
+
     @property
     def Yf(self) -> np.ndarray:
         """
         Returns
         -------
         np.ndarray, shape (n_samples, hh + 2)
-            The forecast matrix containing observed values, forecast outputs, 
+            The forecast matrix containing the observed values, forecast outputs, 
             and time indices.
         """
         return self._Yf
     
+
     def _set_params(self, params: np.ndarray) -> None:
         """
         Sets the trained model parameters.
@@ -206,9 +211,12 @@ class Forecaster(ABC):
         """
         if not isinstance(params, np.ndarray):
             raise TypeError("params must be a NumPy array.")
+        
         if params.size == 0:
             raise ValueError("params cannot be empty.")
+        
         self._params = params
+
 
     @property
     def params(self) -> np.ndarray:
@@ -225,18 +233,32 @@ class Forecaster(ABC):
         """
         if self._params is None:
             raise ValueError("Model parameters are not set. Call `train` first.")
+        
         return self._params
+    
 
-    @property
-    def modelName(self) -> str:
+    def __repr__(self) -> str:
         """
+        Returns a string representation of the model instance.
+
         Returns
         -------
         str
-            The name of the model 
+            A formatted string showing the model name, horizon, and key arguments.
         """
-        return self._modelName
-    
+        mod_name = f"{self.__class__.__name__}(p={self.args['p']}"
+
+        if hasattr(self, "_n_exo"):
+            mod_name += f", q={self.args['q']}, n_exo={self._n_exo}"
+        
+        mod_name += f"), hh = {self.hh}, skip = {self.args['skip']}"
+
+        if hasattr(self, "_method"):
+            mod_name += f", method={self._method}"
+
+        return mod_name
+
+
     @abstractmethod
     def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None) -> None:
         """
@@ -254,6 +276,7 @@ class Forecaster(ABC):
         Subclasses must implement this method to train the model and store parameters using self._set_params().
         """
         pass
+
 
     @abstractmethod
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
@@ -292,7 +315,7 @@ class Forecaster(ABC):
 
         Returns
         -------
-        t_st, t_en: tuple[int, int]
+        tuple[int, int]
             A tuple (t_st, t_en) representing the validated and adjusted start and end indices.
 
         Raises
@@ -307,6 +330,7 @@ class Forecaster(ABC):
             raise ValueError(f"Invalid range (t_start, t_end) = ({t_st}, {t_en})")
 
         return t_st, t_en
+
 
     def _rectify(self, yp: np.ndarray) -> np.ndarray:
         """
@@ -327,26 +351,62 @@ class Forecaster(ABC):
         else:
             return yp
 
+
     def diagnose_all(self, y_fcast: np.ndarray, TnT: bool = False) -> str:
         """
-        Computes Quality of Fit (QoF) measures for all horizons.
+        Evaluate forecast accuracy for all prediction horizons.
+
+        Computes quality-of-fit (QoF) metrics (MSE, MAE, R², etc.) across all forecast horizons.
+        Optionally evaluates only on the test set when `TnT` is True.
 
         Parameters
         ----------
-        y_fcast : np.ndarray
-            Forecast values for each horizon.
+        y_fcast : np.ndarray, shape (n_samples, hh)
+            Forecast values for each time step and each forecast horizon.
         TnT : bool, default=False
-            If True, only test set is used for evaluation.
+            If True, metrics are computed only on the test set (after training size).
+            If False, metrics are computed from `args["skip"]` to the end.
 
         Returns
         -------
-        qof : str
-            Formatted metrics across all forecast horizons.
+        str
+            A formatted multi-line string showing the QoF metrics across all forecast horizons.
         """
         y_true = self._y[self._tr_size:].copy() if TnT else self._y[self.args["skip"]:].copy()
-        hh = y_fcast.shape[1]
-        ll = len(y_true)
+        ll, hh = len(y_true), y_fcast.shape[1]
 
+        if self._yForm is not None:
+            y_true = self._yForm.inverse_transform(y_true.reshape(-1, 1)).flatten()
+        y_true_arr  = [y_true[h:] for h in range(hh)]
+        y_fcast_arr = [y_fcast[:ll - h, h] for h in range(hh)] if self._yForm is None else \
+                      [self._yForm.inverse_transform(y_fcast[:ll - h, h].reshape(-1, 1)).flatten() for h in range(hh)]
+
+        return self._quality_of_fit(y_true_arr, y_fcast_arr)
+
+
+    def _quality_of_fit(self, y_true_arr: list[np.ndarray], y_fcast_arr: list[np.ndarray]) -> str:
+        """
+        Calculate multiple quality-of-fit metrics for each forecast horizon.
+
+        For each horizon, computes:
+        - Mean Squared Error (MSE)
+        - Mean Absolute Error (MAE)
+        - Coefficient of Determination (R² and Adjusted R²)
+        - Symmetric Mean Absolute Percentage Error (SMAPE)
+        - Number of samples (m)
+
+        Parameters
+        ----------
+        y_true_arr : list of np.ndarray
+            List of true values for each horizon (aligned to forecast values).
+        y_fcast_arr : list of np.ndarray
+            List of forecasted values for each horizon.
+
+        Returns
+        -------
+        str
+            A formatted string reporting the metrics across all horizons.
+        """
         horizon_all = f"horizon\t->"
         mse_all     = f"mse\t->"
         mae_all     = f"mae\t->"
@@ -355,31 +415,25 @@ class Forecaster(ABC):
         smape_all   = f"smape\t->"
         m_all       = f"m\t->"
 
-        if self._yForm is not None:
-            y_true = self._yForm.inverse_transform(y_true.reshape(-1, 1)).flatten()
-
-        for h in range(hh):
-            y_fcast_h = y_fcast[:ll - h, h] if self._yForm is None else self._yForm.inverse_transform(y_fcast[:ll - h, h].reshape(-1, 1)).flatten()
-
-            metrics = diagnose(y_true[h:], y_fcast_h)
+        for h in range(len(y_true_arr)):
+            metrics = diagnose(y_true_arr[h], y_fcast_arr[h])
             horizon_all += f"\t  {h + 1}\t"
-            mse_all     += f"\t{metrics["MSE"]:.4f}\t"
-            mae_all     += f"\t{metrics["MAE"]:.4f}\t"
-            r2_all      += f"\t{metrics["R2"]:.4f}\t"
-            r2Bar_all   += f"\t{metrics["R2Bar"]:.4f}\t"
-            smape_all   += f"\t{metrics["SMAPE"]:.4f}\t"
-            m_all       += f"\t{metrics["m"]}\t"
+            mse_all     += f"\t{metrics['MSE']:.4f}\t"
+            mae_all     += f"\t{metrics['MAE']:.4f}\t"
+            r2_all      += f"\t{metrics['R2']:.4f}\t"
+            r2Bar_all   += f"\t{metrics['R2Bar']:.4f}\t"
+            smape_all   += f"\t{metrics['SMAPE']:.4f}\t"
+            m_all       += f"\t{metrics['m']}\t"
 
-        qof = (
-            horizon_all + "\n" +
-            mse_all + "\n" +
-            mae_all + "\n" +
-            r2_all + "\n" +
-            r2Bar_all + "\n" +
-            smape_all + "\n" +
-            m_all + "\n"
-        )
+        qof = (horizon_all + "\n"   +
+               mse_all + "\n"       +
+               mae_all + "\n"       +
+               r2_all + "\n"        +
+               r2Bar_all + "\n"     +
+               smape_all + "\n"     +
+               m_all + "\n")
         return qof
+        
 
     def rollValidate(self, rc: int = 2, growing: bool = False) -> np.ndarray:
         """
@@ -394,27 +448,30 @@ class Forecaster(ABC):
 
         Returns
         -------
-        y_fcast: np.ndarray, shape (te_size, hh)
-            Forecast values across rolling steps.
+        np.ndarray, shape (te_size, hh)
+            Matrix including forecast values across rolling steps.
         """
         self._reset_Yf()
         y_fcast = np.zeros((self._te_size, self.hh))
+
         for i in range(0, self._te_size, rc):
             is_ = 0 if growing else i
             t = self._tr_size + i
             X_ = self._X[is_:t] if self._X is not None else None
             y_ = self._y[is_:t]
             self.train(y_, X_)
+
             if i+rc < self._te_size:
                 y_fcast[i:i + rc, :] = self.forecast(t, t + rc)
             else:
                 y_fcast[i:, :] = self.forecast(t)
+
         return y_fcast
 
 
     def inSample_Test(self, showParams: bool = False, showYf: bool = False) -> None:
         """
-        Runs an in-sample evaluation of the forecasting model and prints forecast quality metrics.
+        Runs an in-sample evaluation of the forecasting model and prints the forecast quality metrics.
 
         Parameters
         ----------
@@ -423,17 +480,22 @@ class Forecaster(ABC):
         showYf : bool, default=False
             Whether to print the forecast matrix `Yf`.
         """
-        print(f"In-Sample Test: {self.modelName}")
+        print(f"In-Sample Test: {self}")
         self.train()
         y_fcast = self.forecast()
         qof = self.diagnose_all(y_fcast)
         print(f"QoF:\n{qof}")
-        if showParams: print(f"params = {self.params}")
-        if showYf: print(f"Yf = \n{self.Yf}")
+
+        if showParams: 
+            print(f"params = \n{self.params}")
+
+        if showYf: 
+            print(f"Yf = \n{self.Yf}")
+
 
     def trainNtest_Test(self, showParams: bool = False, showYf: bool = False) -> None:
         """
-        Runs a rolling validation test and prints forecast quality metrics.
+        Runs a rolling validation test and prints the forecast quality metrics.
 
         Parameters
         ----------
@@ -442,9 +504,13 @@ class Forecaster(ABC):
         showYf : bool, default=False
             Whether to print the forecast matrix `Yf`.
         """
-        print(f"Roll Validate Test: {self.modelName}")
+        print(f"Roll Validate Test: {self}")
         y_fcast = self.rollValidate()
         qof = self.diagnose_all(y_fcast, TnT = True)
         print(f"QoF:\n{qof}")
-        if showParams: print(f"params = {self.params}")
-        if showYf: print(f"Yf = \n{self.Yf}")
+
+        if showParams: 
+            print(f"params = \n{self.params}")
+        
+        if showYf: 
+            print(f"Yf = \n{self.Yf}")

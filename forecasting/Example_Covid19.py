@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -16,7 +15,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from Util.tools import dotdict
 from forecasting.AR_YW import AR_YW
 from forecasting.ARX import ARX
+from forecasting.ARX_D import ARX_D
 from forecasting.ARX_Symb import ARX_Symb
+from forecasting.ARX_Symb_D import ARX_Symb_D
 from forecasting.MHAttnRegressor import MHAttnRegressor
 
 np.set_printoptions(linewidth=200, precision=4, suppress=True)
@@ -28,8 +29,15 @@ def AR_YW_test(args, hh, y, method="sm_ols"):
 
 
 def ARX_test(args, hh, y, xe = None, method="sm_ols"):
-    # model = ARX(args, y, hh, xe, method=method)
-    model = ARX.rescale(args, y, hh, xe, method=method, tForm=StandardScaler)
+    model = ARX(args, y, hh, xe, method=method)
+    # model = ARX.rescale(args, y, hh, xe, method=method, tForm=StandardScaler)
+    model.inSample_Test(showParams=True, showYf=True)
+    model.trainNtest_Test(showParams=True, showYf=True)
+
+
+def ARX_D_test(args, hh, y, xe = None, method="sm_ols"):
+    # model = ARX_D(args, y, hh, xe, method=method)
+    model = ARX_D.rescale(args, y, hh, xe, method=method, tForm=StandardScaler)
     model.inSample_Test(showParams=True, showYf=True)
     model.trainNtest_Test(showParams=True, showYf=True)
 
@@ -43,12 +51,22 @@ def ARX_Symb_test(args, hh, y, xe = None, method="sm_ols"):
     model.trainNtest_Test(showParams=True, showYf=True)
 
 
+def ARX_Symb_D_test(args, hh, y, xe = None, method="sm_ols"):
+    ff = [lambda x: np.power(x, 1.5)]
+    gg = []
+    model = ARX_Symb_D(args, y, hh, xe, ff, gg, method=method)
+    # model = ARX_Symb_D.rescale(args, y, hh, xe, ff, gg, method=method, tForm=StandardScaler)
+    model.inSample_Test(showParams=True, showYf=True)
+    model.trainNtest_Test(showParams=True, showYf=True)
+
 def MHAttnRegressor_test(args, hh, y, xe):
     batch_size = 116
     # model = ARX_Symb(args, y, hh, xe)
     model = ARX_Symb.rescale(args, y, hh, xe, tForm=StandardScaler)
 
     X, y = model.X, model.y.reshape(-1, 1)
+    print(f"X.shape = {X.shape}")
+    np.savetxt("X_ARX_Symb.csv", model.X, delimiter=",", fmt="%.6f")
     X_torch = torch.tensor(X, dtype=torch.float32)
     y_torch = torch.tensor(y, dtype=torch.float32)
     train_ratio = 1.0
@@ -97,13 +115,22 @@ if __name__ == "__main__":
     args.q = 4
     args.cross = False
     hh = 6
+
     methods = ["sm_ols", "mle", "adjusted"]
     # AR_YW_test(args, hh, y)
-    # AR_YW_test(args, hh, y, method=methods[1])
-    AR_YW_test(args, hh, y, method=methods[2])
+    AR_YW_test(args, hh, y, method=methods[1])
+    # AR_YW_test(args, hh, y, method=methods[2])
+
     ARX_test(args, hh, y, xe)
     # ARX_test(args, hh, y, xe, method="sk_lr")
-    ARX_Symb_test(args, hh, y, xe)
+    # ARX_D_test(args, hh, y, xe)
+    # ARX_D_test(args, hh, y, xe, method="sk_lr")
+
+    # ARX_Symb_test(args, hh, y, xe)
+    # ARX_Symb_test(args, hh, y, xe, method="sk_lr")
+    # ARX_Symb_D_test(args, hh, y, xe)
+    ARX_Symb_D_test(args, hh, y, xe, method="sk_lr")
+
     # MHAttnRegressor_test(args, hh, y, xe)
 
 
