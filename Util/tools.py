@@ -1,9 +1,15 @@
 """
+Utility Functions for Model Evaluation and Dot-Accessible Dictionaries
+
+Includes common regression evaluation metrics (MSE, MAE, R2, Adjusted R2, SMAPE)
+and a dot-accessible dictionary class for convenience.
+
 Author: Yousef Fekri Dabanloo
 Date: 2025-03-05
 Version: 1.0
 License: MIT License
 """
+
 
 import numpy as np
 
@@ -12,12 +18,12 @@ class dotdict(dict):
     """
     A dictionary subclass that allows dot notation for attribute access.
 
-    Example
-    -------
+    Examples
+    --------
     d = dotdict({"a": 1, "b": 2})
-    print(d.a)  # Outputs: 1
+    print(d.a)    # Outputs: 1
     d.c = 3
-    print(d["c"])  # Outputs: 3
+    print(d["c"]) # Outputs: 3
     """
 
     def __getattr__(self, name):
@@ -39,18 +45,17 @@ def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (m,)
+    y_true : np.ndarray, shape (n_samples,)
         Ground truth values.
-    y_pred : np.ndarray, shape (m,)
+    y_pred : np.ndarray, shape (n_samples,)
         Predicted values.
 
     Returns
     -------
-    mse_ : float
+    float
         Mean squared error.
     """
-    mse_ = float(np.mean((y_true - y_pred) ** 2))
-    return mse_
+    return float(np.mean((y_true - y_pred) ** 2))
 
 
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -59,18 +64,17 @@ def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (m,)
+    y_true : np.ndarray, shape (n_samples,)
         Ground truth values.
-    y_pred : np.ndarray, shape (m,)
+    y_pred : np.ndarray, shape (n_samples,)
         Predicted values.
 
     Returns
     -------
-    mae_ : float
+    float
         Mean absolute error.
     """
-    mae_ = float(np.mean(np.abs(y_true - y_pred)))
-    return mae_
+    return float(np.mean(np.abs(y_true - y_pred)))
 
 
 def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -79,22 +83,21 @@ def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (m,)
+    y_true : np.ndarray, shape (n_samples,)
         Ground truth values.
-    y_pred : np.ndarray, shape (m,)
+    y_pred : np.ndarray, shape (n_samples,)
         Predicted values.
 
     Returns
     -------
-    r2_ : float
+    float
         R-squared score.
     """
     ss_total = np.sum((y_true - np.mean(y_true)) ** 2)
     if ss_total == 0:
         return 0.0
     ss_residual = np.sum((y_true - y_pred) ** 2)
-    r2_ = float(1 - (ss_residual / ss_total))
-    return r2_
+    return float(1 - (ss_residual / ss_total))
 
 
 def r2_adjusted(y_true: np.ndarray, y_pred: np.ndarray, n_features: int) -> float:
@@ -103,24 +106,23 @@ def r2_adjusted(y_true: np.ndarray, y_pred: np.ndarray, n_features: int) -> floa
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (m,)
+    y_true : np.ndarray, shape (n_samples,)
         Ground truth values.
-    y_pred : np.ndarray, shape (m,)
+    y_pred : np.ndarray, shape (n_samples,)
         Predicted values.
     n_features : int
         The number of features used in the model.
 
     Returns
     -------
-    r2_adj : float
+    float
         Adjusted R-squared score.
     """
     m = len(y_true)
     if m <= n_features + 1:
         return np.nan
     r2_ = r2(y_true, y_pred)
-    r2_adj = float(1 - (1 - r2_) * (m - 1) / (m - n_features - 1))
-    return r2_adj
+    return float(1 - (1 - r2_) * (m - 1) / (m - n_features - 1))
 
 
 def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -129,19 +131,17 @@ def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (m,)
+    y_true : np.ndarray, shape (n_samples,)
         Ground truth values.
-    y_pred : np.ndarray, shape (m,)
+    y_pred : np.ndarray, shape (n_samples,)
         Predicted values.
 
     Returns
     -------
-    smape_ : float
+    float
         SMAPE score, expressed as a percentage.
     """
-    smape_ = float(100 * np.mean(2 * np.abs(y_true - y_pred) / (np.abs(y_true) + np.abs(y_pred) + 1e-10)))
-    return smape_
-
+    return float(100 * np.mean(2 * np.abs(y_true - y_pred) / (np.abs(y_true) + np.abs(y_pred) + 1e-10)))
 
 
 def diagnose(y_true: np.ndarray, y_pred: np.ndarray, n_features: int = 1) -> dict:
@@ -154,16 +154,20 @@ def diagnose(y_true: np.ndarray, y_pred: np.ndarray, n_features: int = 1) -> dic
         Ground truth values.
     y_pred : np.ndarray
         Predicted values.
-
-    n_features : int, optional
-        Number of features in the model (default is 1).
+    n_features : int, default = 1
+        The number of features used in the model.
 
     Returns
     -------
-    metrics : dict
-        Dictionary containing MSE, MAE, R^2, Adjusted R^2, SMAPE, and m.
+    dict
+        Dictionary containing evaluation metrics:
+        - MSE   : Mean Squared Error.
+        - MAE   : Mean Absolute Error.
+        - R2    : R-squared.
+        - R2Bar : Adjusted R-squared.
+        - SMAPE : Symmetric Mean Absolute Percentage Error.
+        - m     : The number of samples.
     """
-
     return {
         "MSE"   : mse(y_true, y_pred),
         "MAE"   : mae(y_true, y_pred),

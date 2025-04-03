@@ -11,13 +11,20 @@ A modular time series forecasting framework that integrates symbolic regression,
 
 ## Getting Started
 
-1. Install dependencies:
+1. Git clone the repository
+```bash
+git clone https://github.com/Youseffekri/Forecaster.git
+```
+
+
+2. Install dependencies:
 
 ```bash
+cd Forecaster
 pip install -r requirements.txt
 ```
 
-2. Run the example script:
+3. Run the example script:
 
 ```bash
 python .\forecasting\Example_Covid19.py
@@ -26,8 +33,8 @@ python .\forecasting\Example_Covid19.py
 ## Models
 
 - `AR_YW`: Autoregressive model using Yule-Walker estimation
-- `ARX`: AR model with exogenous inputs
-- `ARX_Symb`: Symbolic regression-based ARX
+- `ARX`, `ARX_D`: AR model with exogenous inputs
+- `ARX_Symb`, `ARX_Symb_D`: Symbolic regression-based ARX
 - `MHAttnRegressor`: Multi-head attention for feature selection
 
 ## Evaluation Metrics

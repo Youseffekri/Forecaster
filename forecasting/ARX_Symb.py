@@ -5,7 +5,7 @@ Extends the ARX (Autoregressive with Exogenous Variables) model by applying nonl
 transformations to lagged inputs.
 
 Supports multi-step forecasting using lagged endogenous variables, exogenous variables, 
-and their symbolic transformations. Optionally includes cross terms between  endogenous and exogenous variables.
+and their symbolic transformations. Optionally supports cross terms between endogenous and exogenous variables.
 
 Author: Yousef Fekri Dabanloo
 Date: 2025-03-05
@@ -27,17 +27,17 @@ class ARX_Symb(ARX):
     Symbolic Autoregressive model with Exogenous variables (ARX_Symb) for time series forecasting.
 
     Extends the ARX model by incorporating nonlinear symbolic transformations of lagged endogenous 
-    and exogenous variables. Also supports optional scaling of inputs and outputs using sklearn transformers.
+    and exogenous variables. Also supports optional scaling of input/output using sklearn transformers.
 
     Attributes
     ----------
     tForms : dict
         Dictionary containing symbolic functions and optional sklearn transformers applied to:
-        - "tForm_y"    : transformation for the target series y
-        - "tForm_endo" : transformation for derived endogenous features
-        - "tForm_exo"  : transformation for derived exogenous features
-        - "fEndo"      : symbolic functions applied to y before lagging
-        - "fExo"       : symbolic functions applied to exogenous inputs before lagging
+        - "tForm_y"    : transformation applied to the target series `y`
+        - "tForm_endo" : transformation applied to derived endogenous features
+        - "tForm_exo"  : transformation applied to derived exogenous features
+        - "fEndo"      : symbolic functions applied to `y` before lagging
+        - "fExo"       : symbolic functions applied to exogenous variables before lagging
 
     See Also
     --------
@@ -74,7 +74,7 @@ class ARX_Symb(ARX):
         method : {"sm_ols", "sk_lr"}, default="sm_ols"
             Whether to use statsmodels OLS or sklearn Linear Regression.
         X : Optional[np.ndarray], shape (n_samples, n_lagged_columns), default=None
-            Input feature matrix. If None, it will be built from `y` and `xe`.
+            Input feature matrix. If None, the model will build it from `y`, `xe`, and other configuration settings.
         
         Notes
         -----
@@ -89,6 +89,7 @@ class ARX_Symb(ARX):
         self._tForms["fExo"]  = fExo if fExo is not None else functions
         super().__init__(args, y, hh, xe, method, X)
     
+
     @classmethod
     def rescale(cls, 
                 args: Dict[str, Any], 
@@ -99,7 +100,7 @@ class ARX_Symb(ARX):
                 fExo: Optional[List[Callable[[np.ndarray], np.ndarray]]] = None,   
                 method: str ="sm_ols", 
                 tForm: Optional[Type[TransformerMixin]] = None, 
-                X: Optional[np.ndarray] = None) -> None:
+                X: Optional[np.ndarray] = None) -> "ARX_Symb":
         """
         Alternative constructor that enables rescaling using a transformation function.
 
@@ -123,7 +124,7 @@ class ARX_Symb(ARX):
             Transformation used for scaling `y` and forecast outputs,
             e.g., MinMaxScaler or StandardScaler.
         X : Optional[np.ndarray], shape (n_samples, n_lagged_columns), default=None
-            Input feature matrix. If None, it will be built from `y` and `xe`.
+            Input feature matrix. If None, the model will build it from `y`, `xe`, and other configuration settings.
 
         Returns
         -------
@@ -157,26 +158,35 @@ class ARX_Symb(ARX):
         ARX_Symb_re._y = ARX_Symb_re._tForms["tForm_y"].transform(ARX_Symb_re._y.reshape(-1, 1)).flatten()
         return ARX_Symb_re
 
-    def _build_matrix(self, args: Dict[str, Any], y: np.ndarray, xe: Optional[np.ndarray] = None, tForms : Optional[Type[TransformerMixin]] = {"tForm_y": None}) -> np.ndarray:
+
+    @staticmethod
+    def _build_matrix(args: Dict[str, Any], 
+                      y: np.ndarray, 
+                      xe: Optional[np.ndarray] = None, 
+                      tForms : Optional[Dict[str, Any]] = {"tForm_y": None}) -> np.ndarray:
         """
-        Builds the feature matrix from lagged endogenous and exogenous variables 
-        with optional transformations and trend terms.
+        Builds the design matrix using lagged endogenous and optional exogenous inputs.
 
         Parameters
         ----------
         args : dict
-            Model configuration parameters including lag orders and trend spec.
+            Model configuration parameters including lag orders and trend specification.
         y : np.ndarray, shape (n_samples,)
             Endogenous time series.
         xe : Optional[np.ndarray], shape (n_samples, n_exo)
             Exogenous input matrix aligned with `y`.
-        tForms : dict
-            Dictionary of transformations to apply.
+        tForms : dict, optional
+            Dictionary of transformations to apply. Can include:
+            - "tForm_y"    : transformation applied to the target series `y`
+            - "tForm_endo" : transformation applied to derived endogenous features
+            - "tForm_exo"  : transformation applied to derived exogenous features
+            - "fEndo"      : symbolic functions applied to `y` before lagging
+            - "fExo"       : symbolic functions applied to exogenous variables before lagging
 
         Returns
         -------
         np.ndarray
-            Feature matrix for regression.
+            Feature matrix combining trend, endogenous, and exogenous lagged variables.
         """
         p = args["p"]
         q = args["q"]
@@ -187,6 +197,7 @@ class ARX_Symb(ARX):
         if tForms["tForm_y"] is not None:
             y       = tForms["tForm_y"].fit_transform(y.reshape(-1, 1)).flatten()
             y_fEndo = tForms["tForm_endo"].fit_transform(y_fEndo)
+
         y_fEndo = np.column_stack((y, y_fEndo))
         X = np.column_stack([build_lagged_matrix(y_fEndo[:, j], p) for j in range(y_fEndo.shape[1])])
 
@@ -210,34 +221,28 @@ class ARX_Symb(ARX):
         if spec > 1:
             xt = build_trend_matrix(len(y), spec)
             X = np.column_stack((xt, X))
+
         return X
 
-    def _forge(self, X_window: np.ndarray, yf: np.ndarray, h: int) -> np.ndarray:
+
+    def _forge(self, X_window: np.ndarray, y_fcast: np.ndarray, h: int) -> np.ndarray:
         """
-        Constructs feature vectors for horizon h using past actual and forecast values.
+        Constructs feature vectors for forecasting horizon `h` by combining actual and forecast values.
 
         Parameters
         ----------
         X_window : np.ndarray
-            Feature matrix window.
-        yf : np.ndarray
-            Previously forecast values.
+            Input window of features for time steps being forecasted.
+        y_fcast : np.ndarray, shape (n_forecast_steps, hh)
+            Matrix of forecasts for each step and horizon.
         h : int
-            Forecasting horizon.
+            Current forecasting step (horizon `h`).
 
         Returns
         -------
         np.ndarray
-            Feature matrix for current horizon.
-
-        Raises
-        ------
-        ValueError
-            If use_forge is False.
+            Feature matrix with actual lags and prior forecasts for horizon `h`.
         """
-        if not self._useforge:
-            raise ValueError("Cannot use forge when the input matrix X was provided by user.")
-
         n_fEndo = len(self._tForms["fEndo"])
         n_fExo = len(self._tForms["fExo"])
 
@@ -248,7 +253,7 @@ class ARX_Symb(ARX):
                          for k in range(1+n_fEndo)]
         
         idx_fcast = max(x_endo_act[0].shape[1] - (self.args['p'] - h +1), 0)
-        x_endo_fcast  = [yf[:, idx_fcast:h - 1]] + self._scaleCorrection(yf[:, idx_fcast:h-1])
+        x_endo_fcast  = [y_fcast[:, idx_fcast:h - 1]] + self._scaleCorrection(y_fcast[:, idx_fcast:h-1])
         x_endo = np.column_stack([np.column_stack((x_endo_act[i], x_endo_fcast[i])) for i in range(len(x_endo_act))])
         xy = np.column_stack((x_trend, x_endo))
 
@@ -257,11 +262,14 @@ class ARX_Symb(ARX):
             x_exo  = np.column_stack([self._hide(X_window[:, idx_exo + k*self.args['q']: idx_exo + (k+1)*self.args['q']], h)
                                       for k in range((1+n_fExo)*self._n_exo + n_cross)])
             xy = np.column_stack((xy, x_exo))
+
         return xy
+
 
     def _scaleCorrection(self, yfh: np.ndarray) -> List[np.ndarray]:
         """
-        Applies inverse scaling to forecast values followed by symbolic transformations defined in fEndo.
+        Applies inverse transformation to forecast values (if scaled), followed by 
+        symbolic transformations defined in `fEndo`.
 
         Parameters
         ----------
@@ -271,7 +279,8 @@ class ARX_Symb(ARX):
         Returns
         -------
         List[np.ndarray]
-            List of feature arrays resulting from applying each `fEndo` transformation to the forecast values.
+            List of feature arrays resulting from applying each `fEndo` transformation 
+            to the forecast values.
         """
         if self._tForms["tForm_y"] is None:
             fcast_ff = [f(yfh) for f in self._tForms["fEndo"]]
@@ -282,4 +291,5 @@ class ARX_Symb(ARX):
                           for j in range(yfh.shape[1])]
             fcast_ff = [np.column_stack([fcast_list[i][:, k:k+1] for i in range(len(fcast_list))]) 
                         for k in range(len(f_tForm))]
+            
         return fcast_ff
