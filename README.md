@@ -18,14 +18,15 @@ git clone https://github.com/Youseffekri/Forecaster.git
 
 
 2. Install dependencies:
-
 ```bash
 cd Forecaster
+```
+
+```bash
 pip install -r requirements.txt
 ```
 
 3. Run the example script:
-
 ```bash
 python .\forecasting\Example_Covid19.py
 ```
