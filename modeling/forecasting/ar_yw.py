@@ -17,7 +17,7 @@ import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.ar_model import AutoReg
 
-from forecasting.Forecaster import Forecaster
+from modeling.forecasting.forecaster import Forecaster
 
 
 class AR_YW(Forecaster):

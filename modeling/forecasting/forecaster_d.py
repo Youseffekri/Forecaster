@@ -15,7 +15,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from forecasting.Forecaster import Forecaster
+from Util.tools import fit_map
+from modeling.forecasting.forecaster import Forecaster
 
 
 class Forecaster_D(Forecaster):
@@ -110,7 +111,7 @@ class Forecaster_D(Forecaster):
         y_fcast_arr = [y_fcast[:ll - h, h] for h in range(hh)] if self._yForm is None else \
                       [self._yForm.inverse_transform(y_fcast[:ll - h, h].reshape(-1, 1)).flatten() for h in range(hh)]
 
-        return self._quality_of_fit(y_true_arr, y_fcast_arr)
+        return fit_map(y_true_arr, y_fcast_arr)
 
 
     def rollValidate(self, rc: int = 2, growing: bool = False):

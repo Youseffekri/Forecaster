@@ -8,12 +8,14 @@ import torch.optim as optim
 
 
 
+# ==================
+# UNDER DEVELOPMENT
+# ==================
 
-
-class MHAttnRegressor(nn.Module):
+class MHAttn_Regressor(nn.Module):
 
     def __init__(self, input_dim=60, d_model=72, num_heads=4, hidden_dim=64, dropout= 0.1):
-        super(MHAttnRegressor, self).__init__()
+        super(MHAttn_Regressor, self).__init__()
         
         # self.input_dim = input_dim
         # self.d_model = d_model        

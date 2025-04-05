@@ -19,7 +19,7 @@ from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from Util.build_matrix import *
-from forecasting.ARX import ARX
+from modeling.forecasting.arx import ARX
 
 
 class ARX_Symb(ARX):
