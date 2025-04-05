@@ -419,7 +419,7 @@ class Forecaster(ABC):
         return y_fcast
 
 
-    def inSample_Test(self, showParams: bool = False, showYf: bool = True) -> None:
+    def inSample_Test(self, showParams: bool = True, showYf: bool = True) -> None:
         """
         Runs an in-sample evaluation of the forecasting model and prints the forecast quality metrics.
 
@@ -443,7 +443,7 @@ class Forecaster(ABC):
             print(f"Yf = \n{self.Yf}")
 
 
-    def trainNtest_Test(self, showParams: bool = False, showYf: bool = True) -> None:
+    def trainNtest_Test(self, showParams: bool = True, showYf: bool = True) -> None:
         """
         Runs a rolling validation test and prints the forecast quality metrics.
 
