@@ -19,7 +19,7 @@ from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from Util.build_matrix import *
-from forecasting.Forecaster import Forecaster
+from modeling.forecasting.forecaster import Forecaster
 
 class ARX(Forecaster):
     """
@@ -256,27 +256,38 @@ class ARX(Forecaster):
         t_st, t_en = self._adjust_range(t_start, t_end)
         y_fcast = np.zeros((t_en - t_st, self.hh))
         X_window = self._X[t_st: t_en].copy()
-        
-        if self._method == "sm_ols":
-            y_fcast_1 = self._model_fit.predict(sm.add_constant(X_window))
-        else:
-            y_fcast_1 = self._model.predict(X_window)
-            
-        y_fcast[:, 0] = self._rectify(y_fcast_1)
+        y_fcast[:, 0] = self._predict(X_window)
 
-        if not self._useforge:
+        if self.hh > 1 and not self._useforge:
             raise ValueError("Cannot use forge when the input matrix X was not built by _build_matrix.")  
         
         for h in range(2, self.hh + 1):
-            X_h = self._forge(X_window, y_fcast, h)
-            if self._method == "sm_ols":
-                y_fcast_h = self._model_fit.predict(sm.add_constant(X_h))
-            else:
-                y_fcast_h = self._model.predict(X_h)
-            y_fcast[:, h - 1] = self._rectify(y_fcast_h)
+            y_fcast[:, h - 1] = self._predict(self._forge(X_window, y_fcast, h))
 
         self._Yf[t_st: t_en, 1:-1] = y_fcast if self._yForm is None else self._yForm.inverse_transform(y_fcast)    
         return y_fcast
+
+
+    def _predict(self, X_horizon: np.ndarray) -> np.ndarray:
+        """
+        Performs 1-step-ahead prediction using the trained model.
+
+        Parameters
+        ----------
+        X_horizon : np.ndarray
+            The input feature matrix for the current time step. Each row represents 
+            one time point with all lagged features used for forecasting the next value.
+
+        Returns
+        -------
+        np.ndarray
+            Predicted 1-step-ahead values for each row in the input matrix.
+        """
+        if self._method == "sm_ols":
+            y_fcast_h = self._model_fit.predict(sm.add_constant(X_horizon))
+        else:
+            y_fcast_h = self._model.predict(X_horizon)
+        return self._rectify(y_fcast_h)
 
 
     def _forge(self, X_window: np.ndarray, y_fcast: np.ndarray, h: int) -> np.ndarray:

@@ -176,3 +176,55 @@ def diagnose(y_true: np.ndarray, y_pred: np.ndarray, n_features: int = 1) -> dic
         "SMAPE" : smape(y_true, y_pred),
         "m"     : len(y_true)
     }
+
+
+
+def fit_map(y_true_arr: list[np.ndarray], y_fcast_arr: list[np.ndarray]) -> str:
+    """
+    Calculate multiple quality-of-fit metrics for each forecast horizon.
+
+    For each horizon, computes:
+    - Mean Squared Error (MSE)
+    - Mean Absolute Error (MAE)
+    - Coefficient of Determination (R² and Adjusted R²)
+    - Symmetric Mean Absolute Percentage Error (SMAPE)
+    - Number of samples (m)
+
+    Parameters
+    ----------
+    y_true_arr : list of np.ndarray
+        List of true values for each horizon (aligned to forecast values).
+    y_fcast_arr : list of np.ndarray
+        List of forecasted values for each horizon.
+
+    Returns
+    -------
+    str
+        A formatted string reporting the metrics across all horizons.
+    """
+    horizon_all = f"horizon\t->"
+    mse_all     = f"mse\t->"
+    mae_all     = f"mae\t->"
+    r2_all      = f"R^2\t->"
+    r2Bar_all   = f"R^2Bar\t->"
+    smape_all   = f"smape\t->"
+    m_all       = f"m\t->"
+
+    for h in range(len(y_true_arr)):
+        metrics = diagnose(y_true_arr[h], y_fcast_arr[h])
+        horizon_all += f"\t  {h + 1}\t"
+        mse_all     += f"\t{metrics['MSE']:.4f}\t"
+        mae_all     += f"\t{metrics['MAE']:.4f}\t"
+        r2_all      += f"\t{metrics['R2']:.4f}\t"
+        r2Bar_all   += f"\t{metrics['R2Bar']:.4f}\t"
+        smape_all   += f"\t{metrics['SMAPE']:.4f}\t"
+        m_all       += f"\t{metrics['m']}\t"
+
+    qof = (horizon_all + "\n" +
+            mse_all    + "\n" +
+            mae_all    + "\n" +
+            r2_all     + "\n" +
+            r2Bar_all  + "\n" +
+            smape_all  + "\n" +
+            m_all      + "\n")
+    return qof

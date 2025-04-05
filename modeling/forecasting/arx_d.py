@@ -19,8 +19,8 @@ from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from Util.build_matrix import *
-from forecasting.Forecaster_D import Forecaster_D
-from forecasting.ARX import ARX
+from modeling.forecasting.forecaster_d import Forecaster_D
+from modeling.forecasting.arx import ARX
 
 
 class ARX_D(Forecaster_D):
@@ -211,6 +211,7 @@ class ARX_D(Forecaster_D):
         else:
             self._model.fit(X_, Y_)
             self._set_params(np.column_stack([self._model.intercept_, self._model.coef_]).T)
+
 
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
         """

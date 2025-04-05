@@ -19,15 +19,15 @@ from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from Util.build_matrix import *
-from forecasting.ARX_D import ARX_D
-from forecasting.ARX_Symb import ARX_Symb
+from modeling.forecasting.arx_d import ARX_D
+from modeling.forecasting.arx_symb import ARX_Symb
 
 
 class ARX_Symb_D(ARX_D):
     """
     Symbolic Autoregressive model with Exogenous variables (ARX_Symb_D) for time series forecasting.
 
-    Extends the ARX_D model by incorporating nonlinear symbolic transformations of lagged endogenous 
+    Extends modeling.the ARX_D model by incorporating nonlinear symbolic transformations of lagged endogenous 
     and exogenous variables. Also supports optional scaling of input/output using sklearn transformers.
 
     Attributes
