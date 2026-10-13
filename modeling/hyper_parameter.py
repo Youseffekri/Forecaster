@@ -14,9 +14,13 @@ listing the registered parameters only (value, default).  It is a `dict` of the 
 registration (the Python-only "skip", or "lambda" of the regression) are values without a default
 and are not printed, as in ScalaTion, where they live in other objects.
 
+`freeze` makes one read-only (Python only): `AR.hp`, the defaults of every forecaster, is frozen, so
+no model or script can change the defaults of the models made after it -- the values of a model are
+set in its `Args` (modeling/forecasting/args.py); `copy` gives a writable copy.
+
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -40,6 +44,13 @@ def _num_str(v: Any, like: Any = None) -> str:
     return str(v)
 
 
+def _rebuild(values: Dict[str, Any], defaults: Dict[str, Any], frozen: Optional[str]) -> "HyperParameter":
+    """Unpickles a HyperParameter (its values, defaults and read-only state)."""
+    hp = HyperParameter(values, defaults)
+    hp._frozen = frozen
+    return hp
+
+
 class HyperParameter(dict):
     """
     A dict of hyper-parameter values that also keeps the default of each registered parameter.
@@ -56,6 +67,62 @@ class HyperParameter(dict):
                  defaults: Optional[Mapping[str, Any]] = None) -> None:
         super().__init__(values or {})
         self._defaults: Dict[str, Any] = dict(defaults or {})
+        self._frozen: Optional[str] = None                             # the message when read-only
+
+    # -- read-only (Python only) -------------------------------------------------------------
+
+    def freeze(self, message: str = "this HyperParameter is read-only") -> "HyperParameter":
+        """Makes this object read-only: every change raises TypeError(message); `copy` is writable."""
+        self._frozen = message
+        return self
+
+    @property
+    def frozen(self) -> bool:
+        """Whether this object is read-only."""
+        return self._frozen is not None
+
+    def _check(self) -> None:
+        msg = getattr(self, "_frozen", None)                         # (absent while unpickling)
+        if msg is not None:
+            raise TypeError(msg)
+
+    def __reduce__(self):
+        return _rebuild, (dict(self), dict(self._defaults), self._frozen)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._check()
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key: str) -> None:
+        self._check()
+        super().__delitem__(key)
+
+    def update(self, *args, **kwargs) -> None:
+        self._check()
+        super().update(*args, **kwargs)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key not in self:
+            self._check()
+        return super().setdefault(key, default)
+
+    def pop(self, key: str, *default) -> Any:
+        self._check()
+        return super().pop(key, *default)
+
+    def popitem(self):
+        self._check()
+        return super().popitem()
+
+    def clear(self) -> None:
+        self._check()
+        super().clear()
+
+    def __ior__(self, other):
+        self._check()
+        return super().__ior__(other)
+
+    # -- ScalaTion's API ---------------------------------------------------------------------
 
     def add(self, name: str, value: Any, default: Any = None) -> "HyperParameter":
         """Registers a hyper-parameter with its value and default (ScalaTion's `hp += (name, value, default)`)."""
@@ -72,7 +139,7 @@ class HyperParameter(dict):
         return self._defaults.keys()
 
     def copy(self) -> "HyperParameter":
-        """A copy with the same values and defaults."""
+        """A (writable) copy with the same values and defaults."""
         return HyperParameter(self, self._defaults)
 
     def updateReturn(self, *pairs, **nvs) -> "HyperParameter":

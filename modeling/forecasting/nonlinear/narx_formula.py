@@ -23,7 +23,7 @@ linear fit already covers) and `fitNL_D` (the `NARX_SR_D` model with the paramet
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 import re
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -758,8 +758,8 @@ class NARX_Formula(ARX_Formula):
 
     # -- fitting ----------------------------------------------------------------------------
 
-    def fitNL_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-                scaled: bool = False, optimizer=None, hparam: Optional[Dict] = None, **opt_kwargs) -> "NARX_SR_D":
+    def fitNL_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1,
+                **opt_kwargs) -> "NARX_SR_D":
         """
         Fits the `NARX_SR_D` model with one column per term: the free parameters are fitted on the
         training rows by the optimizer, then the coefficients in-sample (`NARX_SR_D.fromTerms`
@@ -771,21 +771,19 @@ class NARX_Formula(ARX_Formula):
             The named columns.
         hh : int, default=1
             The maximum forecasting horizon.
-        tFormT : TransformT, optional
-            The transform type of every base column (defaults to the formula's).
+        args : Args or dict, optional
+            The settings of the model: tFormT (the transform type of every base column; None => the
+            formula's), scaled (the regression and the fit of the parameters standardize the term
+            columns), optimizer (None => `narx_sr_d.OPTIMIZER_NL`), lam (the ridge penalty, default
+            0.1), tune, nneg, skip, te_ratio (see `NARX_SR_D.fromTerms`).
         trSize : int, default=-1
             The training rows the transforms and the free parameters are fit on (-1 => `trSize`).
-        scaled : bool, default=False
-            Whether the regression (and the fit of the parameters) standardizes the term columns.
-        optimizer : OptimizerNL or str, optional
-            The optimizer of the nonlinear parameters (None => `narx_sr_d.OPTIMIZER_NL`).
-        hparam : dict, optional
-            The hyper-parameters of the model ("lambda", the ridge penalty, default 0.1; "nneg"; ...).
+        **opt_kwargs
+            Passed to the optimizer.
         """
         # the one deferred import of the package: `narx_sr_d` builds on this module (a genuine cycle)
         from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
-        mod = NARX_SR_D.fromTerms(self, dataset, hh, hparam, tFormT=tFormT if tFormT is not None else self.tFormT,
-                                  trSize=trSize, scaled=scaled, optimizer=optimizer, **opt_kwargs)
+        mod = NARX_SR_D.fromTerms(self, dataset, hh, args, trSize, **opt_kwargs)
         mod.trainNtest()
         return mod
 

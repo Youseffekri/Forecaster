@@ -3,15 +3,15 @@ varProTest, nARX_FormulaTest and nARX_SR_DTest8)."""
 import numpy as np
 import pytest
 
-from Util.tools import dotdict
 from Util.transform import TransformT
 from modeling.feature_selection import SelectionTech
 from modeling.fit import QoF
 from modeling.optimization.varpro import VarPro
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.nonlinear import narx_sr_d
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
+from modeling.forecasting.datasets import Example_Covid
 
 OPTIMIZERS = list(OptimizerNL)
 
@@ -56,18 +56,17 @@ def test_varpro_two_responses_and_ridge_agree_across_optimizers():
 
 
 def covid_context():
-    return Example_Covid.context(["icu_patients", "positive_rate"])
+    return Example_Covid.context(Example_Covid.BEST2_EXO, ["icu", "pRate"])
 
 
 def test_plain_lags_equal_arx_d():
     """y ~= y~(6,1) with no ridge is the base's ARX_D with p = 6 (the compatibility test)."""
     data = covid_context()
     hh = 6
-    hp = dotdict(p=6, px=0, spec=0, skip=6, crx=False)
-    ref = ARX_D(hp, data["y"], hh, None, method="sk_lr")
+    ref = ARX_D(data["y"], hh, None, Args(p=6, px=0, spec=0, skip=6, crx=False, method="sk_lr"))
     ref.train()
     yf_ref = ref.forecast()
-    mod = NARX_SR_D.fromTerms("y ~= y~(6,1)", data, hh, hparam={'lambda': 0.0})
+    mod = NARX_SR_D.fromTerms("y ~= y~(6,1)", data, hh, Args(lam=0.0))
     mod.train()
     yf = mod.forecast()
     assert np.allclose(yf, yf_ref, atol=1e-6)
@@ -86,7 +85,7 @@ def test_planted_log_shift_is_recovered(optimizer):
     for t in range(1, n):
         y[t] = 5 + 0.6 * y[t - 1] + 4 * np.log(z[t - 1] + 0.3) + 0.05 * rng.standard_normal()
     data = {"y": y, "z": z}
-    mod = NARX_SR_D.fromTerms("y ~= y~1 + log(? + z~1)", data, hh=2, hparam={'lambda': 1e-8}, optimizer=optimizer)
+    mod = NARX_SR_D.fromTerms("y ~= y~1 + log(? + z~1)", data, hh=2, args=Args(lam=1e-8, optimizer=optimizer))
     s = mod.formula.params()[0]
     assert s.role.value == "Shift" and s.value == pytest.approx(0.3, abs=0.05), mod.formulaStr
     assert mod.nFree == 1 and mod.dof == 3 and mod.optimizer is optimizer and mod.stepCounts["nfev"] > 0
@@ -103,8 +102,8 @@ def test_three_optimizers_agree_on_covid_when_scaled(capsys):
     try:
         w, objs = {}, {}
         for opt in OPTIMIZERS:
-            m = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pow(y~1, ?)", data, hh=6, hparam={'lambda': 1.0},
-                                    scaled=True, optimizer=opt.name.lower())
+            m = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pow(y~1, ?)", data, hh=6,
+                                    args=Args(lam=1.0, scaled=True, optimizer=opt.name.lower()))
             w[opt] = m.parameter_nl
             line = capsys.readouterr().out.strip().splitlines()[-1]
             assert line.startswith(f"fitNL: {opt}: a = VectorD(")
@@ -120,7 +119,7 @@ def test_module_default_optimizer():
     data = covid_context()
     narx_sr_d.OPTIMIZER_NL = OptimizerNL.LBFGS_B
     try:
-        m = NARX_SR_D.fromTerms("y ~= y~1 + log(? + icu~1)", data, hh=2, hparam={'lambda': 1.0})
+        m = NARX_SR_D.fromTerms("y ~= y~1 + log(? + icu~1)", data, hh=2, args=Args(lam=1.0))
         assert m.optimizer is OptimizerNL.LBFGS_B and "nit" in m.stepCounts
     finally:
         narx_sr_d.OPTIMIZER_NL = OptimizerNL.VarPro
@@ -129,13 +128,13 @@ def test_module_default_optimizer():
 def test_redundant_parameter_is_not_fitted(capsys):
     """exp(? + x): the shift is a factor the coefficient absorbs; it stays at its start value."""
     data = covid_context()
-    m = NARX_SR_D.fromTerms("y ~= y~1 + exp(? + pRate~1)", data, hh=3, hparam={'lambda': 1.0})
+    m = NARX_SR_D.fromTerms("y ~= y~1 + exp(? + pRate~1)", data, hh=3, args=Args(lam=1.0))
     assert m.nFree == 0 and "covered by the linear fit" in capsys.readouterr().out
 
 
 def test_tform_log1p_forecasts_in_original_scale():
     data = covid_context()
-    m = NARX_SR_D.fromTerms("y ~= y~(2,1) + log1p(icu~1) TFORM: Log1p", data, hh=3, hparam={'lambda': 1.0})
+    m = NARX_SR_D.fromTerms("y ~= y~(2,1) + log1p(icu~1) TFORM: Log1p", data, hh=3, args=Args(lam=1.0))
     m.train()
     yf = m.forecast()
     assert np.all(m.Yf[6:, 1] > 50), "Yf holds the forecasts back in the original (deaths) scale"
@@ -145,10 +144,11 @@ def test_tform_log1p_forecasts_in_original_scale():
 # -- the transform-type path (ScalaTion's `NARX_SR_D.apply` / `rescale`, nARX_SR_DTest5..8) ---------
 
 def covid_xe():
-    return Example_Covid.loadData(["icu_patients", "positive_rate"])
+    xe, y = Example_Covid.clip(Example_Covid.loadData(Example_Covid.BEST2_EXO))
+    return y, xe
 
 
-HP5 = {"p": 6, "px": 4, "spec": 1, "crx": 0, "lambda": 6.0}               # nARX_SR_DTest5..8
+HP5 = Args(p=6, px=4, spec=1, crx=False, lam=6.0)                        # nARX_SR_DTest5..8
 
 
 def test_transform_types_parameters_and_bounds():
@@ -170,7 +170,7 @@ def test_rescale_default_parameters_reproduce_nARX_SR_DTest5(capsys):
     (In-Sample rSq 0.951773, sMAPE 10.3656 ..; TnT sMAPE 17.8772 ..) and REPORT layout."""
     y, xe = covid_xe()
     R = TransformT.Root
-    mod = NARX_SR_D.rescale(HP5, y, 6, xe, [R], [[R], [R]], tune=False)
+    mod = NARX_SR_D.rescale(y, 6, xe, HP5.copy(tune=False), [R], [[R], [R]])
     assert isinstance(mod, ARX_D) and mod.modelName == "NARX_SR_D(6, 4, 2)" and mod.nFree == 0
     assert mod.parameter_nl.tolist() == [0.0, 0.5, 0.0, 0.5, 0.0, 0.5] and not mod._nneg   # MinMax: no rectification
     assert mod.fname[:8] == ["cons", "yl6", "yl5", "yl4", "yl3", "yl2", "yl1", "f0(yl6)"] and len(mod.fname) == 29
@@ -188,8 +188,8 @@ def test_rescale_varpro_reproduces_nARX_SR_DTest8():
     """Pow of y, Log of each exogenous variable, lambda = 6, fitted by VarPro: the Scala log's parameters
     (10, 1.99494, 0, 1, 0, 1) and TnT sMAPE (14.1927 ..); the fitted parameters take degrees of freedom."""
     y, xe = covid_xe()
-    mod = NARX_SR_D.rescale(HP5, y, 6, xe, [TransformT.Pow], [[TransformT.Log], [TransformT.Log]],
-                            optimizer=OptimizerNL.VarPro)
+    mod = NARX_SR_D.rescale(y, 6, xe, HP5.copy(optimizer=OptimizerNL.VarPro), [TransformT.Pow],
+                            [[TransformT.Log], [TransformT.Log]])
     assert np.allclose(mod.parameter_nl, [10.0, 1.99494, 0.0, 1.0, 0.0, 1.0], atol=1e-4)
     assert mod.nFree == 4 and mod.optimizer is OptimizerNL.VarPro and mod.stepCounts["nfev"] > 0
     ftMat = mod.tnT_Test(rc=2)
@@ -201,7 +201,7 @@ def test_apply_on_raw_data_and_feature_selection_submodel():
     """`apply` (no rescaling) with tune = False is the ARX_SR_D model with the default transforms; the feature
     selection sub-model is ARX_D's (ScalaTion's inherited `getModel`)."""
     y, xe = covid_xe()
-    mod = NARX_SR_D.apply({"p": 3, "px": 2, "spec": 1, "lambda": 1.0}, y, 3, xe, [TransformT.Root], tune=False)
+    mod = NARX_SR_D.apply(y, 3, xe, Args(p=3, px=2, spec=1, lam=1.0, tune=False), [TransformT.Root])
     assert mod.yForm is None and mod._nneg and mod.fname[-1] == "g1,0(xe1l1)"
     sub = mod.getModel([0, 1, 4])
     assert type(sub) is ARX_D and sub.modelName == "ARX_D_3_2_2" and sub.X.shape[1] == 3
@@ -212,7 +212,7 @@ def test_backward_selection_after_tnt_reproduces_nARX_SR_DTest5():
     trace -- the sub-models keep their own default skip (a new model's), not the parent's skip 0 after `tnT_Test`."""
     y, xe = covid_xe()
     R = TransformT.Root
-    mod = NARX_SR_D.rescale(HP5, y, 6, xe, [R], [[R], [R]])
+    mod = NARX_SR_D.rescale(y, 6, xe, HP5, [R], [[R], [R]])
     assert np.allclose(mod.parameter_nl[[1, 2, 3, 5]], [0.9, 0.7899, 0.9, 0.9], atol=2e-3)   # Scala: 0.789879
     mod.tnT_Test(rc=2)
     assert mod.getSkip() == 0

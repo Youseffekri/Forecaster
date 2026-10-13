@@ -27,7 +27,7 @@ variance sigma2, under the statsmodels names ("const", "ar.L1", "ma.L1", ...).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -35,11 +35,12 @@ Note: AI assisted code
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, List, Optional, Sequence, Union
 
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA as _SM_ARIMA
 
+from modeling.forecasting.args import ARIMA_METHODS
 from modeling.forecasting.forecaster import Forecaster, hp as AR_hp
 
 
@@ -51,8 +52,9 @@ class ARIMA(Forecaster):
     ----------
     hp : HyperParameter (class attribute)
         The default hyper-parameters, ScalaTion's `AR.hp` (p = 1, d = 1, q = 1, ...).
-    hparam : dict
-        "p", "d", "q", "trend" and "skip" (default max (p, q + 1) + d).
+    hparameter : HyperParameter
+        `AR.hp` with the model's p, d, q (from its args), plus "trend" and "skip" (args.skip, default
+        max (p, q + 1) + d).
     trend : str or sequence
         The statsmodels trend: "n" (none), "c" (constant), "t" (linear drift), "ct", or a
         polynomial indicator list; the default is "c" for d = 0 and "n" otherwise (statsmodels'
@@ -75,43 +77,39 @@ class ARIMA(Forecaster):
     """
 
     hp = AR_hp                                                         # ScalaTion's AR.hp
+    ARGS = ("p", "d", "q", "method") + Forecaster.ARGS
+    METHODS = ARIMA_METHODS                                            # METHOD None: statsmodels' default
 
-    def __init__(self, hparam: Optional[Dict[str, Any]], y: np.ndarray, hh: int,
-                 trend: Union[str, Sequence[int], None] = None, method: Optional[str] = None,
-                 **fit_kwargs: Any) -> None:
+    def __init__(self, y: np.ndarray, hh: int, args: Any = None,
+                 trend: Union[str, Sequence[int], None] = None, **fit_kwargs: Any) -> None:
         """
         Initializes the ARIMA forecaster.
 
         Parameters
         ----------
-        hparam : dict, optional
-            The hyper-parameters: "p" (AR order), "d" (differences), "q" (MA order), each
-            defaulting to `ARIMA.hp` (1, 1, 1); "skip" (default max (p, q + 1) + d); "nneg".
         y : np.ndarray, shape (m,)
             The time series.
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
+        args : Args or dict, optional
+            The settings: p (AR order), d (differences), q (MA order), each defaulting to `ARIMA.hp`
+            (1, 1, 1); skip (default max (p, q + 1) + d); nneg; te_ratio; method, the statsmodels
+            estimation method ("statespace", "innovations_mle", "hannan_rissanen", "burg",
+            "innovations", "yule_walker"; None => statsmodels' default, exact MLE via the Kalman filter).
         trend : str or sequence of int, optional
             The trend specification (statsmodels'); None => "c" when d = 0, "n" otherwise.
-        method : str, optional
-            The statsmodels estimation method ("statespace", "innovations_mle", "hannan_rissanen",
-            "burg", "yule_walker", ...); None => statsmodels' default (exact MLE via the Kalman filter).
         **fit_kwargs
             Further keyword arguments of `ARIMAResults.fit` (e.g., maxiter).
         """
-        a = dict(hparam or {})
-        p, d, q = int(a.get("p", self.hp["p"])), int(a.get("d", self.hp["d"])), int(a.get("q", self.hp["q"]))
-        if min(p, d, q) < 0:
-            raise ValueError(f"ARIMA: p = {p}, d = {d}, q = {q} must be non-negative")
-        trend = a.get("trend", trend)
+        args = self._argsOf(y, args)
+        p, d, q = args.p, args.d, args.q
         self._trend = ("c" if d == 0 else "n") if trend is None else trend
         has_const = self._trend[0] == 1 if not isinstance(self._trend, str) else "c" in self._trend
-        a.update(p=p, q=q)
-        a.setdefault("skip", max(p, q + 1) + d)
-        super().__init__(a, np.asarray(y, dtype=float), int(hh), hasIntercept=bool(has_const))
-        self.hparam.update(p=p, d=d, q=q, trend=self._trend)
+        if args.skip is None:
+            args.skip = max(p, q + 1) + d
+        super().__init__(y, int(hh), args, hasIntercept=bool(has_const))
+        self._hparam["trend"] = self._trend
         self._p, self._d, self._q = p, d, q
-        self._method = method
         self._fit_kwargs = dict(fit_kwargs)
         self._res = None
         self._modelName = f"ARIMA_{p}_{d}_{q}"
@@ -180,7 +178,7 @@ class ARIMA(Forecaster):
         self.resetDF_k(size, max(0, k))
 
     def __repr__(self) -> str:
-        return f"{self.modelName}(trend={self._trend!r}), hh = {self.hh}, skip = {self.hparam['skip']}"
+        return f"{self.modelName}(trend={self._trend!r}), hh = {self.hh}, skip = {self._hparam['skip']}"
 
     # -- training and forecasting --------------------------------------------------------------
 

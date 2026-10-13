@@ -25,7 +25,7 @@ The nonlinear terms with free parameters (shift, exponent, threshold, ...) exten
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -35,7 +35,7 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -650,8 +650,7 @@ class ARX_Formula:
 
     # -- fitting ----------------------------------------------------------------------------
 
-    def fit(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-            scaled: bool = False, method: str = "sm_ols", hparam: Optional[Dict] = None) -> "ARX":
+    def fit(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1) -> "ARX":
         """
         Fits the recursive `ARX` model with one column per term (ScalaTion's `ARX_Formula.fit`:
         `ARX.fromTerms` then `trainNtest` in-sample).
@@ -662,30 +661,23 @@ class ARX_Formula:
             The named columns.
         hh : int, default=1
             The maximum forecasting horizon.
-        tFormT : TransformT, optional
-            The transform type of every base column (defaults to the formula's).
+        args : Args or dict, optional
+            The settings of the model: tFormT (the transform type of every base column; None => the
+            formula's), method ("ridge" is ScalaTion's `CenteredRidge`), lam (default 0.1), scaled
+            (the regression standardizes the term columns), nneg, skip, te_ratio.
         trSize : int, default=-1
             The training rows the transforms are fit on (-1 => `trSize`).
-        scaled : bool, default=False
-            Whether the regression standardizes the term columns (method "ridge").
-        method : str, default="sm_ols"
-            The regression method of `ARX` ("ridge" is ScalaTion's `CenteredRidge`).
-        hparam : dict, optional
-            The hyper-parameters of the model ("lambda" for "ridge", default 0.1; "nneg"; ...).
         """
-        mod = ARX.fromTerms(self, dataset, hh, tFormT=tFormT if tFormT is not None else self.tFormT,
-                            trSize=trSize, scaled=scaled, method=method, hparam=hparam)
+        mod = ARX.fromTerms(self, dataset, hh, args, trSize)
         mod.trainNtest()
         return mod
 
-    def fit_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-              scaled: bool = False, method: str = "sm_ols", hparam: Optional[Dict] = None) -> "ARX_D":
+    def fit_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1) -> "ARX_D":
         """
         Fits the direct `ARX_D` model with one column per term (ScalaTion's `ARX_Formula.fit_D`:
         `ARX_D.fromTerms` then `trainNtest` in-sample).  Parameters as in `fit`.
         """
-        mod = ARX_D.fromTerms(self, dataset, hh, tFormT=tFormT if tFormT is not None else self.tFormT,
-                              trSize=trSize, scaled=scaled, method=method, hparam=hparam)
+        mod = ARX_D.fromTerms(self, dataset, hh, args, trSize)
         mod.trainNtest()
         return mod
 

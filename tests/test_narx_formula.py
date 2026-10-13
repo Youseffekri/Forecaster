@@ -9,15 +9,16 @@ import math
 import numpy as np
 import pytest
 
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_formula import FormulaVar as V, LabelMode, fmt, log, exp
+from modeling.forecasting.datasets import Example_Covid
 from modeling.forecasting.forecaster import Forecaster, teRng
 from modeling.forecasting.nonlinear.narx_formula import (NARX_Formula, Par, ParRole, ParWaveTerm, cap, decay, dq, ema,
                                                         freq, half, hinge, par, pow, power, rate, sat, shift, thresh,
                                                         trans, wave, width)
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 
 LAM = 1e-12                                                              # ~OLS, so the parameters can be recovered exactly
 
@@ -62,7 +63,7 @@ def test_toy_shift_exponent_shift_fit_d_keeps_the_start_values_and_fitnl_d_recov
     assert f.formulaStr == f"y ~= pow(?{fmt(s1.w0)} + x~1, ?1.5) + log(?{fmt(s2.w0)} + z~1)", "start values shown as ?w"
     assert mod0.fname == f.labels and mod0.params.shape == (3, 1)
 
-    mod = f.fitNL_D(data, 1, hparam={'lambda': LAM})                                    # NARX_SR_D with the parameters fitted
+    mod = f.fitNL_D(data, 1, Args(lam=LAM))                                          # NARX_SR_D with the parameters fitted
     assert isinstance(mod, NARX_SR_D) and mod.modelName == "NARX_SR_D(0, 1, 2)"
     assert np.allclose(mod.w_nl, [2.0, 1.7, 1.5], atol=1e-3), f"fitNL_D must recover (2, 1.7, 1.5), got {mod.w_nl}"
     assert np.allclose(mod.intercept, [1.0], atol=1e-3) and np.allclose(mod.parameter, [0.5, 3.0], atol=1e-3)
@@ -158,7 +159,7 @@ def test_redundant_exp_shift_is_kept_and_the_rate_is_recovered(capsys):
     s = shift()
     f2 = NARX_Formula(y, [exp(s + rate() * xv.lagged(1)), pow(xv.lagged(1), 1.3)])
     assert f2.formulaStr == "y ~= exp(? + ? * x~1) + pow(x~1, 1.3)" and f2.nParams == 2
-    mod = f2.fitNL_D({"y": yv, "x": x}, 1, hparam={'lambda': LAM})
+    mod = f2.fitNL_D({"y": yv, "x": x}, 1, Args(lam=LAM))
     out = capsys.readouterr().out
     assert "fromTerms: parameter Shift is covered by the linear fit: kept at its start value" in out
     assert s.value == s.w0, "the redundant shift must keep its start value"
@@ -179,7 +180,7 @@ def test_free_wave_frequency_is_recovered():
     assert f3.key == "w ~= cos(f=?) + sin(f=?)", "the key lists the pair's two terms (the wave(...) form is formulaStr's)"
     assert NARX_FormulaParser.parseFormula(f3.formulaStr, ["w"], 6).key == f3.key
     assert all(isinstance(tm, ParWaveTerm) for tm in f3.preds) and f3.nParams == 1, "the sin/cos pair shares the frequency"
-    mod3 = f3.fitNL_D({"w": w}, 1, hparam={'lambda': LAM})
+    mod3 = f3.fitNL_D({"w": w}, 1, Args(lam=LAM))
     assert mod3.w_nl[0] == pytest.approx(0.13, abs=1e-4), f"fitNL_D must recover the frequency 0.13, got {mod3.w_nl}"
     assert np.allclose(mod3.intercept, [5.0], atol=1e-3) and np.allclose(mod3.parameter, [2.0, 1.0], atol=1e-3)
     assert f3.formulaStr == "w ~= wave(0.13)"
@@ -217,7 +218,7 @@ def test_parameter_terms_recover_their_planted_parameter(name, series, term, tru
     x, xl = _x4()
     f = NARX_Formula("y", [term(V("x"))])
     assert f.key == ("y ~= trans(x~1, ?, ?)" if name == "trans" else f"y ~= {name}(x~1, ?)")
-    mod = f.fitNL_D({"y": series(xl), "x": x}, 1, hparam={'lambda': LAM})
+    mod = f.fitNL_D({"y": series(xl), "x": x}, 1, Args(lam=LAM))
     assert np.linalg.norm(mod.w_nl - np.array(truth)) < tol, f"{name}: fitNL_D must recover {truth}, got {mod.w_nl}"
     assert mod.nFree == len(truth)
     assert np.allclose(mod.intercept, [1.0 if name != "hinge" else 0.5], atol=1e-2)
@@ -227,7 +228,7 @@ def test_parameter_terms_recover_their_planted_parameter(name, series, term, tru
 # -- nARX_FormulaTest5: Covid-19 -------------------------------------------------------------------
 
 def test_covid_fit_d_and_fitnl_d_with_rolling_validation():
-    data = Example_Covid.context(["icu_patients", "positive_rate"])
+    data = Example_Covid.context(Example_Covid.BEST2_EXO, ["icu", "pRate"])
     y, icu, pRate = V("y"), V("icu"), V("pRate")
     hh = 6
     formula = NARX_Formula(y, y.lags(3, 1) + [sat(icu.lagged(1), half()), ema(pRate.lagged(1), decay())]
@@ -236,7 +237,7 @@ def test_covid_fit_d_and_fitnl_d_with_rolling_validation():
     assert formula.key == ("y ~= ema(pRate~1, ?) + sat(icu~1, ?) + trans(y~1, ?, ?) * y~1 + trans(y~1, ?, ?) * y~2 + "
                            "trans(y~1, ?, ?) * y~3 + y~1 + y~2 + y~3")
 
-    mod0 = formula.fit_D(data, hh, scaled=True)                          # ARX_D with the parameters at their start values
+    mod0 = formula.fit_D(data, hh, Args(scaled=True))                    # ARX_D with the parameters at their start values
     assert mod0.modelName == "ARX_D_3_1_2" and mod0.fname == formula.labels and mod0.X.shape == (116, 8)
     assert all(not q.fitted for q in formula.params())
     mod0.setSkip()
@@ -246,7 +247,7 @@ def test_covid_fit_d_and_fitnl_d_with_rolling_validation():
     ft0 = mod0.diagnoseAll(tRng=te)
     assert ft0.shape == (hh, 26) and np.all(np.isfinite(ft0[:, 9]))
 
-    mod = formula.fitNL_D(data, hh, scaled=True)                         # NARX_SR_D with the parameters fitted
+    mod = formula.fitNL_D(data, hh, Args(scaled=True))                   # NARX_SR_D with the parameters fitted
     assert mod.modelName == "NARX_SR_D(3, 1, 2)" and mod.fname == formula.labels and mod.nFree == 4
     assert all(q.fitted and q.lb <= q.value <= q.ub for q in formula.params()), "fitted inside their bounds"
     assert "?" not in formula.formulaStr and formula.nParams == 4

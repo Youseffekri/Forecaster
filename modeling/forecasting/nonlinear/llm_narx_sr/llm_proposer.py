@@ -7,7 +7,7 @@ dataset sentence ("a weekly series y with 2 covariates"), the grammar with a not
 intercept is implicit and, when `nonlinear`, the free-parameter forms of `NARX_FormulaParser`
 (pow(x1~1, ?), log(? + x1~1), sat(x1~1, ?), ...: a ? is a parameter the engine fits on the training
 rows; a fitted equation is shown back with its values as start values, ?w), optionally the EDA
-profile of the training rows in words (`EDA4TS.promptBlock`; over the whole pool of candidate
+profile of the training rows in words (`LLMProposer.promptBlock` of an `EDA4TS`; over the whole pool of candidate
 variables when the system picks the exogenous variables), the scored population (each equation
 with its validation and in-sample sMAPE; when a trimmer ran, the proposal, the kept equation and
 the dropped terms), last round's rejects with their reasons and, when a cross-entropy stage ran,
@@ -32,15 +32,16 @@ Note: AI assisted code
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from modeling.llm_client import LLMClient
+from modeling.forecasting.datasets import DatasetConfig
+from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import DEFAULT_HP
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Source, Trace
 from modeling.forecasting.nonlinear.llm_narx_sr.search_loop import Proposal, Proposer, Reject
@@ -53,6 +54,11 @@ def rename(s: str, mapping: Dict[str, str]) -> str:
     if not mapping:
         return s
     return _IDENT.sub(lambda m: mapping.get(m.group(0), m.group(0)), s)
+
+
+def _g3(v: float) -> str:
+    """Three significant digits as Java's "%.3g" (trailing zeros kept)."""
+    return "%#.3g" % v
 
 
 def maxFreeShown(maxFree: Optional[int] = None) -> str:
@@ -192,7 +198,7 @@ class LLMProposer(Proposer):
             return head + self.toShownText(c.proposalStr)
 
         shownTop = "# (none yet)" if not top else "\n".join(line(t) for t in top)
-        profile = "" if self.eda is None else self.toShownText(self.eda.promptBlock()) + "\n"
+        profile = "" if self.eda is None else self.toShownText(LLMProposer.promptBlock(self.eda)) + "\n"
         coreTxt = "" if not self.core else \
             f"Terms found stable by the selection stage (build on them): {', '.join(self.toShownText(c) for c in self.core)}\n"
         bad = "" if not (self.rejects or self.failedProps) else \
@@ -230,6 +236,45 @@ class LLMProposer(Proposer):
                 out.append(Reject(f"{s} -- {why}"))
         self.rejects = rej                                                # remembered for the next prompt
         return out
+
+    @staticmethod
+    def promptBlock(eda: EDA4TS, names: Optional[Dict[str, str]] = None) -> str:
+        """
+        Renders an EDA profile in words for a prompt (ScalaTion's `LLMProposer.promptBlock`, moved from
+        `EDA4TS`).  Variables are shown under the given display names (the real names when absent;
+        the proposer passes its blind map through `toShownText`), nothing identifies the series, and
+        only training-row statistics appear.
+
+        Parameters
+        ----------
+        eda : EDA4TS
+            The profile of the training rows.
+        names : dict of str -> str, optional
+            The display name per variable.
+        """
+        names = {} if names is None else names
+
+        def nm(v: str) -> str:
+            return names.get(v, v)
+
+        yn = nm(eda.respName)
+        pac = ", ".join(f"{k} ({r:.2f})" for k, r in eda.pacfSpikes()[:3])
+        sb = ["Data profile (training rows only):\n",
+              f"- {yn}: level {_g3(eda.yMean)}, spread {_g3(eda.yStd)}, range {_g3(eda.yMin)} to {_g3(eda.yMax)}" +
+              (f", {eda.zeroShare * 100:.0f}% zeros (log is unsafe, prefer log1p)" if eda.zeroShare > 0.0 else "") + "\n",
+              f"- {yn} autocorrelation at lags 1..{eda.maxLag}: " +
+              ", ".join(f"{eda.acf[k]:.2f}" for k in range(1, eda.maxLag + 1)) + "\n",
+              f"- {yn} partial autocorrelation spikes (lag (value)): " + (pac if pac else "none") + "\n"]
+        if len(eda.freqs) > 0:
+            sb.append("- seasonality: strongest periods " +
+                      ", ".join(f"{eda.periods[i]:.1f} steps (wave({i + 1}))" for i in range(len(eda.freqs))) + "\n")
+        for v, k, r in eda.bestLags():
+            sb.append(f"- {nm(v)}: strongest correlation with {yn} at lag {k} (r = {r:.2f}" +
+                      (", weak)" if abs(r) <= eda.band else (", positive)" if r > 0.0 else ", negative)")) + "\n")
+        if not math.isnan(eda.kpssP):
+            sb.append(f"- KPSS level-stationarity p-value {eda.kpssP:.2f}" +
+                      (f" (non-stationary: lags of {yn} matter)" if eda.kpssP < 0.05 else " (stationary)") + "\n")
+        return "".join(sb)
 
     def shown(self, v: str) -> str:
         """The shown name of a variable (blind unless `named`)."""

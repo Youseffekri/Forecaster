@@ -7,9 +7,9 @@ each exogenous variable and of their transforms (y + s)^p, log (x + s), ..., who
 from `TransformT.wlu`) or from a `NARX_Formula` (`fromTerms`: lagged, transformed and interaction
 terms, seasonal waves, and terms with FREE parameters -- a shift inside a log, an exponent, a
 saturation constant, a threshold, a decay, ...).  The coefficients are fitted by the centered ridge
-regression of `Forecaster_D` per horizon (penalty hparam["lambda"]); the nonlinear parameters are
-fitted ONCE, on the rows whose targets lie in the training rows, by the optimizer `OPTIMIZER_NL`
-(an `OptimizerNL`):
+regression of `Forecaster_D` per horizon (penalty args.lam); the nonlinear parameters are fitted
+ONCE, on the rows whose targets lie in the training rows, by the optimizer args.optimizer (an
+`OptimizerNL`; None => the module's `OPTIMIZER_NL`):
 
     OptimizerNL.VarPro   Variable Projection: the coefficients are eliminated (ridge solution at
                          each a) and nonlinear least squares runs on the reduced residual (default)
@@ -21,8 +21,8 @@ fitted ONCE, on the rows whose targets lie in the training rows, by the optimize
 and then held fixed: a rolling validation refits only the coefficients, as `ARX_D` does.  Every
 fitted parameter counts as a degree of freedom (`nFree`), so the selection score pays for it.
 
-A formula without free parameters (or tune = False) gives the plain direct ARX on its columns, so
-one class serves the transform types and the whole formula language.  Feature selection uses
+A formula without free parameters (or args.tune = False) gives the plain direct ARX on its columns,
+so one class serves the transform types and the whole formula language.  Feature selection uses
 `ARX_D`'s sub-models (`getModel`, `getModel_h`), as in ScalaTion.
 
 The Python counterpart of ScalaTion's `nonlinear/NARX_SR_D.scala` (`OptimizerNL`, `OPTIMIZER_NL`,
@@ -31,7 +31,7 @@ the class, and its companion's `apply`, `rescale`, `make`, `buildMatrix`, `optim
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -51,7 +51,7 @@ from modeling.centered_ridge import CenteredRidge
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_formula import ARX_Formula
 from modeling.forecasting.arx_sr import ARX_SR, srMatrix
-from modeling.forecasting.forecaster import hp as AR_hp, trSize as trSizeOf
+from modeling.forecasting.forecaster import Args, Forecaster, trSize as trSizeOf
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula, Par
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.optimization.varpro import VarPro
@@ -147,14 +147,16 @@ class NARX_SR_D(ARX_D):
     ARX_D : the direct forecasting logic (forecast, getModel, getModel_h); Forecaster_D the regression.
     """
 
+    METHOD = "ridge"
+    ARGS = ("p", "px", "spec", "crx", "lam", "scaled", "tFormT", "optimizer", "tune") + Forecaster.ARGS
+
     def __init__(self,
-                 hparam: Dict[str, Any],
                  y: np.ndarray,
                  hh: int,
                  X: np.ndarray,
+                 args: Any = None,
                  formula: Optional[ARX_Formula] = None,
                  fname: Optional[Sequence[str]] = None,
-                 scaled: bool = False,
                  n_free: int = -1,
                  yForm=None,
                  w_nl: Optional[Sequence[float]] = None,
@@ -162,24 +164,23 @@ class NARX_SR_D(ARX_D):
         """
         Initializes the model on a GIVEN design matrix (ScalaTion's constructor; use `apply`,
         `rescale` or `fromTerms` to build one).  The coefficients are fitted by the centered ridge
-        regression (penalty hparam["lambda"], default 0.1).
+        regression (penalty args.lam, default 0.1; args.method is not read: always "ridge").
 
         Parameters
         ----------
-        hparam : dict
-            The hyper-parameters ("p", "px", "spec", "nneg", "lambda", "skip", ...; see `Forecaster`).
         y : np.ndarray, shape (m,)
             The endogenous series (already transformed when `yForm` is given).
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
         X : np.ndarray, shape (m, n)
             The design matrix (no constant column: the intercept is implicit).
+        args : Args or dict, optional
+            The settings: p, px, spec, crx, nneg, skip, lam, scaled (the regression standardizes the
+            columns: training mean and standard deviation), te_ratio (`Args.help (NARX_SR_D)`).
         formula : NARX_Formula, optional
             The formula the columns come from.
         fname : sequence of str, optional
             The column labels (defaults to the formula's labels or x0, x1, ...).
-        scaled : bool, default=False
-            Whether the regression standardizes the columns (training mean and standard deviation).
         n_free : int, default=-1
             The number of nonlinear parameters that were FITTED (they take degrees of freedom like
             the coefficients, see `mod_resetDF`); -1 => all of w_nl; read back as `nFree`.
@@ -190,7 +191,9 @@ class NARX_SR_D(ARX_D):
         n_exo : int, optional
             The number of exogenous variables (defaults to the formula's).
         """
-        super().__init__(hparam, y, hh, None, "ridge", np.asarray(X, dtype=float), scaled)
+        args = self._argsOf(y, args)
+        args.method = "ridge"                                            # the regression of NARX_SR_D (and its sub-models)
+        super().__init__(y, hh, None, args, X=np.asarray(X, dtype=float))
         self.formula = NARX_Formula.of(formula) if formula is not None else None
         self._fname = list(fname) if fname is not None else \
             (self.formula.labels if self.formula is not None else [f"x{j}" for j in range(self._X.shape[1])])
@@ -200,7 +203,7 @@ class NARX_SR_D(ARX_D):
         self.stepCounts: Dict[str, int] = {}
         self._setYForm(yForm)
         hp = self.formula.lagHP() if self.formula is not None else \
-            {"p": self.hparam["p"], "px": self.hparam["px"], "n_exo": 0 if n_exo is None else n_exo}
+            {"p": self._hparam["p"], "px": self._hparam["px"], "n_exo": 0 if n_exo is None else n_exo}
         self._n_exo = hp["n_exo"] if n_exo is None else n_exo
         self._modelName = f"NARX_SR_D({hp['p']}, {hp['px']}, {self._n_exo})"
 
@@ -208,126 +211,110 @@ class NARX_SR_D(ARX_D):
 
     @classmethod
     def apply(cls,
-              hparam: Dict[str, Any],
               y: np.ndarray,
               hh: int,
               xe: Optional[np.ndarray] = None,
+              args: Any = None,
               fEndo: TSet = (TransformT.Root,),
               fExo: Optional[Sequence[TSet]] = None,
-              tune: bool = True,
               trSize: int = -1,
-              scaled: bool = False,
               fname: Optional[Sequence[str]] = None,
-              optimizer: Union[OptimizerNL, str, None] = None,
               **opt_kwargs) -> "NARX_SR_D":
         """
         Creates the model on the data as given (ScalaTion's `NARX_SR_D.apply`; NOT rescaled, see
         `rescale`): the lags of y and of its transforms of the types fEndo, and of each exogenous
-        variable and its transforms of the types fExo.  With tune = True the nonlinear parameters of
-        the transforms are fitted by the optimizer (`optimize`) on the training rows; otherwise they
-        keep their default values (`TransformT.wlu`), which gives the `ARX_SR_D` model with those
+        variable and its transforms of the types fExo.  With args.tune = True the nonlinear parameters
+        of the transforms are fitted by the optimizer (`optimize`) on the training rows; otherwise
+        they keep their default values (`TransformT.wlu`), which gives the `ARX_SR_D` model with those
         transforms.  A transform that is not finite on some row (e.g., a root of a negative value) is
         reported.
 
         Parameters
         ----------
-        hparam : dict
-            The hyper-parameters ("p", "px", "spec", "crx", "lambda", ...).
         y : np.ndarray, shape (m,)
             The endogenous series.
         hh : int
             The maximum forecasting horizon.
         xe : np.ndarray, shape (m, n_exo), optional
             The exogenous variables.
+        args : Args or dict, optional
+            The settings: p, px, spec, crx, lam, nneg, skip, te_ratio, tune (fit the nonlinear
+            parameters; False => keep their defaults), scaled (the regression and the fit of the
+            nonlinear parameters standardize the columns), optimizer (None => `OPTIMIZER_NL`).
         fEndo : sequence of TransformT, default=(TransformT.Root,)
             The transform types for the endogenous variable.
         fExo : sequence of sequences of TransformT, optional
             The transform types for each exogenous variable (None => `Pow` for each of them).
-        tune : bool, default=True
-            Whether to fit the nonlinear parameters (False => keep their defaults).
         trSize : int, default=-1
-            The rows used for fitting the nonlinear parameters (-1 => `trSize`).
-        scaled : bool, default=False
-            Whether the regression (and the fit of the nonlinear parameters) standardizes the columns.
+            The rows used for fitting the nonlinear parameters (-1 => `trSize` of args.te_ratio).
         fname : sequence of str, optional
             The feature names (defaults to `formNames`).
-        optimizer : OptimizerNL or str, optional
-            The optimizer (None => `OPTIMIZER_NL`).
         **opt_kwargs
             Passed to the optimizer.
         """
+        args = cls._argsOf(y, args)
         y = np.asarray(y, dtype=float)
         n_exo = xe.shape[1] if xe is not None else 0
-        hp_ = cls._hp(hparam)
-        xe_bfill = backfill_matrix(np.asarray(xe, dtype=float)) if n_exo > 0 and hp_["px"] > 0 else None
-        return cls._make(xe_bfill, n_exo, y, hh, fname, hparam, list(fEndo), cls.exoSets(fExo, n_exo), None,
-                         tune, trSize, scaled, optimizer, None, **opt_kwargs)
+        xe_bfill = backfill_matrix(np.asarray(xe, dtype=float)) if n_exo > 0 and args.px > 0 else None
+        tr_size = trSize if trSize > 0 else trSizeOf(len(y), args.te_ratio)
+        return cls._make(xe_bfill, n_exo, y, hh, fname, args, list(fEndo), cls.exoSets(fExo, n_exo), None,
+                         tr_size, None, **opt_kwargs)
 
     @classmethod
     def rescale(cls,
-                hparam: Dict[str, Any],
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
+                args: Any = None,
                 fEndo: TSet = (TransformT.Root,),
                 fExo: Optional[Sequence[TSet]] = None,
-                tFormT: Union[TransformT, str] = TransformT.MinMax,
                 lu: Sequence[float] = (1.0, 5.0),
-                tune: bool = True,
                 trSize: int = -1,
-                scaled: bool = False,
                 fname: Optional[Sequence[str]] = None,
-                optimizer: Union[OptimizerNL, str, None] = None,
                 **opt_kwargs) -> "NARX_SR_D":
         """
-        Creates the model on rescaled data (ScalaTion's `NARX_SR_D.rescale`): rescales (with the
-        statistics of the training rows; MinMax to lu = [1, 5] by default, which keeps the rescaled
-        training values positive, as the power, root and log transforms require), then transforms,
-        then lags; with tune = True the nonlinear parameters are fitted by the optimizer on the
-        training rows (see `apply` for the other parameters).
+        Creates the model on rescaled data (ScalaTion's `NARX_SR_D.rescale`): rescales by args.tFormT
+        (None => MinMax) with the statistics of the training rows (MinMax to lu = [1, 5] by default,
+        which keeps the rescaled training values positive, as the power, root and log transforms
+        require), then transforms, then lags; with args.tune the nonlinear parameters are fitted by the
+        optimizer on the training rows (see `apply` for the other parameters).
 
         Parameters
         ----------
-        tFormT : TransformT, default=TransformT.MinMax
-            The transform type for rescaling y and xe.
         lu : sequence of float, default=(1, 5)
             The range [l, u] of the min-max rescaling.
         """
+        args = cls._argsOf(y, args)
         y = np.asarray(y, dtype=float)
         n_exo = xe.shape[1] if xe is not None else 0
-        hp_ = cls._hp(hparam)
-        tFormT = TransformT[tFormT] if isinstance(tFormT, str) else tFormT
-        tr_size = trSize if trSize > 0 else trSizeOf(len(y), cls.TE_RATIO)
+        tFormT = TransformT.MinMax if args.tFormT is None else args.tFormT
+        tr_size = trSize if trSize > 0 else trSizeOf(len(y), args.te_ratio)
         tForm_y = tFormT.form(y[:tr_size])                           # the training rows' statistics, for In-ST and TnT
         tForm_y.setLU(lu)
         y_scl = tForm_y.f(y)
         xe_bfill = None
-        if n_exo > 0 and hp_["px"] > 0:
+        if n_exo > 0 and args.px > 0:
             xe_bfill = backfill_matrix(np.asarray(xe, dtype=float))  # backfill each exogenous variable
             tForm_exo = tFormT.form(xe_bfill[:tr_size])
             tForm_exo.setLU(lu)
             xe_bfill = tForm_exo.f(xe_bfill)                         # rescale the backfilled exogenous variables
-        return cls._make(xe_bfill, n_exo, y_scl, hh, fname, hparam, list(fEndo), cls.exoSets(fExo, n_exo), tForm_y,
-                         tune, tr_size, scaled, optimizer, y, **opt_kwargs)
-
-    @staticmethod
-    def _hp(hparam: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """The hyper-parameters completed with the defaults of `AR.hp` (read here, not modified)."""
-        return {**dict(AR_hp), **dict(hparam or {})}
+        return cls._make(xe_bfill, n_exo, y_scl, hh, fname, args, list(fEndo), cls.exoSets(fExo, n_exo), tForm_y,
+                         tr_size, y, **opt_kwargs)
 
     @classmethod
     def _make(cls, xe_bfill: Optional[np.ndarray], n_exo: int, y: np.ndarray, hh: int, fname: Optional[Sequence[str]],
-              hparam: Optional[Dict[str, Any]], fEndo: List[TransformT], fExo: List[List[TransformT]], tForm_y,
-              tune: bool, trSize: int, scaled: bool, optimizer, y_org: Optional[np.ndarray], **opt_kwargs) -> "NARX_SR_D":
+              args: Args, fEndo: List[TransformT], fExo: List[List[TransformT]], tForm_y,
+              trSize: int, y_org: Optional[np.ndarray], **opt_kwargs) -> "NARX_SR_D":
         """
         The common part of `apply` and `rescale` (ScalaTion's `NARX_SR_D.make`): the nonlinear
-        parameters (fitted on the training rows, or the defaults), the design matrix with the
-        transforms at those parameters, and the model.
+        parameters (fitted on the training rows when args.tune, or the defaults), the design matrix
+        with the transforms at those parameters, and the model.
         """
-        hp_ = cls._hp(hparam)
+        hp_ = args.hparam()
+        tune = args.tune
         stepCounts: Dict[str, int] = {}
         if tune:
-            w_nl, stepCounts = cls.optimize(xe_bfill, y, hh, hp_, fEndo, fExo, trSize, scaled, optimizer, **opt_kwargs)
+            w_nl, stepCounts = cls.optimize(xe_bfill, y, hh, hp_, fEndo, fExo, trSize, args.scaled, args.optimizer, **opt_kwargs)
         else:
             w_nl = cls.initializeW(fEndo, fExo)[0]
         if DEBUG:
@@ -339,11 +326,11 @@ class NARX_SR_D(ARX_D):
             if not np.isfinite(X[:, j]).all():
                 print(f"[ NARX_SR_D.make ]: column {fname[j]} is not finite: a transform is outside its domain on some row")
         n_free = len(cls.tunable(fEndo, fExo)) if tune else 0      # the fitted parameters
-        mod = cls(dict(hparam or {}), y, hh, X, None, fname, scaled, n_free, tForm_y, w_nl, n_exo)
+        mod = cls(y, hh, X, args, None, fname, n_free, tForm_y, w_nl, n_exo)
         if tForm_y is not None and y_org is not None:
             mod._setYForm(tForm_y, y_org)
         mod._tForms = {"tForm_y": tForm_y, "fEndo": fEn, "fExo": fEx}
-        mod.optimizer = OptimizerNL.of(optimizer) if tune and n_free > 0 else None
+        mod.optimizer = OptimizerNL.of(args.optimizer) if tune and n_free > 0 else None
         mod.stepCounts = stepCounts
         mod._useforge = True
         return mod
@@ -430,14 +417,10 @@ class NARX_SR_D(ARX_D):
                   formula: Union[str, ARX_Formula],
                   dataset: Dict[str, np.ndarray],
                   hh: int,
-                  hparam: Optional[Dict[str, Any]] = None,
-                  tFormT=None,
+                  args: Any = None,
                   trSize: int = -1,
-                  scaled: bool = False,
-                  optimizer: Union[OptimizerNL, str, None] = None,
                   maxLag: int = 8,
                   freqs: Optional[Sequence[float]] = None,
-                  fit_params: bool = True,
                   **opt_kwargs) -> "NARX_SR_D":
         """
         Builds the model from a formula (string or `ARX_Formula` / `NARX_Formula`) over a
@@ -454,24 +437,19 @@ class NARX_SR_D(ARX_D):
             The named columns (the response under its name, e.g., "y").
         hh : int
             The maximum forecasting horizon.
-        hparam : dict, optional
-            The hyper-parameters ("lambda" -- default 0.1 --, "nneg", "skip" -- default the formula's
-            largest lag --, ...); p, px and spec = 0 come from the formula (ScalaTion's `lagHP`).
-        tFormT : TransformT, optional
-            The transform type of every base column (defaults to the formula's; None => none).
+        args : Args or dict, optional
+            The settings: lam (default 0.1), nneg, skip (default the formula's largest lag),
+            te_ratio, tFormT (the transform type of every base column; None => the formula's), scaled
+            (standardize the columns in the regression, also inside the parameter fit), optimizer (of
+            the nonlinear parameters: `OptimizerNL.VarPro`, `LBFGS_B` or `Joint`, or its name; None =>
+            the module's `OPTIMIZER_NL`), tune (False => the free parameters stay at their start
+            values, no optimizer run); p, px and spec = 0 come from the formula (ScalaTion's `lagHP`).
         trSize : int, default=-1
-            The training rows (-1 => ScalaTion's `trSize`, 80 %).
-        scaled : bool, default=False
-            Whether to standardize the columns in the regression (also inside the parameter fit).
-        optimizer : OptimizerNL or str, optional
-            The optimizer of the nonlinear parameters (`OptimizerNL.VarPro`, `LBFGS_B` or `Joint`,
-            or its name); None => the module's `OPTIMIZER_NL`.
+            The training rows (-1 => ScalaTion's `trSize` of args.te_ratio, 80 %).
         maxLag : int, default=8
             The largest lag the parser accepts (for a string formula).
         freqs : sequence of float, optional
             The frequencies `wave(k)` draws on (for a string formula).
-        fit_params : bool, default=True
-            False => the free parameters stay at their start values (no optimizer run).
         **opt_kwargs
             Passed to the optimizer (`fitNL`: e.g., max_nfev, ftol).
 
@@ -485,13 +463,15 @@ class NARX_SR_D(ARX_D):
         ValueError
             For a formula that does not parse or does not fit the dataset.
         """
-        opt = OptimizerNL.of(optimizer)
+        args = Args.of(args)
+        opt = OptimizerNL.of(args.optimizer)
+        fit_params = args.tune
         f = NARX_FormulaParser.parseFormula(formula, list(dataset.keys()), maxLag, freqs) if isinstance(formula, str) \
             else NARX_Formula.of(formula)
-        if tFormT is not None:
-            f = NARX_Formula(f.resp, f.preds, tFormT)
+        if args.tFormT is not None:
+            f = NARX_Formula(f.resp, f.preds, args.tFormT)
         m = len(next(iter(dataset.values())))
-        tr = trSize if trSize > 0 else trSizeOf(m, cls.TE_RATIO)
+        tr = trSize if trSize > 0 else trSizeOf(m, args.te_ratio)
         if tr < hh:
             raise ValueError(f"fromTerms: trSize {tr} < hh = {hh}: no row has all its targets in the training rows")
         td = f.prepare(dataset, tr)                                  # checks, transforms, resolves
@@ -518,7 +498,7 @@ class NARX_SR_D(ARX_D):
             a0 = np.array([p.w0 for p in free])
             lb = np.array([p.lb for p in free])
             ub = np.array([p.ub for p in free])
-            a, stepCounts = cls.fitNL(basis, YY, a0, lb, ub, cls.ridge(hparam), scaled, opt, **opt_kwargs)
+            a, stepCounts = cls.fitNL(basis, YY, a0, lb, ub, args.lam, args.scaled, opt, **opt_kwargs)
             for i, p in enumerate(free):
                 p.update(a[i])
         for p in pars:
@@ -526,10 +506,10 @@ class NARX_SR_D(ARX_D):
 
         X = f.matrix(td.data)                                        # one column per term, at the fitted values
         hp = f.lagHP()
-        hp_ = {**dict(hparam or {}), "p": hp["p"], "px": hp["px"], "spec": 0}
-        hp_.setdefault("skip", f.maxLag)
-        mod = cls(hp_, td.y, hh, X, formula=f, scaled=scaled, n_free=len(free) if fit_params else 0,
-                  yForm=td.tForm_y)
+        args.update(p=hp["p"], px=hp["px"], spec=0)
+        if args.skip is None:
+            args.skip = f.maxLag
+        mod = cls(td.y, hh, X, args, formula=f, n_free=len(free) if fit_params else 0, yForm=td.tForm_y)
         mod.optimizer = opt if free and fit_params else None
         mod.stepCounts = stepCounts
         mod._tr_size = td.trSize
@@ -755,8 +735,8 @@ class NARX_SR_D(ARX_D):
 
     @property
     def lam(self) -> float:
-        """The ridge penalty of the regression (hparam["lambda"], default 0.1)."""
-        return self.ridge(self.hparam)
+        """The ridge penalty of the regression (args.lam, hparameter "lambda", default 0.1)."""
+        return self.ridge(self._hparam)
 
     @property
     def n_coef(self) -> int:
@@ -785,5 +765,5 @@ class NARX_SR_D(ARX_D):
         return self.formula.formulaStr if self.formula is not None else " + ".join(self.fname)
 
     def __repr__(self) -> str:
-        s = f"{self.modelName}(nTerms={self._X.shape[1]}, nFree={self.nFree}, lam={self.lam}), hh = {self.hh}, skip = {self.hparam['skip']}"
+        s = f"{self.modelName}(nTerms={self._X.shape[1]}, nFree={self.nFree}, lam={self.lam}), hh = {self.hh}, skip = {self._hparam['skip']}"
         return s + (f", optimizer={self.optimizer}" if self.optimizer is not None else "")

@@ -22,7 +22,7 @@ The rolling validation retrains every RC = 24 rows (a day) to keep the run short
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -37,61 +37,63 @@ import numpy as np
 from Util.tools import banner
 from Util.transform import PowRForm, TransformT
 from modeling.forecasting.ar import AR
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_ETTh1
+from modeling.forecasting.datasets import Example_ETTh1
 from modeling.forecasting.random_walk import RandomWalk
 
 np.set_printoptions(linewidth=200, precision=4, suppress=True)
 
 HH = 6                                                                  # maximum forecasting horizon (hours)
 RC = 24                                                                 # retraining cycle: a day
-RNG = Example_ETTh1.ONE_YEAR                                            # the first year, range (0, 8760)
+RNG = range(0, 8760)                                                    # the first year (2016-07-01 .. 2017-06-30)
 LOADS = Example_ETTh1.LOADS
-NNEG = {"nneg": 0}                                                  # OT goes negative: no clipping at zero
+BASE = Args(nneg=False)                                                 # the preset: OT goes negative, no clipping at zero
 
 
 def load_etth1():
-    """(y, xe): the oil temperature and the six loads over the first year."""
-    return Example_ETTh1.loadData(LOADS, rng=RNG)
+    """(xe, y): the six loads and the oil temperature over the first year."""
+    return Example_ETTh1.loadData(LOADS, Example_ETTh1.response, RNG)
 
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation."""
     banner("In-ST Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(None, y, hh).inSample_Test()
+    RandomWalk(y, hh).inSample_Test()
     banner("TnT Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(None, y, hh).tnT_Test(RC)
+    RandomWalk(y, hh).tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, p=24, method="adjusted"):
     """AR(p) with a day of lags: In-Sample and TnT."""
-    mod = AR({"p": p, **NNEG}, y, hh, method)
+    args = BASE.copy(p=p, method=method)
+    mod = AR(y, hh, args)
     banner(f"In-ST Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.inSample_Test()
-    mod = AR({"p": p, **NNEG}, y, hh, method)
+    mod = AR(y, hh, args)
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+def aRX_D_test(y, xe, hh=HH, args=None):
     """ARX_D (direct) on the lags of OT and of the six loads: TnT."""
-    hparam = {"p": 6, "px": 6, "spec": 0, **NNEG} if hparam is None else hparam
-    mod = ARX_D(hparam, y, hh, xe, method=method)
+    args = BASE.copy(p=6, px=6, spec=0) if args is None else args
+    mod = ARX_D(y, hh, xe, args)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+def aRX_SR_D_test(y, xe, hh=HH, args=None):
     """ARX_SR_D (direct, SR terms): the sign-safe power sign(y) |y|^0.67 next to the lags of OT and of each load
     (`PowRForm`), rescaled by MinMax to ScalaTion's centered [-2, 2] first -- a power or log of a negative value
     is not defined there, and OT and the loads go below zero anyway: TnT."""
-    hparam = {"p": 6, "px": 3, "spec": 0, "crx": 0, **NNEG} if hparam is None else hparam
+    args = BASE.copy(p=6, px=3, spec=0, tFormT=TransformT.MinMax) if args is None else args
     fEndo = [PowRForm()]                                                 # sign (y) |y|^0.67 on the [-2, 2] scale
     fExo = [[PowRForm()] for _ in range(xe.shape[1])]                    # sign (xe_j) |xe_j|^0.67
-    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.MinMax)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
@@ -103,7 +105,7 @@ def nARX_Formula_test(hh=HH):
     rows; then TnT with rolling validation (the coefficients refitted, the decays held)."""
     data = Example_ETTh1.context(LOADS, rng=RNG)                         # {"y", "hufl", "hull", "mufl", "mull", "lufl", "lull"}
     formula = "y ~= y~(3,1) + ema(hufl~1, ?) + ema(mufl~1, ?) + lufl~1"
-    mod = NARX_SR_D.fromTerms(formula, data, hh, {"lambda": 1.0, **NNEG})
+    mod = NARX_SR_D.fromTerms(formula, data, hh, BASE.copy(lam=1.0))
     print(f"formula  = {mod.formulaStr}\nparam_nl = {mod.w_nl}, nFree = {mod.nFree}, stepCounts = {mod.stepCounts}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
@@ -119,7 +121,7 @@ SCENARIOS = {
 
 
 def main(argv):
-    y, xe = load_etth1()
+    xe, y = load_etth1()
     print(f"y.shape = {y.shape} (OT: min {y.min():.2f}, max {y.max():.2f}, {int((y < 0).sum())} hours below zero), "
           f"xe.shape = {xe.shape} ({', '.join(LOADS)}), hh = {HH}, rc = {RC}")
     which = [a.lower() for a in argv] or ["default"]

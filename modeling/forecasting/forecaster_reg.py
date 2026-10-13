@@ -22,14 +22,14 @@ tests a selected recursive model at h = 1 as well).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import statsmodels.api as sm
@@ -38,7 +38,7 @@ from Util.tools import array_str, banner, set_str, vector_str
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import BestStep, Cols, FeatureSelection, given_qk, updateQoF
 from modeling.fit import Fit, diagnose as diagnose_, showFitMap, vif
-from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster
 from modeling.subset_search import SubsetSearch
 
 
@@ -52,10 +52,11 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
     X : np.ndarray, shape (m, n)
         The data/input matrix (no intercept column: the regression adds / recovers its own).
     method : {"sm_ols", "sk_lr", "ridge"}
-        The regression: statsmodels OLS, scikit-learn LinearRegression, or the centered ridge of
-        ScalaTion's `CenteredRidge` (penalty hparam["lambda"], default `CenteredRidge.hp`, 0.1).
+        The regression (args.method, default "sm_ols"): statsmodels OLS, scikit-learn LinearRegression,
+        or the centered ridge of ScalaTion's `CenteredRidge` (penalty args.lam, default
+        `CenteredRidge.hp`, 0.1).
     scaled : bool
-        Whether the ridge regression standardizes the columns (ScalaTion's `scaled`).
+        Whether the ridge regression standardizes the columns (args.scaled, ScalaTion's `scaled`).
     useforge : bool
         Whether X has the lag structure `forge` needs for the horizons h > 1 (False for a given X).
     fs_rng : range
@@ -63,32 +64,32 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         `FeatureSelection.fullset_FS`), cut off at the first undefined (NaN) response.
     """
 
-    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, X: Optional[np.ndarray] = None,
-                 method: str = "sm_ols", scaled: bool = False, hasIntercept: bool = True) -> None:
+    METHOD = "sm_ols"
+    METHODS = REGRESSION_METHODS
+
+    def __init__(self, y: np.ndarray, hh: int, args: Any = None, X: Optional[np.ndarray] = None,
+                 hasIntercept: bool = True) -> None:
         """
         Initializes the regression-based forecaster.
 
         Parameters
         ----------
-        hparam : dict
-            The hyper-parameters (see `Forecaster`; "lambda" for method "ridge").
         y : np.ndarray, shape (m,)
             The response vector.
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
+        args : Args or dict, optional
+            The settings (see `Forecaster`): the hyper-parameters, method ("sm_ols", "sk_lr",
+            "ridge"), lam (the ridge penalty) and scaled (the ridge regression standardizes the
+            columns, so the penalty is unit-free).
         X : np.ndarray, shape (m, n), optional
             The input matrix (a subclass builds it when None).
-        method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
-            The regression method.
-        scaled : bool, default=False
-            Whether the ridge regression standardizes the columns, so the penalty is unit-free.
         hasIntercept : bool, default=True
             Whether the model has an intercept.
         """
-        super().__init__(hparam, y, hh, hasIntercept)
+        super().__init__(y, hh, args, hasIntercept)
         self._X = X
-        self._method = method
-        self._scaled = scaled
+        self._scaled = self._args.scaled
         self._model = self._make_model()
         self._useforge = False
         self._theBest = BestStep()                                        # the best model from Feature Selection (FS)

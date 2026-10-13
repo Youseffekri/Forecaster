@@ -31,7 +31,7 @@ from typing import Callable, Dict, List, Sequence
 import numpy as np
 
 from modeling.llm_client import LLMClient
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig
+from modeling.forecasting.datasets import DatasetConfig
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import genericSchema, rename
 

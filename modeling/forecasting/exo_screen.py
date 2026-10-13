@@ -19,14 +19,14 @@ of `Model.scala` (`model_screen` here).  Three steps, each usable alone:
                stays below thr2 (collinearity), the first k kept
 
 and `screen` does the three in one call, returning the (xe, y, names) the forecasters take
-(`ARX_D (hparam, y, hh, xe)`), with the k chosen columns in the file's order.  What the data cannot
+(`ARX_D (y, hh, xe, args)`), with the k chosen columns in the file's order.  What the data cannot
 decide is whether a column is a driver or another measurement of the response (excess mortality
 next to Covid-19 deaths) or comparable over the whole period (case counts under changing testing
 regimes); that is domain knowledge, given through `exclude`.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -39,53 +39,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from Util.correlogram import ccorr, corr
 from Util.tools import banner
 from modeling.forecasting.forecaster import trSize
 
 
 # ---------------------------------------------------------------------------------------------
-#  Statistics of ScalaTion's VectorD / MatrixD used by the screen
+#  Statistics of ScalaTion's MatrixD used by the screen (VectorD's corr / ccorr: Util/correlogram.py)
 # ---------------------------------------------------------------------------------------------
-
-def corr(x: np.ndarray, y: np.ndarray) -> float:
-    """
-    Pearson's correlation of x with y (ScalaTion's `VectorD.corr`): 1 when both are the same
-    constant vector, -0.0 when undefined.
-    """
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    n = len(x)
-    cov = (x @ y - x.sum() * y.sum() / n) / (n - 1)
-    den = np.sqrt(np.var(x, ddof=1) * np.var(y, ddof=1))
-    if not den > 0.0 or not np.isfinite(den):                            # a zero variance: undefined
-        return 1.0 if np.array_equal(x, y) else -0.0
-    return float(cov / den)
-
-
-def ccorr(x: np.ndarray, y: np.ndarray, k: int = 1) -> float:
-    """
-    The k-lag cross-correlation of x with y (ScalaTion's `VectorD.ccorr`, STATIONARY form):
-    x_i against y_i+k, the means and standard deviations over the whole vectors,
-
-        ccorr = sum_{i < n-k} (x_i - mu_x) (y_i+k - mu_y) / (n - 1) / (sd_x sd_y)
-
-    Parameters
-    ----------
-    x : np.ndarray, shape (n,)
-        The leading series.
-    y : np.ndarray, shape (n,)
-        The series it leads.
-    k : int, default=1
-        The lag (0 <= k < n).
-    """
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    n = len(x)
-    if k >= n:
-        raise ValueError(f"ccorr: the vector is not long enough to compute ccorr for lag k = {k}")
-    mu_x, mu_y = x.mean(), y.mean()
-    ccov = np.sum((x[:n - k] - mu_x) * (y[k:] - mu_y)) / (n - 1)
-    den = np.std(x, ddof=1) * np.std(y, ddof=1)
-    return float(ccov / den) if den > 0.0 else float("nan")
-
 
 def corr_matrix(xy: np.ndarray) -> np.ndarray:
     """The correlation matrix of the columns of xy (ScalaTion's `MatrixD.corr`)."""
@@ -436,7 +397,7 @@ class ExoScreen:
         The one-call screen for a forecaster: from a data matrix with a header (or a DataFrame),
         the response's name and k, returns the exogenous matrix of the k variables chosen on the
         training rows -- all rows, columns in the file's order -- the response vector and the
-        chosen names (in that order): the (xe, y) pair `ARX_D (hparam, y, hh, xe)` and the other
+        chosen names (in that order): the (xe, y) pair `ARX_D (y, hh, xe, args)` and the other
         forecasters take.
 
         Parameters

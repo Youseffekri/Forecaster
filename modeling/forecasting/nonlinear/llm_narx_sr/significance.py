@@ -16,7 +16,7 @@ correction=True)` for n >= 2 (scipy is not used, so a tiny n gives the same numb
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """

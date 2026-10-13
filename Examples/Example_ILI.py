@@ -19,7 +19,7 @@ Run from the repository root:  python Examples/Example_ILI.py [rw|ar|arima|arx_d
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -35,40 +35,41 @@ from Util.tools import banner
 from Util.transform import PowForm, TransformT
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arima import ARIMA
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_ILI
+from modeling.forecasting.datasets import Example_ILI
 from modeling.forecasting.random_walk import RandomWalk
 
 np.set_printoptions(linewidth=200, precision=4, suppress=True)
 
 HH = 12                                                                 # maximum forecasting horizon (weeks)
 RC = 5                                                                  # retraining cycle of the rolling validation
-EXO = Example_ILI.EXO                                                   # %WEIGHTED ILI, TOTAL PATIENTS
-RESPONSE = Example_ILI.RESPONSE                                         # ILITOTAL
+EXO = ["%WEIGHTED ILI", "TOTAL PATIENTS"]                               # ScalaTion's %WEIGHTED ILI, OT
+RESPONSE = Example_ILI.response                                         # ILITOTAL
 
 
 def load_ili():
-    """(y, xe): the weekly ILI total and the two exogenous variables (ScalaTion's `loadData`)."""
-    return Example_ILI.loadData(EXO)
+    """(xe, y): the two exogenous variables and the weekly ILI total (ScalaTion's `loadData`)."""
+    return Example_ILI.loadData(EXO, RESPONSE)
 
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing (example_ILITest3) and TnT with rolling validation (example_ILITest4)."""
     banner(f"In-ST Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(None, y, hh).inSample_Test()
+    RandomWalk(y, hh).inSample_Test()
     banner(f"TnT Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(None, y, hh).tnT_Test(RC)
+    RandomWalk(y, hh).tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
     """AR(p) for several p: In-Sample (example_ILITest5) and TnT (the AR(1) row of example_ILITest4)."""
     for p in ps:
-        mod = AR({"p": p}, y, hh, method)
+        mod = AR(y, hh, Args(p=p, method=method))
         banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
         mod.inSample_Test()
     for p in ps:
-        mod = AR({"p": p}, y, hh, method)
+        mod = AR(y, hh, Args(p=p, method=method))
         banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
         mod.tnT_Test(RC)
 
@@ -76,34 +77,37 @@ def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
 def aRIMA_test(y, hh=HH, orders=((1, 1, 0), (1, 1, 1), (2, 1, 1), (3, 1, 2))):
     """ARIMA(p, d, q) for a few orders: In-Sample (example_ILITest6's ARMA grid, statsmodels-backed)."""
     for p, d, q in orders:
-        mod = ARIMA({"p": p, "d": d, "q": q}, y, hh)
+        mod = ARIMA(y, hh, Args(p=p, d=d, q=q))
         banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
         mod.inSample_Test()
 
 
-def aRX_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+def aRX_D_test(y, xe, hh=HH, args=None):
     """ARX_D (direct) with p = q = 10 lags and a linear trend (spec 1): In-Sample and TnT."""
-    hparam = {"p": 10, "px": 10, "spec": 1} if hparam is None else hparam
-    mod = ARX_D(hparam, y, hh, xe, method=method)
+    args = Args(p=10, px=10, spec=1) if args is None else args
+    mod = ARX_D(y, hh, xe, args)
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_D(hparam, y, hh, xe, method=method)
+    mod = ARX_D(y, hh, xe, args)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_D_test(y, xe, hh=HH, hparam=None, method="ridge"):
+def aRX_SR_D_test(y, xe, hh=HH, args=None):
     """ARX_SR_D (direct, SR terms) as example_ILITest10's model: y^1.5 next to the lags of y, xe_j^1.5 next to
     each exogenous variable's lags, a linear trend and ENDO-EXO cross terms, rescaled by Log1p first (as
     ScalaTion's tests); the centered ridge (lambda 1) of ScalaTion's RidgeRegression: In-Sample and TnT."""
-    hparam = {"p": 10, "px": 10, "spec": 1, "crx": 1, "lambda": 1.0} if hparam is None else hparam
+    if args is None:
+        args = Args(p=10, px=10, spec=1, crx=True)
+        args.method, args.lam = "ridge", 1.0                             # RidgeRegression.hp("lambda") = 1.0
+        args.tFormT = TransformT.Log1p
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[PowForm()] for _ in range(xe.shape[1])]                     # (xe_j + 0)^1.5
-    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 
@@ -118,7 +122,7 @@ SCENARIOS = {
 
 
 def main(argv):
-    y, xe = load_ili()
+    xe, y = load_ili()
     print(f"y.shape = {y.shape} ({RESPONSE}), xe.shape = {xe.shape} ({', '.join(EXO)}), hh = {HH}")
     which = [a.lower() for a in argv] or ["default"]
     if "all" in which:
@@ -126,7 +130,7 @@ def main(argv):
     for w in which:
         if w == "default":
             randomWalk_test(y)
-            mod = ARX_D({"p": 10, "px": 10, "spec": 1}, y, HH, xe)
+            mod = ARX_D(y, HH, xe, Args(p=10, px=10, spec=1))
             banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
             mod.tnT_Test(RC)
         elif w in SCENARIOS:

@@ -6,24 +6,25 @@ forecasting): the same input matrix as `ARX` (trend columns, lags of y, lags of 
 variable) with one regression per horizon on the target matrix Y, so no forecasts are fed back
 into the lags.  The regression and its fit live in `Forecaster_D` (ScalaTion's `reg`); `ARX_D`
 adds the matrix, the forecasts (`forecast`, `predict_rows`) and the sub-models (`getModel`,
-`getModel_h`).  The Python counterpart of ScalaTion's `ARX_D.scala` (the constructor builds the
-matrix as `ARX_D.apply` does; `rescale`, `fromTerms`, `buildMatrix`, `formNames` as the companion's).
+`getModel_h`).  The Python counterpart of ScalaTion's `ARX_D.scala` (the constructor
+`ARX_D (y, hh, xe, args)` builds the matrix as `ARX_D.apply` does; `rescale`, `fromTerms`,
+`buildMatrix`, `formNames` as the companion's; the settings come from the `Args`).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix
-from Util.transform import TransformT
 from modeling.forecasting.arx import ARX, _rescaleData
+from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.forecaster_d import Forecaster_D
 
 
@@ -34,9 +35,9 @@ class ARX_D(Forecaster_D):
     Attributes
     ----------
     method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
-        The regression per horizon: statsmodels OLS, scikit-learn LinearRegression, or the
-        centered ridge of ScalaTion's `CenteredRidgeMV` (penalty hparam["lambda"], default 0.1;
-        `scaled`).
+        The regression per horizon (args.method): statsmodels OLS, scikit-learn LinearRegression, or
+        the centered ridge of ScalaTion's `CenteredRidgeMV` (penalty args.lam, default 0.1;
+        args.scaled).
     xe : np.ndarray, shape (m, n_exo), optional
         The exogenous variables aligned with `y`.
     n_exo : int
@@ -54,45 +55,44 @@ class ARX_D(Forecaster_D):
     ARX : the recursive counterpart and the shared `buildMatrix` / `formNames`.
     """
 
+    METHOD = "sm_ols"
+    ARGS = ("p", "px", "spec", "method", "lam", "scaled", "tFormT") + Forecaster.ARGS
+
     def __init__(self,
-                 hparam: Dict[str, Any],
                  y: np.ndarray,
                  hh: int,
                  xe: Optional[np.ndarray] = None,
-                 method: str = "sm_ols",
-                 X: Optional[np.ndarray] = None,
-                 scaled: bool = False) -> None:
+                 args: Any = None,
+                 X: Optional[np.ndarray] = None) -> None:
         """
-        Initializes the ARX_D forecaster (parameters as in `ARX`), building the input matrix from y
-        and xe (ScalaTion's `ARX_D.apply`) unless a ready matrix X is given.
+        Initializes the ARX_D forecaster (parameters as in `ARX`: the settings p, px, spec, method --
+        default "sm_ols" --, lam, scaled, nneg, skip, te_ratio in args), building the input matrix from
+        y and xe (ScalaTion's `ARX_D.apply`) unless a ready matrix X is given.
         """
-        super().__init__(hparam, y, hh, method, scaled)
+        super().__init__(y, hh, args)
         self._X = X
         self._xe = xe
         self._n_exo = xe.shape[1] if xe is not None else 0
         self._useforge = self._X is None
-        self._modelName = f"ARX_D_{self.hparam['p']}_{self.hparam['px']}_{self._n_exo}"
+        self._modelName = f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}"
 
         if not hasattr(self, "_tForms"):
             self._tForms = {"tForm_y": None}
 
         if self._X is None:
-            xe_bfill = backfill_matrix(xe) if xe is not None and xe.shape[1] > 0 and self.hparam["px"] > 0 else None
-            self._set_X(self.buildMatrix(xe_bfill, self._y, self.hparam))
+            xe_bfill = backfill_matrix(xe) if xe is not None and xe.shape[1] > 0 and self._hparam["px"] > 0 else None
+            self._set_X(self.buildMatrix(xe_bfill, self._y, self._hparam))
 
     @classmethod
     def rescale(cls,
-                hparam: Dict[str, Any],
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
-                method: str = "sm_ols",
-                tFormT: Union[TransformT, str] = TransformT.MinMax,
-                scaled: bool = False) -> "ARX_D":
+                args: Any = None) -> "ARX_D":
         """
         Creates the model on rescaled data (ScalaTion's `ARX_D.rescale`): y and the backfilled
-        exogenous variables are transformed by tFormT fitted on the TRAINING rows (MinMax to [-2, 2]
-        by default; Norm; Log1p ...); forecasts are inverted before being stored in `Yf`, and they are
+        exogenous variables are transformed by args.tFormT fitted on the TRAINING rows (None => MinMax
+        to [-2, 2]; Norm; Log1p ...); forecasts are inverted before being stored in `Yf`, and they are
         not rectified in a space where y can be negative (`centered`).
 
         Returns
@@ -100,23 +100,23 @@ class ARX_D(Forecaster_D):
         ARX_D
             The model on the rescaled series (Y built from the rescaled y).
         """
-        hp_, y_scl, xe_scl, tForm_y = _rescaleData(hparam, y, xe, tFormT)
-        mod = cls(hp_, y_scl, hh, xe_scl, method, np.zeros((len(y_scl), 1)), scaled=scaled)
-        mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod.hparam))         # xe_scl is already backfilled
+        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe)
+        mod = cls(y_scl, hh, xe_scl, args, X=np.zeros((len(y_scl), 1)))
+        mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod._hparam))        # xe_scl is already backfilled
         mod._useforge = True
         mod._tForms["tForm_y"] = tForm_y
         mod._setYForm(tForm_y, y)
         return mod
 
     @classmethod
-    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, tFormT=None, trSize: int = -1,
-                  scaled: bool = False, method: str = "sm_ols", hparam: Optional[Dict[str, Any]] = None) -> "ARX_D":
+    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, args: Any = None, trSize: int = -1) -> "ARX_D":
         """
         Creates the direct model from the terms of a formula (ScalaTion's `ARX_D.fromTerms`): one
         column per term, the response's transform kept for inverting forecasts, no intercept
-        column; every formula is supported since no forging is needed (see `ARX.fromTerms`).
+        column; every formula is supported since no forging is needed (see `ARX.fromTerms` for the
+        settings).
         """
-        mod = ARX.fromTerms.__func__(cls, formula, dataset, hh, tFormT, trSize, scaled, method, hparam)
+        mod = ARX.fromTerms.__func__(cls, formula, dataset, hh, args, trSize)
         mod._useforge = True                                          # no forging in a direct model
         return mod
 
@@ -136,7 +136,7 @@ class ARX_D(Forecaster_D):
         if self._fname is not None:
             return self._fname
         if self._useforge:
-            return ARX.formNames(self._n_exo, self.hparam)
+            return ARX.formNames(self._n_exo, self._hparam)
         return [f"x{j}" for j in range(self._X.shape[1])]
 
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
@@ -180,8 +180,8 @@ class ARX_D(Forecaster_D):
             The columns of the input matrix with the selected features (defaults to all).
         """
         cols = self.mcols if cols is None else list(cols)
-        sub = ARX_D(self.hparam, self.getY(), self.hh, None, self._method, self._X[:, cols], scaled=self._scaled)
-        return self._subModel(sub, cols, modelName=f"ARX_D_{self.hparam['p']}_{self.hparam['px']}_{self._n_exo}")
+        sub = ARX_D(self.getY(), self.hh, None, self._subArgs(), X=self._X[:, cols])
+        return self._subModel(sub, cols, modelName=f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}")
 
     def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1) -> ARX:
         """
@@ -202,8 +202,8 @@ class ARX_D(Forecaster_D):
             raise ValueError(f"getModel_h: horizon h = {h} out of range [1, {self.hh}]")
         cols = self.mcols if cols is None else list(cols)
         mh = len(self._y) - h + 1                                         # the rows whose horizon-h response is defined
-        sub = ARX(self.hparam, self.getY()[h - 1:], 1, None, self._method, self.getX()[:mh, cols], scaled=self._scaled)
-        self._subModel(sub, cols, modelName=f"ARX_{self.hparam['p']}_{self.hparam['px']}_{self._n_exo}")
+        sub = ARX(self.getY()[h - 1:], 1, None, self._subArgs(), X=self.getX()[:mh, cols])
+        self._subModel(sub, cols, modelName=f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}")
         sub._y = self._Y[:mh, h - 1]                                      # the horizon-h response (model units)
         sub._te_size = mh - sub._tr_size
         return sub

@@ -26,13 +26,13 @@ single-horizon model at h); `smapeFPE` / `aggFPE` are the companion object's fun
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import statsmodels.api as sm
@@ -42,7 +42,7 @@ from Util.tools import array_str, banner, set_str
 from modeling.feature_selection import (BestStep, Cols, FeatureSelection, SelectionReport, SelectionTech, given_qk,
                                         updateQoF)
 from modeling.fit import N_QoF, Fit, QoF, vif
-from modeling.forecasting.forecaster import Forecaster, trSize
+from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, trSize
 from modeling.subset_search import SubsetSearch
 
 
@@ -98,7 +98,8 @@ class Forecaster_D(SelectionReport, Forecaster):
     Y : np.ndarray, shape (m, hh)
         The target matrix: Y[t, h - 1] = y[t + h - 1] (NaN beyond the end of the series).
     method : {"sm_ols", "sk_lr", "ridge"}
-        The regression per horizon (ScalaTion's `reg`, a `CenteredRidgeMV`, is "ridge").
+        The regression per horizon (args.method; ScalaTion's `reg`, a `CenteredRidgeMV`, is "ridge",
+        the default here; `ARX_D` defaults to "sm_ols").
     params : np.ndarray, shape (n + 1, hh)
         The parameters per horizon, intercept first (original units).
     bb : np.ndarray, shape (n, hh)
@@ -106,24 +107,22 @@ class Forecaster_D(SelectionReport, Forecaster):
         "ridge" is scaled); `parameter` is its first column, `slopes` the original-unit ones.
     """
 
-    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "ridge",
-                 scaled: bool = False, hasIntercept: bool = True) -> None:
+    METHOD = "ridge"
+    METHODS = REGRESSION_METHODS
+
+    def __init__(self, y: np.ndarray, hh: int, args: Any = None, hasIntercept: bool = True) -> None:
         """
-        Initializes the Forecaster_D (hparam, y, hh as in `Forecaster`); the target matrix Y is built
-        from y.
+        Initializes the Forecaster_D (y, hh, args as in `Forecaster`); the target matrix Y is built
+        from y.  The regression per horizon is args.method ("sm_ols", "sk_lr", "ridge"; default
+        `METHOD`) with args.lam and args.scaled (ScalaTion's `scaled`).
 
         Parameters
         ----------
-        method : {"sm_ols", "sk_lr", "ridge"}, default="ridge"
-            The regression per horizon.
-        scaled : bool, default=False
-            Whether the ridge regression standardizes the columns (ScalaTion's `scaled`).
         hasIntercept : bool, default=True
             Whether the model has an intercept (counted in the degrees of freedom).
         """
-        super().__init__(hparam, y, hh, hasIntercept)
-        self._method = method
-        self._scaled = scaled
+        super().__init__(y, hh, args, hasIntercept)
+        self._scaled = self._args.scaled
         self._model = self._make_model()
         self._Y: Optional[np.ndarray] = makeMatrix4Y(self._y, hh)
         self._theBest: Optional[BestStep] = None                          # the best step of the last selection
@@ -334,7 +333,7 @@ class Forecaster_D(SelectionReport, Forecaster):
             The columns of the set.
         """
         m = len(self._y)
-        rng = range(0, m) if FeatureSelection.fullset_FS else range(0, trSize(m, self.TE_RATIO))
+        rng = range(0, m) if FeatureSelection.fullset_FS else range(0, trSize(m, self._te_ratio))
         sub = self.getModel(cols)                                         # this model's transforms and scaling
         sub.setSkip(self.getSkip())
         sub.train(sub.Y[rng.start:rng.stop], sub.X[rng.start:rng.stop])

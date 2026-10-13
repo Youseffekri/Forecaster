@@ -1,15 +1,18 @@
-"""Tests of EDA4TS (counterpart of eDA4TSTest, correlogramTest2) and of the dataset configurations
-of rev4.0 (ExoMode, the screening's shortlist; counterparts of datasetsTest / datasetsTest2)."""
+"""Tests of EDA4TS (counterpart of eDA4TSTest), of Util/correlogram.py (correlogramTest2), of
+`LLMProposer.promptBlock` and of the dataset configurations (ExoMode, the screening's shortlist -- the generic
+`DatasetConfig.shortlist` and `FormulaScorer.shortlist`; counterparts of datasetsTest / datasetsTest2)."""
 import math
 
 import numpy as np
 import pytest
 
+from Util.correlogram import acfSpikes, acorr, ccorr, collinearPair, heteroscedastic, ljungBox
+from modeling.forecasting.datasets import Datasets, ExoMode
+from modeling.forecasting.eda4ts import EDA4TS, topFreqs
 from modeling.forecasting.exo_screen import ExoScreen
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, ExoMode
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import (EDA4TS, acfSpikes, acorr, ccorr, collinearPair, heteroscedastic,
-                                                               ljungBox, topFreqs)
+from modeling.forecasting.forecaster import trSize
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
+from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import LLMProposer
 
 
 def planted():
@@ -34,7 +37,7 @@ def test_profile_finds_the_planted_structure():
     assert any(abs(p - 12.0) < 2.0 for p in eda.periods), eda.periods
     assert eda.acf[0] == pytest.approx(1.0) and eda.pacf[0] == pytest.approx(1.0) and len(eda.acf) == 7
     assert 0.0 <= eda.kpssP <= 1.0 or math.isnan(eda.kpssP)
-    block = eda.promptBlock({"y": "y", "z": "x1"})
+    block = LLMProposer.promptBlock(eda, {"y": "y", "z": "x1"})
     assert "z:" not in block and "x1" in block and block.startswith("Data profile (training rows only):")
     assert "autocorrelation at lags 1..6" in block and "wave(1)" in block
 
@@ -71,6 +74,10 @@ def test_correlogram_helpers():
     lev = 10.0 + np.arange(n, dtype=float)
     assert heteroscedastic(lev * g, lev) and not heteroscedastic(g, lev)
     assert acorr(e, 1) == pytest.approx(float(np.corrcoef(e[1:], e[:-1])[0, 1]), abs=0.02)
+    assert acorr(e, 3) == pytest.approx(acorr(e, 3, adjusted=False) * n / (n - 3))   # ScalaTion's default: adjusted
+    assert ljungBox(e, 10)[1] == 0.0 and ljungBox(e, 10)[0] > 100.0 + 3.0 * 10      # the tail shortcut
+    with pytest.raises(ValueError, match="not long enough"):
+        acorr(e0, 12)
     x = rng.standard_normal(n)
     yy = np.concatenate([[0.0, 0.0], x[:-2]]) * 0.8 + 0.3 * rng.standard_normal(n)
     assert ccorr(x, yy, 2) > 0.8 > abs(ccorr(x, yy, 1))
@@ -84,25 +91,26 @@ def test_exo_modes_and_shortlists():
     patients and the positivity rate); COVID_ALL (auto) and the Given configurations."""
     assert Datasets.COVID2.exoMode is ExoMode.Given and Datasets.COVID_ALL.exoMode is ExoMode.Auto
     assert Datasets.ETTH1_1Y.exoMode is ExoMode.Auto and Datasets.GEF14.exoMode is ExoMode.Given
-    cf = Datasets.covidFile()
-    assert cf is Datasets.covidFile() and cf.exoMode is ExoMode.Auto
+    cf = Datasets.COVID_FILE
+    assert cf is Datasets.COVID_FILE and cf.exoMode is ExoMode.Auto                 # lazy, read once
     assert len(cf.exo) == 8 and "excess_mortality" not in cf.exo and "new_cases" not in cf.exo and "people_vaccinated" not in cf.exo
     data = cf.load()
     assert len(data) == len(cf.exo) + 1 and len(data["y"]) == 116
     sc = FormulaScorer(data, hh=6)
-    assert cf.shortlist(sc) == ["hosp_patients", "positive_rate"], "the shortlist of exoScreenTest2"
+    assert sc.shortlist(cf) == ["hosp_patients", "positive_rate"], "the shortlist of exoScreenTest2"
+    assert cf.shortlist(data, trSize(116), 2, 6) == sc.shortlist(cf)          # the generic one, as datasetsTest calls it
     assert len(cf.blindNames) == 9 and cf.blindNames["y"] == "y"
     ca = Datasets.COVID_ALL
-    short = ca.shortlist(FormulaScorer(ca.load(), hh=6))
+    short = FormulaScorer(ca.load(), hh=6).shortlist(ca)
     assert len(short) == 2 and set(short) <= set(ca.exo)
-    assert Datasets.COVID2.shortlist(sc) == ["icu", "pRate"] and Datasets.GEF14.shortlist(sc) == ["temp", "tmax"]
+    assert sc.shortlist(Datasets.COVID2) == ["icu", "pRate"] and sc.shortlist(Datasets.GEF14) == ["temp", "tmax"]
     assert Datasets.get("covid_all") is Datasets.COVID_ALL and Datasets.get("covid_file") is cf
     assert Datasets.COVID2.copy(name="x").name == "x" and Datasets.COVID2.expectedSigns == {"icu": 1, "pRate": 1}
 
 
 def test_covid_file_shortlist():
     """The screening of the file-based Covid configuration (ScalaTion's datasetsTest): hosp_patients, positive_rate."""
-    cf = Datasets.covidFile()
+    cf = Datasets.COVID_FILE
     data = cf.load()
     xe = {v: data[v] for v in cf.exo}
     ranks, kept = ExoScreen.shortlist(data["y"], xe, 6, 92, 2)
@@ -113,5 +121,5 @@ def test_covid_file_shortlist():
 def test_etth1_auto_picks_exok_loads():
     cfg = Datasets.ETTH1_1Y
     sc = FormulaScorer(cfg.load(), hh=6, hp={"nneg": False})
-    short = cfg.shortlist(sc)
+    short = sc.shortlist(cfg)
     assert len(short) == 2 and set(short) <= set(cfg.exo) and sc.trSize == 7007 and sc.teSize == 1753

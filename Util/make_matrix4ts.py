@@ -13,7 +13,7 @@ The Python counterpart of ScalaTion's `MakeMatrix4TS.scala` (its object's method
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 """
 

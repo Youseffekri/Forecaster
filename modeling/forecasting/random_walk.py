@@ -16,18 +16,19 @@ the non-negativity constraint never applies.  The Python counterpart of ScalaTio
 Differences from ScalaTion: row 0 of the forecast matrix holds y(0) (ScalaTion's `predict (0, y)`),
 where ScalaTion's `predictAll` writes NO_DOUBLE, a row the default skip (1, ScalaTion's
 `max (1, AR.hp("p"))`) drops from the In-Sample diagnosis anyway.  As in ScalaTion the model has
-no hyper-parameters (`hparameter` is None, the REPORT prints "null"); `hparam` keeps the skip.
+no hyper-parameters (`hparameter` is None, the REPORT prints "null"); of its args it reads skip
+(default max (1, args.p), ScalaTion's `max (1, AR.hp("p"))`) and te_ratio.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 
@@ -48,34 +49,34 @@ class RandomWalk(Forecaster):
         ["no-x features"] (ScalaTion's `Forecast.getFname` default for models without x).
     modelName : str
         "RandomWalk".
-    hparam : dict
-        {"skip": the rows skipped in the In-Sample diagnosis (default 1)}.
+    hparameter : None
+        The model has no hyper-parameters (ScalaTion's `hparam = null`).
 
     See Also
     --------
     Forecaster : the base forecasting logic (Yf, rollValidate, inSample_Test, tnT_Test).
     """
 
-    def __init__(self, hparam: Optional[Dict[str, Any]], y: np.ndarray, hh: int) -> None:
+    ARGS = Forecaster.ARGS
+
+    def __init__(self, y: np.ndarray, hh: int, args: Any = None) -> None:
         """
         Initializes the RandomWalk forecaster (the argument order of every model of the package:
-        hyper-parameters, series, horizon).
+        the data, the horizon, the settings).
 
         Parameters
         ----------
-        hparam : dict, optional
-            The hyper-parameters: only "skip" (default 1) and "nneg" are read; None => defaults.
         y : np.ndarray, shape (m,)
             The response vector (time series data).
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
+        args : Args or dict, optional
+            The settings: only skip (default max (1, p) = 1) and te_ratio are read; None => defaults.
         """
-        a = dict(hparam or {})
-        a.setdefault("p", 1)                                            # ScalaTion: skip = max (1, AR.hp("p")) = 1
-        a.setdefault("spec", 0)
-        a["px"] = 0
-        super().__init__(a, np.asarray(y, dtype=float), int(hh))
-        self.hparam = {"skip": self.hparam["skip"]}                        # no hyper-parameters besides the skip
+        args = self._argsOf(y, args)
+        if args.skip is None:
+            args.skip = max(1, args.p)                                    # ScalaTion: skip = max (1, AR.hp("p"))
+        super().__init__(y, int(hh), args)
         self._modelName = "RandomWalk"
         self._params = np.zeros(0)                                      # nothing to train (NoTrainModel)
 
@@ -107,7 +108,7 @@ class RandomWalk(Forecaster):
         return None
 
     def __repr__(self) -> str:
-        return f"RandomWalk(), hh = {self.hh}, skip = {self.hparam['skip']}"
+        return f"RandomWalk(), hh = {self.hh}, skip = {self._hparam['skip']}"
 
     # -- training and forecasting ---------------------------------------------------------
 
