@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forecaster"
-version = "1.1.0"
-description = "Time series forecasting: ARX models, symbolic regression and LLM-NARX-SR (NARX formulas with free nonlinear parameters)"
+version = "2.0.0"
+description = "Time series forecasting, the Python counterpart of ScalaTion's forecasting package: RandomWalk, AR, ARIMA, ARX / ARX_D, ARX_SR / ARX_SR_D, ARX_Formula, NARX_Formula / NARX_SR_D, feature selection and LLM-NARX-SR"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Yousef Fekri Dabanloo" }]
@@ -26,8 +26,9 @@ test = ["pytest>=7"]
 Homepage = "https://github.com/Youseffekri/Forecaster"
 
 [tool.setuptools]
-packages = ["modeling", "modeling.forecasting", "modeling.forecasting.llm_narx_sr",
-            "modeling.forecasting.neuralforecasting", "modeling.optimization", "Util"]
+packages = ["modeling", "modeling.forecasting", "modeling.forecasting.nonlinear",
+            "modeling.forecasting.nonlinear.llm_narx_sr", "modeling.forecasting.neuralforecasting",
+            "modeling.optimization", "Util"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

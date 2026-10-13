@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from modeling.forecasting.llm_narx_sr.datasets import (Datasets, Example_Covid, Example_ETTh1, Example_GEFCom,
+from modeling.forecasting.nonlinear.llm_narx_sr.datasets import (Datasets, Example_Covid, Example_ETTh1, Example_GEFCom,
                                                        Example_ILI, DatasetConfig)
 
 
@@ -28,9 +28,12 @@ def test_gefcom():
     assert [round(x) for x in v] == [272, 226, 185, 148, 136, 214, 273], "the V shape of load vs temperature"
 
 
-def test_ili_tells_where_the_file_goes():
-    with pytest.raises(FileNotFoundError):
-        Datasets.ILI.load()
+def test_ili_loads_ilinet():
+    ctx = Datasets.ILI.load()
+    assert len(ctx["y"]) == 1208 and set(ctx) == {"y", "wili", "ot"}
+    assert ctx["y"][0] == 2060 and ctx["ot"][0] == 176569                  # 10/6/2002: ILITOTAL, TOTAL PATIENTS
+    y, xe = Example_ILI.load_data(["%WEIGHTED ILI", "NUM. OF PROVIDERS"], trim=8)
+    assert y.shape == (1200,) and xe.shape == (1200, 2)
 
 
 def test_config_helpers():

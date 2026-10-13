@@ -2,8 +2,10 @@
 import numpy as np
 import pytest
 
-from modeling.forecasting.formula import Formula, Var, lagv, par, ParRole
-from modeling.forecasting.formula_parser import parse_formula, try_parse_formula, FormulaError
+from modeling.forecasting.arx_formula import FormulaVar as Var, lagv
+from modeling.forecasting.nonlinear.narx_formula import NARX_Formula as Formula, ParRole, par
+from modeling.forecasting.formula_parser import FormulaError
+from modeling.forecasting.nonlinear.narx_formula_parser import parse_formula, try_parse_formula
 
 VARS = ["y", "icu", "pRate"]
 FREQS = [0.13043, 0.06521]
@@ -44,7 +46,7 @@ def test_constants_in_parameter_positions_are_not_free():
 def test_duplicates_collapse_and_waves_print_once():
     f = parse_formula("y ~= y~1 + y~1 + wave(2) + log1p(icu~2)", VARS, 6, FREQS)
     assert f.n_terms == 6                                 # y~1, 2 sin/cos pairs, log1p
-    assert f.formula_str == "y ~= y~1 + wave(2) + log1p(icu~2)"
+    assert f.formula_str == "y ~= y~1 + log1p(icu~2) + wave(2)"           # the wave part prints last (ScalaTion)
 
 
 @pytest.mark.parametrize("bad, reason", [
@@ -56,11 +58,11 @@ def test_duplicates_collapse_and_waves_print_once():
     ("y ~= pow(y~1, ?) * wave(?)", "wave(?) not allowed inside interactions"),
     ("y ~= log(? + z~1)", "variable 'z' not in dataset"),
     ("y ~= cube(? + y~1)", "unknown function 'cube'"),
-    ("y ~= y~7", "exceeds the maximum lag 6"),
-    ("y ~= icu~0", "must be >= 1"),
-    ("y ~= wave(3)", "needs 3 frequencies"),
-    ("z ~= y~1", "response 'z' not in dataset"),
-    ("y ~= y~1 * y~2 * y~3", "at most two factors"),
+    ("y ~= y~7", "lag 7 outside [1,6]"),
+    ("y ~= icu~0", "lag 0 outside [1,6]"),
+    ("y ~= wave(3)", "wave(3) outside [1,2]"),
+    ("z ~= y~1", "response 'z' not a dataset variable"),
+    ("y ~= y~1 * y~2 * y~3", "interaction with 3 factors (at most two)"),
 ])
 def test_rejects_carry_a_reason(bad, reason):
     f, why = try_parse_formula(bad, VARS, 6, FREQS)
@@ -74,8 +76,8 @@ def test_columns_match_lagging_and_functions():
     y = rng.uniform(1, 5, 40); z = rng.uniform(1, 5, 40)
     data = {"y": y, "z": z}
     f = parse_formula("y ~= y~2 + log(z~1) + y~1 * z~1 + pow(z~1, 2)", ["y", "z"], 6)
-    cols = f.prepare(data)
-    X = f.columns(cols)
+    td = f.prepare(data)                                               # TermData: (data, y, tForm_y, trSize)
+    X = f.matrix(td.data)
     assert np.allclose(X[:, 0], lagv(y, 2)) and X[0, 0] == y[0] and X[5, 0] == y[3]
     assert np.allclose(X[:, 1], np.log(lagv(z, 1)))
     assert np.allclose(X[:, 2], lagv(y, 1) * lagv(z, 1))
@@ -85,7 +87,7 @@ def test_columns_match_lagging_and_functions():
 def test_resolve_fills_role_defaults_from_training_rows():
     z = np.linspace(2.0, 12.0, 50)
     f = parse_formula("y ~= log(? + z~1) + sat(z~1, ?) + hinge(z~1, ?)", ["y", "z"], 6)
-    f.prepare({"y": z.copy(), "z": z}, tr_size=40)
+    f.prepare({"y": z.copy(), "z": z}, trSize=40)
     s, k, c = f.params()
     assert s.role is ParRole.SHIFT and s.lb < 0 and s.ub > s.lb        # keeps log(s + z) defined
     assert k.role is ParRole.HALF and k.lb > 0

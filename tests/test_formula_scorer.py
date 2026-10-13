@@ -4,8 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from modeling.forecasting.llm_narx_sr.formula_scorer import FormulaScorer, Candidate
-from modeling.forecasting.llm_narx_sr.datasets import Datasets, Example_Covid
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer, Candidate
+from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, Example_Covid
 
 
 def planted():
@@ -20,11 +20,32 @@ def planted():
 
 
 def test_rows_and_blocks():
+    """ScalaTion's split (Model.trSize: te = floor(0.2 m + 1) = 61 of 300), a quarter of the training
+    rows as three rolling-origin validation blocks."""
     sc = FormulaScorer(planted(), hh=3)
-    assert sc.tr_size == 240 and sc.n_val == 60 and sc.fit_size == 180
-    assert [b.start for b in sc.blocks] == [180, 200, 220] and sc.blocks[-1].stop == 240
+    assert sc.tr_size == 239 and sc.trSize == 239 and sc.n_val == 60 and sc.fit_size == 179
+    assert [b.start for b in sc.blocks] == [179, 199, 219] and sc.blocks[-1].stop == 239
+    assert sc.trRng == range(0, 239) and sc.teRng == range(239, 300) and sc.fitRng == range(0, 179) and sc.valRng == range(179, 239)
     sc0 = FormulaScorer(planted(), hh=3, hp={"valFrac": 0.0})
     assert sc0.n_val == 0 and sc0.fit_size == sc0.tr_size and sc0.blocks == []
+
+
+def test_fit_cache_and_scala_names():
+    """formulaScorerTest6: a second parse of the same structure (another start value) hits the cache
+    -- one candidate, one fit -- and the formula takes the fitted values; the Scala names are there."""
+    sc = FormulaScorer(planted(), hh=1, hp={"lambda": 1e-6, "skip": 2, "valFrac": 0.0})
+    f = sc.parse("y ~= y~1 + log(? + z~1)")
+    mod = sc.fit(f)
+    n = sc.evaluations
+    other = sc.parse("y ~= log(?0.5 + z~1) + y~1")
+    assert sc.fit(other) is mod and sc.evaluations == n, "the same structure with another start value must hit the cache"
+    assert other.params()[0].value == pytest.approx(f.params()[0].value) and other.key == f.key
+    assert FormulaScorer.keyOf(other) == f.key
+    c = sc.score(f)
+    assert c.nTerms == 2 and c.nFree == 1 and c.formulaStr == c.formula_str and c.proposalStr.count("?") == 1
+    assert c.qofTrain is c.qof_train and c.qofV == c.qofTrain and c.smapeVal == pytest.approx(c.smape)   # in-sample J: the validation QoF is the fit rows'
+    assert np.allclose(c.scoreH, FormulaScorer.jOf(c.qofTrain, c.qofV)) and c.score == pytest.approx(sc.scoreOf(c.qofTrain))
+    assert c.qofTrain[0]["dfr"] == 3.0, "two slopes + one free parameter = 3 degrees of freedom"
 
 
 def test_free_parameter_formula_beats_the_fixed_one():
@@ -55,7 +76,7 @@ def test_j_is_fpe_adjusted_validation_smape():
     for h in range(3):
         q, qv = c.qof_train[h], c.qof_v[h]
         assert q["dfr"] == 3
-        assert c.score_h[h] == pytest.approx(qv["SMAPE"] * (1 + 2 * (3 + 1) / q["m"]))
+        assert c.score_h[h] == pytest.approx(qv["smape"] * (1 + 2 * (3 + 1) / q["m"]))
     assert c.score == pytest.approx(float(c.score_h.mean()))
 
 
@@ -66,6 +87,6 @@ def test_covid_baseline_and_tnt():
     c = sc.score(cfg.baseline_formula_str(6))
     assert not c.failed and c.n_terms == 18 and 10 < c.score < 60
     mod, qof = sc.tnt(c.formula.fresh())
-    assert len(qof) == 6 and all(math.isfinite(q["SMAPE"]) for q in qof)
+    assert len(qof) == 6 and all(math.isfinite(q["smape"]) for q in qof)
     assert mod.X.shape == (116, 18)
     assert sc.evaluations >= 4                               # 1 fit + 2 folds + the final model
