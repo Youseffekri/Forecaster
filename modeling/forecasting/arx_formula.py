@@ -657,7 +657,8 @@ class ARX_Formula:
         -------
         np.ndarray, shape (m, nTerms)
         """
-        X = np.column_stack([t.column(data) for t in self.preds])
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):   # a bad column is reported below, once
+            X = np.column_stack([t.column(data) for t in self.preds])
         if check:
             bad = ~np.isfinite(X).all(axis=0)
             if bad.any():
