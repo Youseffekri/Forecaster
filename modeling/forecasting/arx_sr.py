@@ -4,11 +4,11 @@ ARX_SR Model: Auto-Regressive on Lagged y and xe with Symbolic Regression (SR) T
 Extends the `ARX` model with trend, linear, power, root and cross terms: the lagged endogenous
 variable y and its transformations (`fEndo`, e.g., `PowForm()` for y^1.5), the lagged exogenous
 variables and their own transformations (`fExo`, one list per exogenous variable), and optional
-ENDO-EXO cross terms (`hparam["crx"]`).  Multi-step forecasts are RECURSIVE: the forecast of
+ENDO-EXO cross terms (args.crx).  Multi-step forecasts are RECURSIVE: the forecast of
 horizon h feeds the lags of horizon h + 1, and a transformed lag of a forecast is the transform of
 the forecast.
 
-With `rescale`, y and the exogenous variables are rescaled FIRST (a `TransformT` fitted on the
+With `rescale`, y and the exogenous variables are rescaled FIRST (args.tFormT fitted on the
 training rows, as in ScalaTion) and the transformations are applied to the rescaled series.
 
 The Python counterpart of ScalaTion's `ARX_SR` (`ARX_SR.apply` / `ARX_SR.rescale` /
@@ -16,20 +16,21 @@ The Python counterpart of ScalaTion's `ARX_SR` (`ARX_SR.apply` / `ARX_SR.rescale
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix, makeMatrix4L, makeMatrix4T, trend_names
-from Util.transform import PowForm, Transform, TransformT
+from Util.transform import PowForm, Transform
 from modeling.forecasting.arx import ARX, _rescaleData
+from modeling.forecasting.forecaster import Forecaster
 
 
 def srMatrix(xe_bfill: Optional[np.ndarray], y: np.ndarray, hparam: Dict[str, Any],
@@ -86,42 +87,38 @@ class ARX_SR(ARX):
     ARX : the recursive forecasting logic (train, forecast, _predict, hide).
     """
 
+    ARGS = ("p", "px", "spec", "crx", "method", "lam", "scaled", "tFormT") + Forecaster.ARGS
+
     def __init__(self,
-                 hparam: Dict[str, Any],
                  y: np.ndarray,
                  hh: int,
                  xe: Optional[np.ndarray] = None,
+                 args: Any = None,
                  fEndo: Optional[Sequence[Transform]] = None,
                  fExo: Optional[Sequence[Sequence[Transform]]] = None,
-                 method: str = "sm_ols",
-                 X: Optional[np.ndarray] = None,
-                 scaled: bool = False) -> None:
+                 X: Optional[np.ndarray] = None) -> None:
         """
         Initializes the ARX_SR forecaster, building the design matrix (ScalaTion's `ARX_SR.apply`)
         unless a ready matrix X is given.
 
         Parameters
         ----------
-        hparam : dict
-            Model configuration: "p" (lags of y), "px" (lags of each exogenous variable), "spec"
-            (number of trend columns, ScalaTion's convention: 0 implicit constant, 1 linear, 2
-            quadratic, 3 cubic), "crx" (1 => ENDO-EXO cross terms), "nneg", "skip", "lambda".
         y : np.ndarray, shape (n_samples,)
             The endogenous time series.
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
         xe : Optional[np.ndarray], shape (n_samples, n_exo)
             The exogenous variables aligned with y.
+        args : Args or dict, optional
+            The settings: p (lags of y), px (lags of each exogenous variable), spec (number of trend
+            columns, ScalaTion's convention: 0 implicit constant, 1 linear, 2 quadratic, 3 cubic), crx
+            (ENDO-EXO cross terms), nneg, skip, method ("sm_ols", "sk_lr", "ridge"), lam, scaled.
         fEndo : sequence of Transform, optional
             The transformations of y (default `[PowForm()]`, i.e., y^1.5; `[]` for none).
         fExo : sequence of sequences of Transform, optional
             One list of transformations per exogenous variable (default: none for every variable).
-        method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
-            statsmodels OLS, sklearn LinearRegression or the centered ridge (hparam "lambda").
         X : Optional[np.ndarray]
             A ready design matrix (then no forging: hh must be 1).
-        scaled : bool, default=False
-            Whether the ridge regression standardizes the columns.
 
         Raises
         ------
@@ -135,45 +132,40 @@ class ARX_SR(ARX):
             raise ValueError(f"Length of fExo {len(fExo)} must = number of exogenous variables {n_exo}")
         self._tForms = {"tForm_y": None, "fEndo": fEndo, "fExo": fExo}
         self._fExo_sz = [len(s) for s in fExo]
-        super().__init__(hparam, y, hh, xe, method, X if X is not None else np.zeros((len(y), 1)), scaled)
-        self._modelName = f"ARX_SR_{self.hparam['p']}_{self.hparam['px']}_{self._n_exo}"
+        super().__init__(y, hh, xe, args, X if X is not None else np.zeros((len(y), 1)))
+        self._modelName = f"ARX_SR_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}"
         if X is None:                                                    # ScalaTion's `ARX_SR.apply`
-            xe_bfill = backfill_matrix(xe) if n_exo > 0 and self.hparam["px"] > 0 else None
-            self._set_X(self.buildMatrix(xe_bfill, self._y, self.hparam, fEndo, fExo))
+            xe_bfill = backfill_matrix(xe) if n_exo > 0 and self._hparam["px"] > 0 else None
+            self._set_X(self.buildMatrix(xe_bfill, self._y, self._hparam, fEndo, fExo))
             self._useforge = True
 
     @classmethod
     def rescale(cls,
-                hparam: Dict[str, Any],
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
+                args: Any = None,
                 fEndo: Optional[Sequence[Transform]] = None,
-                fExo: Optional[Sequence[Sequence[Transform]]] = None,
-                method: str = "sm_ols",
-                tFormT: Union[TransformT, str] = TransformT.MinMax,
-                scaled: bool = False) -> "ARX_SR":
+                fExo: Optional[Sequence[Sequence[Transform]]] = None) -> "ARX_SR":
         """
         Creates the model on rescaled data (ScalaTion's `ARX_SR.rescale`): y and the backfilled
-        exogenous variables are transformed by tFormT fitted on the TRAINING rows (MinMax to [-2, 2]
-        by default, where a power or log of a negative value is not defined -- use Log1p, as
+        exogenous variables are transformed by args.tFormT fitted on the TRAINING rows (None => MinMax
+        to [-2, 2], where a power or log of a negative value is not defined -- use Log1p, as
         ScalaTion's tests do, or a sign-safe transform such as PowRForm / DQuadForm), THEN the
-        transformations fEndo / fExo are applied.
+        transformations fEndo / fExo are applied; Norm turns the non-negativity off.
 
         Parameters
         ----------
-        hparam, y, hh, xe, fEndo, fExo, method, scaled
+        y, hh, xe, args, fEndo, fExo
             As in the constructor.
-        tFormT : TransformT, default=TransformT.MinMax
-            The transform type of the rescaling (Norm turns the non-negativity off).
 
         Returns
         -------
         ARX_SR
         """
-        hp_, y_scl, xe_scl, tForm_y = _rescaleData(hparam, y, xe, tFormT)
-        mod = cls(hp_, y_scl, hh, xe, fEndo, fExo, method, np.zeros((len(y_scl), 1)), scaled)
-        mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod.hparam, mod._tForms["fEndo"], mod._tForms["fExo"]))
+        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe)
+        mod = cls(y_scl, hh, xe, args, fEndo, fExo, X=np.zeros((len(y_scl), 1)))
+        mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod._hparam, mod._tForms["fEndo"], mod._tForms["fExo"]))
         mod._useforge = True
         mod._tForms["tForm_y"] = tForm_y
         mod._setYForm(tForm_y, y)
@@ -224,7 +216,7 @@ class ARX_SR(ARX):
         if self._fname is not None:
             return self._fname
         if self._useforge:
-            return self.formNames(self._n_exo, self.hparam, len(self._tForms["fEndo"]), self._fExo_sz)
+            return self.formNames(self._n_exo, self._hparam, len(self._tForms["fEndo"]), self._fExo_sz)
         return [f"x{j}" for j in range(self._X.shape[1])]
 
     @staticmethod
@@ -279,9 +271,9 @@ class ARX_SR(ARX):
         -------
         np.ndarray, shape (n_rows, n_columns)
         """
-        p, q = self.hparam["p"], self.hparam["px"]
+        p, q = self._hparam["p"], self._hparam["px"]
         n_fEndo = len(self._tForms["fEndo"])
-        idx_endo = self.hparam["spec"]                                     # trend columns before the y block
+        idx_endo = self._hparam["spec"]                                     # trend columns before the y block
         idx_exo = idx_endo + (1 + n_fEndo) * p
         x_trend = X_window[:, :idx_endo]
 
@@ -295,12 +287,12 @@ class ARX_SR(ARX):
         X_h = np.column_stack(blocks)
 
         if self._n_exo > 0 and q > 0:
-            n_blocks = self._n_exo + sum(self._fExo_sz) + (self._n_exo if self.hparam.get("crx", 0) == 1 else 0)
+            n_blocks = self._n_exo + sum(self._fExo_sz) + (self._n_exo if self._hparam.get("crx", 0) == 1 else 0)
             x_exo = np.column_stack([self.hide(X_window[:, idx_exo + k * q: idx_exo + (k + 1) * q], h)
                                      for k in range(n_blocks)])
             X_h = np.column_stack((X_h, x_exo))
         return X_h
 
     def __repr__(self) -> str:
-        s = f"{self.modelName}(p={self.hparam['p']}, px={self.hparam['px']}, n_exo={self._n_exo}, fEndo={self._tForms['fEndo']}"
-        return s + f"), hh = {self.hh}, skip = {self.hparam['skip']}, method={self._method}"
+        s = f"{self.modelName}(p={self._hparam['p']}, px={self._hparam['px']}, n_exo={self._n_exo}, fEndo={self._tForms['fEndo']}"
+        return s + f"), hh = {self.hh}, skip = {self._hparam['skip']}, method={self._method}"

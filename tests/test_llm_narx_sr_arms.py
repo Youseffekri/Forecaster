@@ -10,8 +10,8 @@ from modeling.feature_selection import SelectionTech
 from modeling.llm_client import MockLLMClient
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm, arxFormulaStr
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
+from modeling.forecasting.datasets import Datasets
+from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLMModel, LLM_NARX_SR
 from modeling.forecasting.nonlinear.llm_narx_sr.pipeline_arm import PipelineArm

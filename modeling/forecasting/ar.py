@@ -11,19 +11,20 @@ The Python counterpart of ScalaTion's `AR.scala` (`AR.apply` / `AR.rescale`).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import statsmodels.api as sm
 
 from Util.make_matrix4ts import makeMatrix4L
 from Util.transform import NormForm
+from modeling.forecasting.args import AR_METHODS
 from modeling.forecasting.forecaster import Forecaster, hp as AR_hp, trSize
 
 
@@ -34,8 +35,8 @@ class AR(Forecaster):
     Attributes
     ----------
     method : {"adjusted", "mle", "sm_ols"}, default="adjusted"
-        The estimator: Yule-Walker with adjusted (unbiased) or MLE auto-covariances, or OLS on
-        the lagged matrix.
+        The estimator (args.method): Yule-Walker with adjusted (unbiased) or MLE auto-covariances,
+        or OLS on the lagged matrix.
     params : np.ndarray, shape (p + 1,)
         delta (the drift/intercept) followed by phi_1 .. phi_p.
     parameter : np.ndarray, shape (p,)
@@ -48,41 +49,43 @@ class AR(Forecaster):
     """
 
     hp = AR_hp                                                         # ScalaTion's `AR.hp`, the defaults of every forecaster
+    ARGS = ("p", "method") + Forecaster.ARGS
+    METHOD = "adjusted"
+    METHODS = AR_METHODS
 
-    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted") -> None:
+    def __init__(self, y: np.ndarray, hh: int, args: Any = None) -> None:
         """
         Initializes the AR forecaster.
 
         Parameters
         ----------
-        hparam : dict
-            The hyper-parameters: "p" (the number of lags), "skip" (defaults to p).
         y : np.ndarray, shape (m,)
             The time series.
         hh : int
             The maximum forecasting horizon (h = 1 to hh).
-        method : {"adjusted", "mle", "sm_ols"}, default="adjusted"
-            The estimator.
+        args : Args or dict, optional
+            The settings: p (the number of lags), method ("adjusted", "mle", "sm_ols"; default
+            "adjusted"), skip (defaults to p), nneg, te_ratio; px and spec are 0 (no exogenous
+            variables, no trend columns).
         """
-        a = dict(hparam)
-        a["px"] = 0
-        a.setdefault("spec", 0)
-        super().__init__(a, y, hh)
-        self._method = method
-        self._p = self.hparam["p"]
+        args = self._argsOf(y, args)
+        args.update(px=0, spec=0)                                        # the snapshot: no exo lags, no trend
+        super().__init__(y, hh, args)
+        self._p = self._hparam["p"]
         self._modelName = f"AR_{self._p}"
         self._set_X(makeMatrix4L(self._y, self._p))
 
     @classmethod
-    def rescale(cls, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted") -> "AR":
+    def rescale(cls, y: np.ndarray, hh: int, args: Any = None) -> "AR":
         """
         Creates the model on rescaled data (ScalaTion's `AR.rescale`): y standardized by a `NormForm`
         fitted on the training rows (forecasts are inverted into `Yf`, and not rectified in the
         standardized space).
         """
+        args = cls._argsOf(y, args)
         y = np.asarray(y, dtype=float)
-        tForm_y = NormForm(y[:trSize(len(y), cls.TE_RATIO)])            # (mean, std) of the training rows
-        mod = cls(hparam, tForm_y.f(y), hh, method)
+        tForm_y = NormForm(y[:trSize(len(y), args.te_ratio)])           # (mean, std) of the training rows
+        mod = cls(tForm_y.f(y), hh, args)
         mod._setYForm(tForm_y, y)
         return mod
 

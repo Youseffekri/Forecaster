@@ -37,8 +37,8 @@ import numpy as np
 
 from Util.tools import banner
 from modeling.feature_selection import SelectionTech
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS, topFreqs
+from modeling.forecasting.datasets import DatasetConfig
+from modeling.forecasting.eda4ts import EDA4TS, topFreqs
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer, qof_table_full
 
 

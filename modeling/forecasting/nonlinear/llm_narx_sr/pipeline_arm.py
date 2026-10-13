@@ -23,7 +23,7 @@ the global `FormulaScorer.hp` at construction).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -37,7 +37,7 @@ import numpy as np
 from modeling.llm_client import CountingClient, LLMClient
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig
+from modeling.forecasting.datasets import DatasetConfig
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.genetic_proposer import GeneticProposer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import LLMProposer
@@ -126,7 +126,7 @@ class PipelineArm(SearchArm):
         """Runs the arm once and returns its record (the stream is the random number stream / LLM run tag)."""
         k = self._knobs(scorer)
         eval0 = scorer.evaluations
-        exo = cfg.shortlist(scorer)
+        exo = scorer.shortlist(cfg)
         freqs = self.waveFreqs(cfg, scorer, k["nFreqs"])
         base = NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(k["maxLag"], exo), scorer.vars, k["maxLag"], list(freqs))
         if self.spec.proposer is ProposerKind.NoLoop:

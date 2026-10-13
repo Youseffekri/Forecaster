@@ -10,7 +10,7 @@ printing in `modeling/hyper_parameter.py`.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """

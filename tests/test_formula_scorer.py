@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
+from modeling.forecasting.datasets import Datasets
 
 
 def planted():

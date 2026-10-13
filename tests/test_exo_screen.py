@@ -4,10 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from Util.correlogram import ccorr, corr
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.exo_screen import ExoPool, ExoRank, ExoScreen, ccorr, corr, corr_matrix, model_screen
+from modeling.forecasting.datasets import Example_Covid, loadH
+from modeling.forecasting.exo_screen import ExoPool, ExoRank, ExoScreen, corr_matrix, model_screen
 from modeling.forecasting.forecaster import trSize
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 
 POOL = ["new_cases", "reproduction_rate", "icu_patients", "hosp_patients", "new_tests",
         "positive_rate", "tests_per_case", "new_vaccinations", "excess_mortality"]
@@ -18,7 +20,8 @@ EXCLUDE = {"excess_mortality", "new_cases"}
 
 def covid_frame() -> pd.DataFrame:
     """The 116 rows every Covid-19 test uses, the date column skipped (MatrixD.loadH (skipCol = 1))."""
-    return Example_Covid.frame(116).drop(columns=["date"])
+    mat, header = loadH(Example_Covid.fileName, 1)
+    return pd.DataFrame(mat[:116], columns=header)
 
 
 def covid_pool():
@@ -163,7 +166,7 @@ def test_screen_in_one_call_prints_and_feeds_arx_d(capsys):
                                     exclude=EXCLUDE, show=False)
     assert capsys.readouterr().out == ""
     assert names == ["hosp_patients", "positive_rate"] and xe.shape == (116, 2) and y.shape == (116,)
-    mod = ARX_D({"p": 6, "px": 6, "spec": 0}, y, 6, xe)
+    mod = ARX_D(y, 6, xe, Args(p=6, px=6, spec=0))
     assert mod.modelName == "ARX_D_6_6_2"
     ft = mod.tnT_Test(rc=20)
     assert ft.shape == (6, 26) and np.all(ft[:, 9] < 100)

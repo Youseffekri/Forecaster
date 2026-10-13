@@ -29,7 +29,7 @@ array (None for a non-CEM technique); the random stream of the CEM sampler is `C
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """

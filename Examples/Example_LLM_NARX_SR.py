@@ -30,12 +30,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 
 from modeling.feature_selection import SelectionTech
+from modeling.forecasting.args import Args
 from modeling.llm_client import MockLLMClient
 from modeling.forecasting.nonlinear import narx_sr_d
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, Example_GEFCom
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
+from modeling.forecasting.datasets import Datasets, Example_GEFCom
+from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLM_NARX_SR
 from modeling.forecasting.nonlinear.llm_narx_sr.pipeline_arm import PipelineArm
@@ -113,7 +114,7 @@ def optimizer_test() -> None:
     for scaled in (False, True):
         for opt in OptimizerNL:
             t0 = time.time()
-            m = NARX_SR_D.fromTerms(formula, data, 6, {"lambda": 1.0}, scaled=scaled, optimizer=opt, max_nfev=600)
+            m = NARX_SR_D.fromTerms(formula, data, 6, Args(lam=1.0, scaled=scaled, optimizer=opt), max_nfev=600)
             print(f"{str(opt):10s} {str(scaled):6s} {m.stepCounts['nfev']:6d} {time.time() - t0:6.2f}s  "
                   f"{m.formulaStr.split('+ log')[1]}")
     narx_sr_d.DEBUG = False
@@ -130,7 +131,7 @@ def gefcom_test() -> None:
     sc = FormulaScorer(data, hh=6, hp={"maxLag": 7, "skip": 7})      # the weekly cycle
     print(f"rows {sc.m}: training {sc.trSize}, testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} days")
     for opt in OptimizerNL:
-        m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, 6, {"lambda": 1.0}, scaled=True, optimizer=opt, maxLag=7)
+        m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, 6, Args(lam=1.0, scaled=True, optimizer=opt), maxLag=7)
         print(f"{str(opt):7s}: hinge threshold = {m.formula.params()[0].value:6.2f} F   "
               f"({m.stepCounts['nfev']} evaluations) -- the cooling point of the V")
     score_table(sc, [
@@ -149,7 +150,7 @@ def etth1_test() -> None:
     data = Datasets.ETTH1_1Y.load()
     sc = FormulaScorer(data, hh=6, hp={"nneg": False})
     print(f"rows {sc.m}: training {sc.trSize}, testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} hours")
-    print(f"the screening's shortlist of the six loads: {Datasets.ETTH1_1Y.shortlist(sc)}")
+    print(f"the screening's shortlist of the six loads: {sc.shortlist(Datasets.ETTH1_1Y)}")
     score_table(sc, [
         "y ~= y~(6,1) + hufl~(6,1) + lull~(6,1)",
         "y ~= y~(6,1) + hufl~1 + lull~1",

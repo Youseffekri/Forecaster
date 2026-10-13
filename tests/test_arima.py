@@ -9,23 +9,23 @@ import pytest
 from modeling.fit import QoF
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arima import ARIMA
+from modeling.forecasting.args import Args
 from modeling.forecasting.forecaster import teRng, trSize
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
+from modeling.forecasting.datasets import Example_Covid
 
 HH = 3
 RC = 20
 
 
 def covid_y():
-    y, _ = Example_Covid.loadData(["icu_patients", "positive_rate"])
-    return y
+    return Example_Covid.clip((None, Example_Covid.loadData_y()))[1]      # ScalaTion: clip ((null, loadData_y ()))
 
 
 def test_defaults_names_and_shapes():
     y = covid_y()
-    mod = ARIMA(None, y, HH)                                             # ScalaTion's AR.hp defaults p = d = q = 1
+    mod = ARIMA(y, HH)                                                   # ScalaTion's AR.hp defaults p = d = q = 1
     assert mod.modelName == "ARIMA_1_1_1" and mod.order == (1, 1, 1) and mod.trend == "n"
-    assert {k: mod.hparam[k] for k in ("p", "d", "q", "trend", "skip")} == {"p": 1, "d": 1, "q": 1, "trend": "n", "skip": 3}   # skip = max (p, q + 1) + d
+    assert {k: mod.hparameter[k] for k in ("p", "d", "q", "trend", "skip")} == {"p": 1, "d": 1, "q": 1, "trend": "n", "skip": 3}   # skip = max (p, q + 1) + d
     assert mod.fname == ["ar.L1", "ma.L1"] and not mod.hasIntercept
     mod.train()
     assert mod.parameter.shape == (2,) and mod.params.shape == (2,) and mod.intercept is None
@@ -38,40 +38,40 @@ def test_defaults_names_and_shapes():
 
 def test_trend_c_gives_a_constant_and_an_intercept():
     y = covid_y()
-    mod = ARIMA({"p": 2, "d": 0, "q": 1}, y, HH)                          # d = 0 => trend "c" by default
+    mod = ARIMA(y, HH, Args(p=2, d=0, q=1))                              # d = 0 => trend "c" by default
     assert mod.trend == "c" and mod.hasIntercept and mod.fname == ["const", "ar.L1", "ar.L2", "ma.L1"]
     mod.train()
     assert mod.intercept == pytest.approx(float(mod.parameter[0]))
     assert mod.modelName == "ARIMA_2_0_1"
     with pytest.raises(ValueError):
-        ARIMA({"p": -1}, y, HH)
+        ARIMA(y, HH, Args(p=-1))
 
 
-@pytest.mark.parametrize("hparam, trend", [({"p": 1, "d": 0, "q": 0}, "c"), ({"p": 1, "d": 1, "q": 1}, None),
-                                         ({"p": 2, "d": 1, "q": 0}, "t"), ({"p": 1, "d": 0, "q": 2}, "ct")])
-def test_row_t_equals_apply_forecast_from_the_information_up_to_t_minus_1(hparam, trend):
+@pytest.mark.parametrize("args, trend", [(Args(p=1, d=0, q=0), "c"), (Args(p=1, d=1, q=1), None),
+                                         (Args(p=2, d=1, q=0), "t"), (Args(p=1, d=0, q=2), "ct")])
+def test_row_t_equals_apply_forecast_from_the_information_up_to_t_minus_1(args, trend):
     """Row t of the block holds the h = 1..hh forecasts of y[t], ..., y[t + hh - 1] made from y[:t]:
     statsmodels' own res.apply (y[:t]).forecast (hh)."""
     y = covid_y()
-    mod = ARIMA(hparam, y, HH, trend=trend)
+    mod = ARIMA(y, HH, args, trend=trend)
     mod.train(y[:trSize(len(y))])
     yf = mod.forecast()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for t in (1, 2, 5, 40, 92, 115):
             ref = np.asarray(mod.res.apply(y[:t], refit=False).forecast(HH))
-            assert np.allclose(yf[t], np.maximum(ref, 0.0), atol=1e-8), (hparam, trend, t)
+            assert np.allclose(yf[t], np.maximum(ref, 0.0), atol=1e-8), (args, trend, t)
 
 
 def test_arima_1_0_0_with_trend_c_is_close_to_ar_1():
     """ARIMA(1,0,0) with a constant is the AR(1) in mean form: phi close to the Yule-Walker / OLS phi
     and const close to the mean; the h = 1 forecasts agree closely."""
     y = covid_y()
-    mod = ARIMA({"p": 1, "d": 0, "q": 0}, y, HH, trend="c")
+    mod = ARIMA(y, HH, Args(p=1, d=0, q=0), trend="c")
     mod.train()
     phi_sm = mod.parameter[mod.fname.index("ar.L1")]
     for method in ("sm_ols", "adjusted"):
-        ar = AR({"p": 1}, y, HH, method=method)
+        ar = AR(y, HH, Args(p=1, method=method))
         ar.train()
         phi_ar, delta = ar.parameter[0], ar.params[0]
         assert phi_sm == pytest.approx(phi_ar, abs=0.03)
@@ -84,7 +84,7 @@ def test_arima_1_0_0_with_trend_c_is_close_to_ar_1():
 
 def test_in_sample_report_and_tnt_rolling(capsys):
     y = covid_y()
-    mod = ARIMA({"p": 1, "d": 1, "q": 1}, y, HH)
+    mod = ARIMA(y, HH, Args(p=1, d=1, q=1))
     yp, qof = mod.inSample_Test()
     out = capsys.readouterr().out
     assert "| In-Sample Test: ARIMA_1_1_1 |" in out and "modelName  mn  = ARIMA_1_1_1" in out
@@ -104,7 +104,7 @@ def test_in_sample_report_and_tnt_rolling(capsys):
 
 def test_roll_validate_retrains_every_rc_rows_on_the_sliding_window():
     y = covid_y()
-    mod = ARIMA({"p": 1, "d": 1, "q": 0}, y, HH)
+    mod = ARIMA(y, HH, Args(p=1, d=1, q=0))
     mod.train()
     b_full = mod.parameter.copy()
     yf = mod.rollValidate(rc=RC)

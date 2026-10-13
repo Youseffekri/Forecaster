@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from Util.tools import banner
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
+from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import ExpRun
 

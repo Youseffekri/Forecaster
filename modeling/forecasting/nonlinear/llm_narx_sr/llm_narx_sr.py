@@ -37,7 +37,7 @@ to skip the CSV file.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -59,7 +59,7 @@ from modeling.feature_selection import SelectionTech
 from modeling.llm_client import CachedClient, LocalClient, OpenAIClient
 from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig, Datasets
+from modeling.forecasting.datasets import DatasetConfig, Datasets
 from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import (DEFAULT_HP, Candidate, FormulaScorer, qof_table_full,
                                                                       qof_vector)
@@ -238,7 +238,7 @@ class LLM_NARX_SR:
         streams = cls.STREAMS if streams is None else list(streams)
         scorer = cls.scorerOf(dataset, hp)
         runs: List[ExpRun] = []
-        banner(f"{title}: {cfg.name}, exogenous mode {cfg.exoMode}, using {', '.join(cfg.shortlist(scorer))} of {', '.join(cfg.exo)}")
+        banner(f"{title}: {cfg.name}, exogenous mode {cfg.exoMode}, using {', '.join(scorer.shortlist(cfg))} of {', '.join(cfg.exo)}")
         print(f"training rows {scorer.trRng} = fit rows {scorer.fitRng} + validation rows {scorer.valRng}; testing rows {scorer.teRng}")
         file = cls.csvFile(title) if csv else None
         for arm in arms:

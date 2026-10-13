@@ -37,7 +37,7 @@ the fit rows (ScalaTion refits the same parameter objects per block).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.3
+Version: 1.5
 License: MIT License
 Note: AI assisted code
 """
@@ -51,15 +51,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+from Util.correlogram import acorr
 from Util.tools import vector_str
 from modeling.feature_selection import BestStep, Cols
 from modeling.fit import Fit, MAXI, QoF, fitMapDict, qoF_names, showFitMap
-from modeling.forecasting.forecaster import Forecaster, trSize
+from modeling.forecasting.datasets import DatasetConfig
+from modeling.forecasting.eda4ts import topFreqs
+from modeling.forecasting.forecaster import Args, Forecaster, trSize
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula as Formula, Par, ParRole
 from modeling.forecasting.formula_parser import FormulaError
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import acorr, topFreqs
 
 
 #: The search hyper-parameters (ScalaTion's `FormulaScorer.hp`, aliased as `LLM_NARX_SR.hp`): the
@@ -319,10 +321,21 @@ class FormulaScorer:
         """The training rows' columns."""
         return {k: v[: self.trSize] for k, v in self.data.items()}
 
-    def hparam(self, **nvs: Any) -> Dict[str, Any]:
-        """The hyper-parameter map a model built here carries: the scorer's ridge penalty with the
-        given entries written over it (ScalaTion's `hparam`)."""
-        return {"lambda": self.ridge, **nvs}
+    def shortlist(self, cfg: DatasetConfig) -> List[str]:
+        """
+        The exogenous variables of a configuration the arms build on (ScalaTion's
+        `FormulaScorer.shortlist (cfg)`): the list itself (`Given`) or the screening's shortlist of
+        the pool (`Auto`) on this scorer's data and training rows, hp["exoK"] of them, leads up to
+        hp["maxLag"] (`DatasetConfig.shortlist`).
+        """
+        return cfg.shortlist(self.fullSet, self.trSize, int(self.hp["exoK"]), int(self.hp["maxLag"]))
+
+    def args(self, **changes: Any) -> Args:
+        """The settings a model built here carries (ScalaTion's `hparam (nvs*)`): the defaults with this
+        scorer's ridge penalty, scaling, optimizer and non-negativity, and the given settings written
+        over them."""
+        return Args(lam=self.ridge, scaled=self.scaled, optimizer=self.optimizer,
+                    nneg=bool(self.hp["nneg"])).update(**changes)
 
     # -- parsing and fitting -------------------------------------------------------------
 
@@ -341,9 +354,8 @@ class FormulaScorer:
         (`NARX_SR_D.fromTerms`).
         """
         size = self.fitSize if size is None else size
-        return NARX_SR_D.fromTerms(self._formula(f), self.data, self.hh, self.hparam(nneg=int(bool(self.hp["nneg"]))),
-                                   trSize=size, scaled=self.scaled, optimizer=self.optimizer,
-                                   maxLag=int(self.hp["maxLag"]), freqs=self.freqs, fit_params=fit_params)
+        return NARX_SR_D.fromTerms(self._formula(f), self.data, self.hh, self.args(tune=fit_params), trSize=size,
+                                   maxLag=int(self.hp["maxLag"]), freqs=self.freqs)
 
     def buildFixed(self, f: Union[str, Formula]) -> NARX_SR_D:
         """

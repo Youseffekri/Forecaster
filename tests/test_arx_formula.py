@@ -12,8 +12,8 @@ from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, ProductTerm, TransformedTerm,
                                               WaveTerm, distinct, lagv, log, log1p, pow, powr, sq, wave, wave_pair)
+from modeling.forecasting.datasets import Example_Covid
 from modeling.forecasting.formula_parser import FormulaError, FormulaParser
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 
 VARS = ["y", "icu", "pRate"]
 FREQS = [0.13043, 0.06521]
@@ -21,7 +21,7 @@ HH = 6
 
 
 def covid():
-    return Example_Covid.context(["icu_patients", "positive_rate"])
+    return Example_Covid.context(Example_Covid.BEST2_EXO, ["icu", "pRate"])
 
 
 # -- terms and the DSL ----------------------------------------------------------------------------
@@ -148,7 +148,8 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
     assert isinstance(mod_D, ARX_D) and mod_D.modelName == "ARX_D_3_2_2"
     assert "modelName  mn  = ARX_D_3_2_2" in out and "features   fn  = Array(y~3, y~2, y~1, icu~2, icu~1, log1p(pRate~1))" in out
     assert mod_D.fname == f.labels and mod_D.params.shape == (7, HH) and mod_D.X.shape == (116, 6)
-    assert mod_D.hparam["p"] == 3 and mod_D.hparam["px"] == 2 and mod_D.hparam["skip"] == 3 and mod_D.getSkip() == 3
+    hp = mod_D.hparameter
+    assert hp["p"] == 3 and hp["px"] == 2 and hp["skip"] == 3 and mod_D.getSkip() == 3
     yf = mod_D.forecast()
     assert yf.shape == (116, HH) and np.all(yf >= 0)
     ft = mod_D.diagnoseAll()

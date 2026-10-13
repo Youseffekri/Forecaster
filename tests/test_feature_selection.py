@@ -9,6 +9,7 @@ from Util.transform import PowForm, TransformT
 from modeling.cem_selector import CEM_Selector, Random
 from modeling.feature_selection import BestStep, FeatureSelection, SelectionTech, qk as QK, qofVector
 from modeling.fit import N_QoF, QoF, diagnose
+from modeling.forecasting.args import Args
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
@@ -16,7 +17,7 @@ from modeling.forecasting.forecaster_d import aggFPE, smapeFPE
 from modeling.forecasting.forecaster_reg import Forecaster_Reg
 from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
+from modeling.forecasting.datasets import Example_Covid
 from modeling.subset_search import SubsetSearch
 
 
@@ -31,13 +32,13 @@ def quiet_and_training_rows():
 
 
 def covid():
-    y, xe = Example_Covid.loadData(["icu_patients", "positive_rate"])
+    xe, y = Example_Covid.clip(Example_Covid.loadData(Example_Covid.BEST2_EXO))
     return y, xe
 
 
 def small_arx_d(method="ridge", hh=3):
     y, xe = covid()
-    return ARX_D({"p": 3, "px": 2, "spec": 1, "lambda": 1.0}, y, hh, xe, method=method)   # 8 columns
+    return ARX_D(y, hh, xe, Args(p=3, px=2, spec=1, lam=1.0, method=method))   # 8 columns
 
 
 # -- SubsetSearch on a synthetic set function (ScalaTion's subsetSearchTest) ----------------------
@@ -244,7 +245,7 @@ def test_get_model_and_get_model_h_shapes():
     y, xe = covid()
     cols = [0, 2, 5]
     for mod in (small_arx_d("ridge"), small_arx_d("sm_ols"),
-                ARX_D.rescale({"p": 3, "px": 2, "spec": 1}, y, 3, xe, method="ridge", tFormT=TransformT.Log1p)):
+                ARX_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="ridge", tFormT=TransformT.Log1p))):
         sub = mod.getModel(cols)
         assert isinstance(sub, ARX_D) and sub.X.shape[1] == len(cols) and sub.fname == [mod.fname[j] for j in cols]
         assert sub.modelName == mod.modelName and sub.hh == mod.hh and sub.yForm is mod.yForm and not sub._useforge
@@ -256,13 +257,12 @@ def test_get_model_and_get_model_h_shapes():
         sub.train()
         sub.forecast()
         assert np.all(np.isfinite(sub.Yf[:, 1:-1]))
-    m3 = ARX_SR_D.rescale({"p": 3, "px": 2, "spec": 1}, y, 3, xe, [PowForm()], [[], []], method="sm_ols",
-                          tFormT=TransformT.Log1p)
+    m3 = ARX_SR_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="sm_ols", tFormT=TransformT.Log1p), [PowForm()], [[], []])
     sub = m3.getModel(cols)                                            # ScalaTion: the inherited ARX_D.getModel
     assert type(sub) is ARX_D and sub.X.shape[1] == 3 and sub.fname == [m3.fname[j] for j in cols]
     assert sub.modelName == "ARX_D_3_2_2" and sub.yForm is m3.yForm
-    data = Example_Covid.context(["icu_patients", "positive_rate"])
-    m4 = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pRate~1", data, 3, {"lambda": 1.0})
+    data = Example_Covid.context(Example_Covid.BEST2_EXO, ["icu", "pRate"])
+    m4 = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pRate~1", data, 3, Args(lam=1.0))
     sub = m4.getModel([1, 3, 4])                                       # the inherited ARX_D.getModel (no nFree)
     assert type(sub) is ARX_D and sub.X.shape[1] == 3 and sub.fname == [m4.fname[j] for j in (1, 3, 4)]
     assert sub.modelName == "ARX_D_3_1_2" and isinstance(m4, ARX_D)
@@ -283,7 +283,7 @@ def test_fullset_fs_switches_the_selection_rows():
 def test_forecaster_reg_selection_on_a_recursive_arx():
     """`ARX` is a `Forecaster_Reg`: it selects its own features (ScalaTion's `Forecaster_Reg.selectFeatures`)."""
     y, xe = covid()
-    arx = ARX({"p": 3, "px": 2, "spec": 1, "lambda": 1.0}, y, 3, xe, method="ridge")
+    arx = ARX(y, 3, xe, Args(p=3, px=2, spec=1, lam=1.0, method="ridge"))
     assert isinstance(arx, Forecaster_Reg)
     colsArr, rSqArr = arx.selectFeatures(SelectionTech.Stepwise, cross="none")
     assert 0 in colsArr[0] and arx.getBest().qof is not None
@@ -295,7 +295,7 @@ def test_forecaster_reg_selection_on_a_recursive_arx():
 def test_arx_d_test8_log_is_reproduced():
     """CEM at h = 1 on ARX_D_6_6_2 (Log1p, lambda = 1): 990 sets, the log's columns and score."""
     y, xe = covid()
-    mod = ARX_D.rescale({"p": 6, "px": 6, "spec": 1, "lambda": 1.0}, y, 6, xe, method="ridge", tFormT=TransformT.Log1p)
+    mod = ARX_D.rescale(y, 6, xe, Args(p=6, px=6, spec=1, lam=1.0, method="ridge", tFormT=TransformT.Log1p))
     colsArr, rSqArr = mod.selectFeatures(SelectionTech.CEM, h=1)
     assert colsArr[0] == [0, 1, 3, 5, 6, 7, 9, 11, 12, 13, 17, 18]
     assert mod.getBest().qof[QK] == pytest.approx(8.901091449490549, rel=1e-9)

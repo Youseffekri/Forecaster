@@ -7,8 +7,8 @@ import pytest
 from modeling.feature_selection import SelectionTech
 from modeling.llm_client import CachedClient, CountingClient, Json, LLMClient, LocalClient, MockLLMClient
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
-from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
+from modeling.forecasting.datasets import Datasets
+from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.genetic_proposer import GeneticProposer, RandomTerms
