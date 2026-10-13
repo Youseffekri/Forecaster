@@ -220,31 +220,14 @@ class ARX_D(Forecaster_D):
         Builds an `ARX_D` on the columns `cols` of X (ScalaTion's `ARX_D.getModel`): the same y, Y,
         hh, scaling, hyper-parameters and regression method, the feature names of the columns,
         e.g., the selected model after feature selection, `getModel(getBest().mod_cols)`;
-        `getModel()` is a copy on all the columns.
+        `getModel()` is a copy on all the columns.  The single-horizon `ARX` at h is
+        `getModel_h(cols, h)` (`Forecaster_D`).
 
         Parameters
         ----------
         cols : sequence of int, optional
             The columns of the input matrix with the selected features (defaults to all).
         """
-        from modeling.forecasting.feature_selection_d import subModel
         cols = self.mcols if cols is None else list(cols)
         sub = ARX_D(self.args, self.getY(), self.hh, None, self._method, self._X[:, cols])
-        return subModel(self, sub, cols)
-
-    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1) -> ARX:
-        """
-        Builds the single-horizon `ARX` at horizon h on the columns `cols` (ScalaTion's
-        `ARX_D.getModel_h`: `ARX` is the base model of the ARX*_D family): hh = 1, response
-        Y[:, h - 1], X given (no forging), the parent's scaling, skip and training size.
-
-        Parameters
-        ----------
-        cols : sequence of int, optional
-            The columns of the input matrix with the selected features (defaults to all).
-        h : int, default=1
-            The horizon.
-        """
-        from modeling.forecasting.feature_selection_d import subModel_h
-        cols = self.mcols if cols is None else list(cols)
-        return subModel_h(self, cols, h, self._method)
+        return self._subModel(sub, cols)

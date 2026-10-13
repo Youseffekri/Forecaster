@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forecaster"
-version = "2.0.0"
+version = "2.1.0"
 description = "Time series forecasting, the Python counterpart of ScalaTion's forecasting package: RandomWalk, AR, ARIMA, ARX / ARX_D, ARX_SR / ARX_SR_D, ARX_Formula, NARX_Formula / NARX_SR_D, feature selection and LLM-NARX-SR"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-neural = ["torch>=2.0"]
+neural = ["torch>=2.0", "matplotlib>=3.7"]
 test = ["pytest>=7"]
 
 [project.urls]

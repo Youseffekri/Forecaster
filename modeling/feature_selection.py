@@ -9,7 +9,7 @@ The Python counterpart of ScalaTion's `modeling/FeatureSelection.scala`:
                       and the slack base of the stepwise rule (+25 when qk is maximized, -25 otherwise)
     FeatureSelection  the trait: `selectFeatures` dispatches on the technique to `forwardSelAll`,
                       `backwardElimAll`, `stepwiseSelAll`, `beamSelAll`, `cemSelAll` (the subclasses
-                      implement them, see `modeling/forecasting/feature_selection_d.py`); its class
+                      implement them: `Forecaster_Reg` in `modeling/forecasting/forecaster_reg.py`); its class
                       attribute `fullset_FS` is ScalaTion's `FeatureSelection` object (whether the
                       selection sees the FULL dataset or the TRAINING rows only)
     SelectionReport   `reportSelection`: prints every selected column set (size, columns, features,
@@ -383,7 +383,8 @@ class FeatureSelection(SelectionReport):
     The framework for feature selection (ScalaTion's `FeatureSelection` trait): selecting the
     features (a variable x_j, a cross term x_j x_k, a functional form x_j^2) to include in the
     model.  `selectFeatures` dispatches on the technique; the five techniques are implemented by
-    the model family (see `FeatureSelection_Reg` in `modeling/forecasting/feature_selection_d.py`).
+    the model family (see `Forecaster_Reg` in `modeling/forecasting/forecaster_reg.py`; the direct
+    models' own scenarios are in `Forecaster_D`, `modeling/forecasting/forecaster_d.py`).
     Every selection returns ARRAYS -- (list of column sets, list of traces) with ONE element: the
     column set (the path's order for forward/backward, see `importance`) and its QoF trace -- the
     shape `Forecaster_D.selectFeaturesPerH` fills with one element per horizon, so

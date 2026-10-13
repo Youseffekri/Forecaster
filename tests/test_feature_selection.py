@@ -12,7 +12,8 @@ from modeling.fit import N_QoF, QoF, diagnose
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
-from modeling.forecasting.feature_selection_d import FeatureSelection_Reg, aggFPE, smapeFPE
+from modeling.forecasting.forecaster_d import aggFPE, smapeFPE
+from modeling.forecasting.forecaster_reg import Forecaster_Reg
 from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
@@ -167,7 +168,7 @@ def test_agg_fpe_is_the_mean_fpe_form_smape():
 def test_forward_selection_adds_the_best_column_first():
     mod = small_arx_d()
     n = mod.X.shape[1]
-    fs = FeatureSelection_Reg(mod.getModel_h(h=1))                     # the single-horizon selection (Forecaster_Reg)
+    fs = mod.getModel_h(h=1)                                           # the single-horizon ARX: its Forecaster_Reg selection
     colsArr, rSqArr = fs.forwardSelAll("none")
     scores = {j: fs.evalCols([0, j]).qof[QK] for j in range(1, n)}
     assert colsArr[0][0] == 0 and colsArr[0][1] == min(scores, key=scores.get)
@@ -181,7 +182,7 @@ def test_forward_selection_adds_the_best_column_first():
 def test_backward_elimination_removes_the_worst_column_first():
     mod = small_arx_d()
     n = mod.X.shape[1]
-    fs = FeatureSelection_Reg(mod.getModel_h(h=1))
+    fs = mod.getModel_h(h=1)
     path = SubsetSearch.backward(n, fs.evalCols, [0], minCols=2)
     scores = {j: fs.evalCols([c for c in range(n) if c != j]).qof[QK] for j in range(1, n)}
     assert path.steps[1].col == min(scores, key=scores.get)
@@ -270,21 +271,23 @@ def test_get_model_and_get_model_h_shapes():
 
 def test_fullset_fs_switches_the_selection_rows():
     mod = small_arx_d()
-    assert FeatureSelection_Reg(mod.getModel_h(h=1)).fs_rng == range(0, mod.tr_size)
+    assert mod.getModel_h(h=1).fs_rng == range(0, mod.tr_size)
     FeatureSelection.fullset_FS = True
-    assert FeatureSelection_Reg(mod.getModel_h(h=1)).fs_rng == range(0, len(mod.y))
-    assert FeatureSelection_Reg(mod.getModel_h(h=3)).fs_rng == range(0, len(mod.y) - 2)
+    assert mod.getModel_h(h=1).fs_rng == range(0, len(mod.y))
+    assert mod.getModel_h(h=3).fs_rng == range(0, len(mod.y) - 2)
     FeatureSelection.fullset_FS = False
 
 
-def test_feature_selection_reg_on_a_recursive_arx():
+def test_forecaster_reg_selection_on_a_recursive_arx():
+    """`ARX` is a `Forecaster_Reg`: it selects its own features (ScalaTion's `Forecaster_Reg.selectFeatures`)."""
     y, xe = covid()
     arx = ARX({"p": 3, "q": 2, "spec": 1, "lambda": 1.0}, y, 3, xe, method="ridge")
-    fs = FeatureSelection_Reg(arx)
-    colsArr, rSqArr = fs.selectFeatures(SelectionTech.Stepwise, cross="none")
-    assert 0 in colsArr[0] and fs.getBest().qof is not None
-    models, qofIn, qofTnT = fs.reportSelection(colsArr, rSqArr)
+    assert isinstance(arx, Forecaster_Reg)
+    colsArr, rSqArr = arx.selectFeatures(SelectionTech.Stepwise, cross="none")
+    assert 0 in colsArr[0] and arx.getBest().qof is not None
+    models, qofIn, qofTnT = arx.reportSelection(colsArr, rSqArr)
     assert models[0].hh == 1 and qofIn.shape == (1, N_QoF) and qofTnT.shape == (1, N_QoF)
+    assert models[0].modelName == arx.modelName and models[0].X.shape[1] == len(arx.bestCols(colsArr[0]))
 
 
 def test_arx_d_test8_log_is_reproduced():

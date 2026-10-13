@@ -1,6 +1,5 @@
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -85,6 +84,7 @@ class MHAttn_Regressor(nn.Module):
             heatMap_np = np.vstack((intercept_row, heatMap_np)) 
             heatMap_np = np.hstack((intercept_col, heatMap_np))
 
+            import matplotlib.pyplot as plt                              # optional dependency (the heatmap only)
             plt.figure(figsize=(8, 8))
             plt.imshow(heatMap_np, cmap='viridis', aspect='auto')
             plt.colorbar(label="Attention Score")
