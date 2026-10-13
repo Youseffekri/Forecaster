@@ -1,4 +1,4 @@
-"""Tests of EDA4TS (counterpart of eDA4TSTest), of Util/correlogram.py (correlogramTest2), of
+"""Tests of EDA4TS (counterpart of eDA4TSTest), of Stationarity_KPSS, of Util/correlogram.py (correlogramTest2), of
 `LLMProposer.promptBlock` and of the dataset configurations (ExoMode, the screening's shortlist -- the generic
 `DatasetConfig.shortlist` and `FormulaScorer.shortlist`; counterparts of datasetsTest / datasetsTest2)."""
 import math
@@ -7,12 +7,15 @@ import numpy as np
 import pytest
 
 from Util.correlogram import acfSpikes, acorr, ccorr, collinearPair, heteroscedastic, ljungBox
+from modeling.forecasting.args import Args
+from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.datasets import Datasets, ExoMode
 from modeling.forecasting.eda4ts import EDA4TS, topFreqs
 from modeling.forecasting.exo_screen import ExoScreen
 from modeling.forecasting.forecaster import trSize
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import LLMProposer
+from modeling.forecasting.stationarity_kpss import Stationarity_KPSS
 
 
 def planted():
@@ -35,7 +38,7 @@ def test_profile_finds_the_planted_structure():
     assert nm == "z" and k == 2 and r > 0.0
     assert eda.signs()["z"] == 1
     assert any(abs(p - 12.0) < 2.0 for p in eda.periods), eda.periods
-    assert eda.acf[0] == pytest.approx(1.0) and eda.pacf[0] == pytest.approx(1.0) and len(eda.acf) == 7
+    assert eda.acf[0] == pytest.approx(1.0) and eda.pacf[0] == 0.0 and len(eda.acf) == 7
     assert 0.0 <= eda.kpssP <= 1.0 or math.isnan(eda.kpssP)
     block = LLMProposer.promptBlock(eda, {"y": "y", "z": "x1"})
     assert "z:" not in block and "x1" in block and block.startswith("Data profile (training rows only):")
@@ -43,15 +46,29 @@ def test_profile_finds_the_planted_structure():
 
 
 def test_residual_report_fails_a_wrong_model():
+    """eDA4TSTest (rev4.1): y ~= y~1 as ARX_D (p = 1, px = 0, spec = 0) trained on the training rows;
+    its h = 1 residuals miss z~2 and the cycle, so at least one residual test fails."""
     y, z = planted()
-    sc = FormulaScorer({"y": y, "z": z}, hh=1, hp={"skip": 2})
-    eda = EDA4TS(y, {"z": z}, sc.trSize, maxLag=6)
-    mod = sc.fit("y ~= y~1")
-    tr = sc.trSize
-    yt, yp = sc._true_pred(mod, range(0, tr), 1, True)
-    e = (yt - yp)[1:]
-    lines, clean = eda.residualReport(e, mod.X[1:tr], mod.fname, yt[1:])
+    tr = trSize(len(y))
+    eda = EDA4TS(y, {"z": z}, 256, maxLag=6)
+    mod = ARX_D(y, 1, None, Args(p=1, px=0, spec=0))
+    mod.train(mod.Y[:tr], mod.X[:tr])
+    yf = mod.predict_rows(np.arange(len(y)))[:, 0]                       # the h = 1 forecast of every row
+    e = (y - yf)[1:tr]
+    lines, clean = eda.residualReport(e, mod.X[1:tr], mod.fname, y[1:tr])
     assert clean < 1.0 and any(l.startswith("Ljung-Box") for l in lines)
+
+
+def test_kpss_is_scalations():
+    """Stationarity_KPSS: the statistic of statsmodels' kpss, the p-value of ScalaTion's response surfaces
+    (the Covid-19 training rows: 0.43 in lLMProposerTest's EDA block; statsmodels clips it to 0.10)."""
+    y = Datasets.COVID2.load()["y"][:92]
+    t = Stationarity_KPSS(y, 0, "short", "c")
+    assert t.statistic() == pytest.approx(0.155764867609451, abs=1e-12) and t.lags == 3
+    assert t.pvalue() == pytest.approx(0.42835275908751, abs=1e-9)
+    assert EDA4TS(y, {}, 92).kpssP == pytest.approx(t.pvalue())
+    assert Stationarity_KPSS(y, 5, "short").pvalue() == pytest.approx(0.5912343124293, abs=1e-9)   # own lags replace the rule
+    assert Stationarity_KPSS(np.cumsum(np.arange(200.0)), 0, "short").pvalue() == pytest.approx(0.001)
 
 
 def test_correlogram_helpers():

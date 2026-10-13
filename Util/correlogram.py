@@ -22,7 +22,7 @@ to 0 far in the tail); a lag k >= n raises ValueError (ScalaTion's `flaw` prints
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -143,14 +143,13 @@ def acfPacf(y: np.ndarray, maxLag: int, adjusted: bool = True) -> Tuple[np.ndarr
     """
     The ACF and PACF of a series at lags 0..maxLag (ScalaTion's `Correlogram.makeCorrelogram`: the
     autocovariances `acov` (adjusted), the ACF their ratio to lag 0, the PACF the diagonal of the
-    Durbin-Levinson psi matrix).
+    Durbin-Levinson psi matrix -- so pacf[0] = psi(0, 0) = 0, as ScalaTion prints it).
     """
     y = np.asarray(y, dtype=float)
     ml = min(len(y) - 1, maxLag)
     acv = np.array([acov(y, k, adjusted) for k in range(ml + 1)])
     acf = acv / acv[0] if acv[0] != 0.0 else np.full(ml + 1, math.nan)
     pacf = np.diag(durbinLevinson(acv, ml)).copy()
-    pacf[0] = 1.0
     return acf, pacf
 
 

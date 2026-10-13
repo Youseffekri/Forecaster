@@ -13,13 +13,12 @@ profile in words for its prompts (`LLMProposer.promptBlock`) and ranks wave freq
 
 The Python counterpart of ScalaTion's `forecasting/EDA4TS.scala` (the class and its companion's
 `amplitudes`, `topFreqs`).  Differences: the periodogram amplitudes come from numpy's FFT (ScalaTion: a
-direct DFT; the same values); the KPSS test is statsmodels' `kpss` (regression "c", the "short" lag
-rule 4 (n/100)^(1/4); its p-value is interpolated inside [0.01, 0.10] and clipped outside, as
-ScalaTion's table lookup is); `periods` (the periods of `topFreqs`) is a Python helper.
+direct DFT; the same values); `periods` (the periods of `topFreqs`) is a Python helper.  The KPSS test
+is ScalaTion's `Stationarity_KPSS (yTr, 0, "short", "c")` (forecasting/stationarity_kpss.py).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -27,13 +26,12 @@ Note: AI assisted code
 from __future__ import annotations
 
 import math
-import warnings
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
-from statsmodels.tsa.stattools import kpss
 
 from Util.correlogram import acfPacf, acfSpikes, ccorr, collinearPair, heteroscedastic, ljungBox
+from modeling.forecasting.stationarity_kpss import Stationarity_KPSS
 
 # ---------------------------------------------------------------------------------------------
 #  Periodogram (ScalaTion's `EDA4TS` companion object)
@@ -153,14 +151,11 @@ class EDA4TS:
 
     @staticmethod
     def _kpss(y: np.ndarray) -> Tuple[float, float]:
-        """The KPSS level-stationarity test (statsmodels; the "short" lag rule), (NaN, NaN) on failure."""
+        """The KPSS level-stationarity test (`Stationarity_KPSS`, the "short" lag rule), (NaN, NaN) on failure."""
         try:
-            lags = int(4 * (len(y) / 100.0) ** 0.25)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                stat, p, _, _ = kpss(y, regression="c", nlags=lags)
-            return float(stat), float(p)
-        except Exception:
+            test = Stationarity_KPSS(y, 0, "short", "c")
+            return test.statistic(), test.pvalue()
+        except (ValueError, ZeroDivisionError, FloatingPointError):
             return math.nan, math.nan
 
     def pacfSpikes(self) -> List[Tuple[int, float]]:

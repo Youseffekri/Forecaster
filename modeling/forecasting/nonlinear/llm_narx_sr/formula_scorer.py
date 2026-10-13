@@ -37,7 +37,7 @@ the fit rows (ScalaTion refits the same parameter objects per block).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -607,8 +607,13 @@ class FormulaScorer:
         return np.asarray(mod.forecast(int(idx[0]), int(idx[-1]) + 1), dtype=float)
 
     def _true_pred(self, mod: Forecaster, rows: range, h: int, no_skip: bool):
+        """
+        The actual values and the column-h forecasts of the rows whose horizon-h targets lie inside
+        `rows` (ScalaTion's `diagnoseH`: y(t1+h-1 until t2) against yf(t1 until t2-h+1, h)), the
+        first `skip` rows dropped unless `no_skip`; (None, None) when no row is left.
+        """
         start = rows.start if no_skip else rows.start + self.skip
-        stop = min(rows.stop, self.m - h + 1)
+        stop = rows.stop - h + 1                                         # the target y(t+h-1) stays in the range
         if stop <= start:
             return None, None
         idx = np.arange(start, stop)
@@ -621,7 +626,8 @@ class FormulaScorer:
 
     def diagnoseH(self, mod: Forecaster, rows: range, h: int, noSkip: bool = False) -> Dict[str, float]:
         """
-        Diagnoses ONE horizon of a model on a row range: yf(t, h) is paired with y(t + h - 1), the
+        Diagnoses ONE horizon of a model on a row range: yf(t, h) is paired with y(t + h - 1) for the
+        rows whose target lies in the range (t1 <= t <= t2 - h, so m_h = m_1 - (h - 1)), the
         first `skip` rows dropped unless `noSkip` (an out-of-sample range), a response transform
         inverted, the DF reset as ScalaTion's `diagnoseH` does (the fit rows' size on a validation
         block); returns the QoF dict of that horizon.

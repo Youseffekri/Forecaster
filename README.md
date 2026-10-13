@@ -18,7 +18,7 @@ cd Forecaster
 pip install -e .            # numpy, pandas, scipy, scikit-learn, statsmodels
 pip install -e .[neural]    # + torch, for the neural models (MHAttn_Regressor)
 pip install -e .[test]      # + pytest
-pytest                      # 222 tests, ~45 s, all offline
+pytest                      # 225 tests, ~2 min, all offline
 python Examples/Example_Covid.py              # rw | ar | arima | arx | arx_d | arx_sr | arx_sr_d | formula | narx | narx_sr | optimizers | mhattn | run | all
 python Examples/Example_ILI.py                # rw | ar | arima | arx_d | arx_sr_d | all
 python Examples/Example_ETTh1.py              # rw | ar | arx_d | arx_sr_d | narx | all
@@ -173,7 +173,7 @@ runs = LLM_NARX_SR.runGrid("Covid-19", Datasets.COVID2, LLM_NARX_SR.zeroLLMArms(
 
 | level | files | what |
 |---|---|---|
-| base | `forecasting/datasets.py`, `forecasting/eda4ts.py`, `Util/correlogram.py` | the loaders `Example_Covid` / `Example_ILI` / `Example_ETTh1` / `Example_GEFCom` (ScalaTion's objects: `loadData` -> (xe, y), `clip`, `loadData_y`, `loadData_yy`, `context`), `DatasetConfig` (`ExoMode.Given` / `Auto`, the generic `shortlist (data, trSize, k, maxLag)`), `Datasets` (COVID2, COVID, COVID_ALL, COVID_FILE, ILI, ETTH1, ETTH1_1Y, GEF14, `fromFile`); `EDA4TS` (ACF/PACF, periodogram, CCF, KPSS, the residual report); the correlogram and the residual tests (`acorr`, `ccorr`, `corr`, `acfPacf`, `ljungBox`, `acfSpikes`, `collinearPair`, `heteroscedastic`) |
+| base | `forecasting/datasets.py`, `forecasting/eda4ts.py`, `forecasting/stationarity_kpss.py`, `Util/correlogram.py` | the loaders `Example_Covid` / `Example_ILI` / `Example_ETTh1` / `Example_GEFCom` (ScalaTion's objects: `loadData` -> (xe, y), `clip`, `loadData_y`, `loadData_yy`, `context`), `DatasetConfig` (`ExoMode.Given` / `Auto`, the generic `shortlist (data, trSize, k, maxLag)`), `Datasets` (COVID2, COVID, COVID_ALL, COVID_FILE, ILI, ETTH1, ETTH1_1Y, GEF14, `fromFile`); `EDA4TS` (ACF/PACF, periodogram, CCF, KPSS (`Stationarity_KPSS`, ScalaTion's p-value), the residual report); the correlogram and the residual tests (`acorr`, `ccorr`, `corr`, `acfPacf`, `ljungBox`, `acfSpikes`, `collinearPair`, `heteroscedastic`) |
 | L1 | `formula_scorer.py` | `FormulaScorer` (all ScalaTion hp entries; parse -> fit -> `Candidate`; J_h = sMAPE_h(validation)(1 + 2p/n); rejection rules: too many free parameters, a parameter at a bound, an exponent near 1, a collinear free-parameter column; a fit cache; `tnt`; `shortlist (cfg)`, the exogenous variables of a configuration) |
 | L2 | `term_library.py` | `TermLibrary` (grammar or union libraries, `selectBy` CEM / Forward / Backward / Stepwise / Beam on J) |
 | L3 | `search_arm.py` | `ArmSpec` (llm-loop, llm-cem, stat-cem, genetic, random and the ablations), `ExpRun` / `Trace` records, `SearchArm` |

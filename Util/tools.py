@@ -10,7 +10,7 @@ printing in `modeling/hyper_parameter.py`.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -98,11 +98,16 @@ def jdouble(x: float) -> str:
 
 
 def fmt_g(x: float) -> str:
-    """Six significant digits keeping trailing zeros, as Java's "%g" used by `VectorD.toString`."""
+    """Six significant digits keeping trailing zeros, as Java's "%g" used by `VectorD.toString` (which
+    never ends a number with the decimal point: 728386.0 prints as 728386)."""
     if isinstance(x, (bool, np.bool_)):
         return str(bool(x))
     xf = float(x)
-    return _java_special(xf) or "%#.6g" % xf
+    special = _java_special(xf)
+    if special:
+        return special
+    s = "%#.6g" % xf
+    return s[:-1] if s.endswith(".") else s
 
 
 def vector_str(v: Sequence[float], name: str = "VectorD") -> str:
