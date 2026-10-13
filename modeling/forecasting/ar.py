@@ -7,26 +7,24 @@ correlogram) or by ordinary least squares, forecasting RECURSIVELY from the last
 
     y_t = delta + phi_1 y_t-1 + ... + phi_p y_t-p,    delta = mean(y) (1 - sum phi)
 
-The Python counterpart of ScalaTion's `AR.scala` (`AR.apply` / `AR.rescale`).  `ar_yw.py`
-keeps the former name `AR_YW` as an alias.
+The Python counterpart of ScalaTion's `AR.scala` (`AR.apply` / `AR.rescale`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05 (rev 2026-10-12)
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import statsmodels.api as sm
-from sklearn.base import TransformerMixin
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from Util.build_matrix import build_lagged_matrix, fit_scaler
-from modeling.forecasting.forecaster import Forecaster
+from Util.make_matrix4ts import makeMatrix4L
+from Util.transform import NormForm
+from modeling.forecasting.forecaster import Forecaster, hp as AR_hp, trSize
 
 
 class AR(Forecaster):
@@ -49,13 +47,15 @@ class AR(Forecaster):
         yl{p} .. yl1.
     """
 
-    def __init__(self, args: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted") -> None:
+    hp = AR_hp                                                         # ScalaTion's `AR.hp`, the defaults of every forecaster
+
+    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted") -> None:
         """
         Initializes the AR forecaster.
 
         Parameters
         ----------
-        args : dict
+        hparam : dict
             The hyper-parameters: "p" (the number of lags), "skip" (defaults to p).
         y : np.ndarray, shape (m,)
             The time series.
@@ -64,30 +64,26 @@ class AR(Forecaster):
         method : {"adjusted", "mle", "sm_ols"}, default="adjusted"
             The estimator.
         """
-        a = dict(args)
-        a["q"] = 0
+        a = dict(hparam)
+        a["px"] = 0
         a.setdefault("spec", 0)
         super().__init__(a, y, hh)
         self._method = method
-        self._p = self.args["p"]
+        self._p = self.hparam["p"]
         self._modelName = f"AR_{self._p}"
-        self._set_X(build_lagged_matrix(self._y, self._p))
+        self._set_X(makeMatrix4L(self._y, self._p))
 
     @classmethod
-    def rescale(cls, args: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted",
-                tForm: Optional[Type[TransformerMixin]] = None) -> "AR":
+    def rescale(cls, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "adjusted") -> "AR":
         """
-        Alternative constructor that rescales y (scaler fitted on the training rows; MinMax to
-        (0, 4) by default, StandardScaler turns the non-negativity constraint off).
+        Creates the model on rescaled data (ScalaTion's `AR.rescale`): y standardized by a `NormForm`
+        fitted on the training rows (forecasts are inverted into `Yf`, and not rectified in the
+        standardized space).
         """
-        mod = cls(args, y, hh, method)
-        scaler = MinMaxScaler(feature_range=mod._lu) if tForm is None else tForm()
-        if isinstance(scaler, StandardScaler):
-            mod._nneg = False
-        fit_scaler(scaler, mod._y, mod._tr_size)
-        mod._yForm = scaler
-        mod._y = scaler.transform(mod._y.reshape(-1, 1)).flatten()
-        mod._set_X(build_lagged_matrix(mod._y, mod._p))
+        y = np.asarray(y, dtype=float)
+        tForm_y = NormForm(y[:trSize(len(y), cls.TE_RATIO)])            # (mean, std) of the training rows
+        mod = cls(hparam, tForm_y.f(y), hh, method)
+        mod._setYForm(tForm_y, y)
         return mod
 
     @property
@@ -102,7 +98,7 @@ class AR(Forecaster):
         y_ = self._y if y_ is None else y_
         p = self._p
         if self._method == "sm_ols":
-            X_ = build_lagged_matrix(y_, p) if X_ is None else X_
+            X_ = makeMatrix4L(y_, p) if X_ is None else X_
             fit = sm.OLS(y_[p:], sm.add_constant(X_[p:], has_constant="add")).fit()
             self._set_params(np.asarray(fit.params))
         else:

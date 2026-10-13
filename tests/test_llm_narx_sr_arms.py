@@ -8,7 +8,7 @@ import pytest
 
 from modeling.feature_selection import SelectionTech
 from modeling.llm_client import MockLLMClient
-from modeling.forecasting.nonlinear.narx_formula_parser import parse_formula
+from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm, arxFormulaStr
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
 from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
@@ -16,8 +16,8 @@ from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate,
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLMModel, LLM_NARX_SR
 from modeling.forecasting.nonlinear.llm_narx_sr.pipeline_arm import PipelineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.plausibility_checker import PlausibilityChecker
-from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import (ArmSpec, ExpRun, LibraryKind, Method, ProposerKind,
-                                                                  Source, Trace)
+from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import (ArmSpec, ExpRun, LibraryKind, Method,
+                                                                   ProposerKind, Source)
 from modeling.forecasting.nonlinear.llm_narx_sr.significance import Significance, wilcoxon_test
 
 SMALL = {"maxRounds": 3, "patience": 2, "cemSample": 40, "cemIter": 3, "refitTop": 2}   # the budgets of the tests
@@ -51,7 +51,7 @@ def test_anchors_match_scalation(covid):
     assert sel.best.score <= base.best.score + 1e-6 and sel.best.nTerms <= base.best.nTerms and sel.top
     assert rw.testSmape == pytest.approx(45.71, abs=0.05) and rw.best.formula is None and rw.best.model is not None
     assert rw.best.label.startswith("RandomWalk") and rw.exoUsed == [] and all(v > 0 for v in rw.smapeTest)
-    seed = sc.score(parse_formula(cfg.baselineFormulaStr(6), sc.vars, 6))
+    seed = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
     assert seed.key == base.best.key and seed.score == base.best.score, "the baseline must be the search seed"
     assert arxFormulaStr("y", 2, 0, ["icu"]) == "y ~= y~(2,1)" and arxFormulaStr("y", 6, 6, ["icu", "pRate"]) == cfg.baselineFormulaStr(6)
     assert base.name == "baseline" and tuned.method is Method.TunedARX and base.equations == ""
@@ -64,7 +64,7 @@ def test_zero_llm_pipeline_arms(covid):
     column filled, a trace behind the winner, the same stream reproducing the result; stat-cem's
     library, its traced equation from the library, a backward selector; the derived labels."""
     cfg, sc = covid
-    base = sc.score(parse_formula(cfg.baselineFormulaStr(6), sc.vars, 6))
+    base = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
     for spec in (ArmSpec.genetic, ArmSpec.random):
         arm = PipelineArm(spec, verbose=False)
         r = arm.run(cfg, sc, 0)
@@ -104,7 +104,7 @@ def test_llm_arms_with_a_scripted_client(covid):
     seed, the adaptive stop, a trace behind the winner, reproducible), llm-cem (the union library,
     the selected equation from it, probabilities and the selection trace) and the ablations."""
     cfg, sc = covid
-    base = sc.score(parse_formula(cfg.baselineFormulaStr(6), sc.vars, 6))
+    base = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
     loopArm = PipelineArm(ArmSpec.llmLoop, mock, maxRounds=6, patience=2, verbose=False)
     r0 = loopArm.run(cfg, sc, 0)
     assert loopArm.name == "llm-loop" and r0.method is Method.LLMLoop
@@ -189,7 +189,7 @@ def test_grid_report_and_folds(covid, tmp_path, capsys):
 def test_significance_on_hand_made_runs(capsys):
     """significanceTest: a uniformly better method is significant, one against itself is not, the
     one-sample test against a far-off constant is significant, the selection check is +1."""
-    f = parse_formula("y ~= y~1", ["y"], 1)
+    f = NARX_FormulaParser.parseFormula("y ~= y~1", ["y"], 1)
 
     def run(method, stream, smape, tnt):
         q = [{"smape": smape, "m": 50.0, "dfr": 1.0}]
@@ -233,13 +233,13 @@ def test_plausibility_checks():
     sc = FormulaScorer(data, hh=2)
     eda = EDA4TS(y, {"z": z, "w": w}, sc.trSize)
     checker = PlausibilityChecker({"z": 1, "w": -1})
-    c1 = sc.score(parse_formula("y ~= y~1 + z~(2,1) + log1p(w~1)", sc.vars, 3))
+    c1 = sc.score(NARX_FormulaParser.parseFormula("y ~= y~1 + z~(2,1) + log1p(w~1)", sc.vars, 3))
     p1 = checker.evaluate(c1, sc, eda)
     assert p1.netEffects["z"] > 0.0 > p1.netEffects["w"] and p1.signConsistency == 1.0 and p1.nSignChecked == 2
     assert 0.0 <= p1.cleanliness <= 1.0 and "sign= 1.00" in p1.tableRow
     p2 = PlausibilityChecker({"z": 1, "w": 1}).evaluate(c1, sc, eda)
     assert p2.signConsistency == pytest.approx(0.5)
-    c2 = sc.score(parse_formula("y ~= y~1 + z~2", sc.vars, 3))
+    c2 = sc.score(NARX_FormulaParser.parseFormula("y ~= y~1 + z~2", sc.vars, 3))
     assert checker.stability([c1, c1]) == 1.0 and 0.0 < checker.stability([c1, c2]) < 1.0 and math.isnan(checker.stability([c1]))
     base = Candidate(None, 1.0, [], 0, label="RandomWalk")
     assert math.isnan(checker.evaluate(base, sc, eda).signConsistency)

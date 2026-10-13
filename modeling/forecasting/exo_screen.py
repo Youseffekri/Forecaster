@@ -19,14 +19,14 @@ of `Model.scala` (`model_screen` here).  Three steps, each usable alone:
                stays below thr2 (collinearity), the first k kept
 
 and `screen` does the three in one call, returning the (xe, y, names) the forecasters take
-(`ARX_D (args, y, hh, xe)`), with the k chosen columns in the file's order.  What the data cannot
+(`ARX_D (hparam, y, hh, xe)`), with the k chosen columns in the file's order.  What the data cannot
 decide is whether a column is a driver or another measurement of the response (excess mortality
 next to Covid-19 deaths) or comparable over the whole period (case counts under changing testing
 regimes); that is domain knowledge, given through `exclude`.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 
 from Util.tools import banner
 from modeling.forecasting.forecaster import trSize
@@ -213,7 +214,6 @@ class ExoScreen:
         if header is None:
             if not hasattr(data, "columns"):
                 raise ValueError("pool: a header is needed for a matrix (or pass a DataFrame)")
-            import pandas as pd
             cols = [str(c) for c in data.columns]
             mat = np.column_stack([pd.to_numeric(data[c], errors="coerce").to_numpy(dtype=float) for c in data.columns]) \
                 if len(cols) > 0 else np.zeros((len(data), 0))
@@ -436,7 +436,7 @@ class ExoScreen:
         The one-call screen for a forecaster: from a data matrix with a header (or a DataFrame),
         the response's name and k, returns the exogenous matrix of the k variables chosen on the
         training rows -- all rows, columns in the file's order -- the response vector and the
-        chosen names (in that order): the (xe, y) pair `ARX_D (args, y, hh, xe)` and the other
+        chosen names (in that order): the (xe, y) pair `ARX_D (hparam, y, hh, xe)` and the other
         forecasters take.
 
         Parameters

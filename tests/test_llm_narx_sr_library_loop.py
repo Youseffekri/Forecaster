@@ -6,11 +6,10 @@ import numpy as np
 import pytest
 
 from modeling.feature_selection import SelectionTech
-from modeling.forecasting.arx_formula import FormulaVar, LabelMode, WaveTerm
-from modeling.forecasting.nonlinear.narx_formula import NARX_Formula
-from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser, parse_formula
+from modeling.forecasting.arx_formula import WaveTerm
+from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
-from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Source, Trace
+from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Source
 from modeling.forecasting.nonlinear.llm_narx_sr.search_loop import Proposer, Reject, SearchLoop
 from modeling.forecasting.nonlinear.llm_narx_sr.term_library import TermLibrary, fresh_terms, params_of
 
@@ -48,9 +47,9 @@ def test_grammar_library_and_union_library():
     lib = TermLibrary.fromGrammar("y", ["z"], maxLag=4)
     assert lib.size == 8 + 16 + 8 and lib.labels[:4] == ["y~1", "y~2", "y~3", "y~4"] and lib.indexOf("z~2") == 5
     assert lib.indexOf("nope") == -1 and lib.unitOf(3) == {3}
-    f1 = parse_formula("y ~= y~1 + z~2", ["y", "z"], 4)
-    f2 = parse_formula("y ~= y~1 + y~3", ["y", "z"], 4)
-    f3 = parse_formula("y ~= y~1 + log1p(z~1)", ["y", "z"], 4)
+    f1 = NARX_FormulaParser.parseFormula("y ~= y~1 + z~2", ["y", "z"], 4)
+    f2 = NARX_FormulaParser.parseFormula("y ~= y~1 + y~3", ["y", "z"], 4)
+    f3 = NARX_FormulaParser.parseFormula("y ~= y~1 + log1p(z~1)", ["y", "z"], 4)
     cands = [sc.score(f) for f in (f1, f2, f3)]
     lib2 = TermLibrary.from_(cands)
     prior = TermLibrary.frequencyPrior(cands, lib2)
@@ -76,7 +75,7 @@ def test_free_parameter_library_mechanics():
     data = planted_log()
     sc = FormulaScorer(data, hh=1, hp={"lambda": 1e-6, "boundTol": -1.0, "maxVIF": 0.0, "valFrac": 0.0})
     vars_ = sc.vars
-    cands = [sc.score(parse_formula(s, vars_, 4)) for s in
+    cands = [sc.score(NARX_FormulaParser.parseFormula(s, vars_, 4)) for s in
              ("y ~= y~1 + log(? + z~1)", "y ~= y~1 + log(?3 + z~1) + z~2", "y ~= y~2 + pow(z~1, ?)")]
     lib = TermLibrary.from_(cands)
     assert lib.size == 5 and lib.labels.count("log(? + z~1)") == 1
@@ -108,7 +107,7 @@ def test_waves_stay_whole_and_fresh_terms():
     assert len(j) == 4 and lib.unitOf(j[0]) == {j[0], j[1]} and lib.completeWaves([0, j[2]]) == [0, j[2], j[3]]
     f = lib.formulaOf([0, j[0]])
     assert "wave(1)" in f.formulaStr and f.nTerms == 3
-    g = parse_formula("y ~= y~1 + pow(y~(2,1), ?)", ["y"], 3)
+    g = NARX_FormulaParser.parseFormula("y ~= y~1 + pow(y~(2,1), ?)", ["y"], 3)
     ft = fresh_terms(g.preds)
     assert len(params_of(ft)) == 1 and not any(p is q for p in params_of(ft) for q in g.params()), "one shared copy, none of the originals"
 
@@ -152,7 +151,7 @@ def test_search_loop_scripted():
     sc = FormulaScorer(data, hh=2)
     vars_ = sc.vars
     loop = SearchLoop(sc, topK=3, verbose=False)
-    loop.seed((parse_formula("y ~= y~1", vars_, 4), Source.Seed))
+    loop.seed((NARX_FormulaParser.parseFormula("y ~= y~1", vars_, 4), Source.Seed))
     seedScore = loop.best.score
     done = loop.run(Scripted(vars_), perRound=3, maxRounds=10, patience=2)
     assert done == 4 and loop.nProposed == 7, "4 rounds (3 + 2 + 1 + 1 proposals), then stagnant/dry stop"
@@ -169,7 +168,7 @@ def test_trimmers_on_a_padded_proposal():
     data = planted_z2()
     sc = FormulaScorer(data, hh=2)
     vars_ = sc.vars
-    padded = parse_formula("y ~= y~1 + z~2 + z~1 + y~4 + z~4 + u~1 + u~2", vars_, 4)
+    padded = NARX_FormulaParser.parseFormula("y ~= y~1 + z~2 + z~1 + y~4 + z~4 + u~1 + u~2", vars_, 4)
     for tech in (SelectionTech.CEM, SelectionTech.Backward):
         loopT = SearchLoop(sc, topK=3, trimmer=tech, stream=0, verbose=False)
         tr = loopT.enter(padded, Source.LLM, 1)
@@ -179,7 +178,7 @@ def test_trimmers_on_a_padded_proposal():
         assert tr.candTrim.score < tr.cand.score and loopT.size == 1 and loopT.best.key == tr.key
         assert tr.dropped and tr.gain > 0 and str(tr).count("->") >= 2
     loopK = SearchLoop(sc, topK=3, trimmer=SelectionTech.Backward, stream=0, verbose=False)
-    trK = loopK.enter(parse_formula("y ~= y~1 + z~2 + z~1", vars_, 4), Source.LLM, 1)
+    trK = loopK.enter(NARX_FormulaParser.parseFormula("y ~= y~1 + z~2 + z~1", vars_, 4), Source.LLM, 1)
     assert trK.candTrim.score <= trK.cand.score and (trK.trimmer is None) == (trK.fTrim.key == trK.f.key)
 
 
@@ -187,7 +186,7 @@ def test_loop_rejects_over_the_cap_and_budget():
     data = planted_z2()
     sc = FormulaScorer(data, hh=1, hp={"maxFree": 1, "maxFits": 2})
     loop = SearchLoop(sc, topK=2, verbose=False)
-    f = parse_formula("y ~= y~1 + pow(z~1, ?) + log(? + z~2)", sc.vars, 4)
+    f = NARX_FormulaParser.parseFormula("y ~= y~1 + pow(z~1, ?) + log(? + z~2)", sc.vars, 4)
     n = loop.evaluate([f, Reject("bad")], Source.Genetic, 1)
     assert n == 0 and loop.nProposed == 2 and loop.nValid == 0 and loop.size == 0
 
@@ -195,7 +194,7 @@ def test_loop_rejects_over_the_cap_and_budget():
         source = Source.Random
 
         def propose(self, top, n):
-            return [parse_formula(f"y ~= y~1 + z~{k}", sc.vars, 4) for k in range(1, n + 1)]
+            return [NARX_FormulaParser.parseFormula(f"y ~= y~1 + z~{k}", sc.vars, 4) for k in range(1, n + 1)]
 
     done = loop.run(Many(), perRound=3, maxRounds=5, patience=5)
     assert done == 1 and loop.fits >= 2, "the fit budget stops the loop after the first round"

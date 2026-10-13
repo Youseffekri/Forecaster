@@ -35,8 +35,8 @@ validity rate is itself a reported metric.  Duplicate terms (same label) are col
 than rejected, as they would make the design matrix singular.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -46,7 +46,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from Util.transform import TransformT, transform_t
 from modeling.forecasting.arx_formula import (ARX_Formula, FUNCTIONS, FormulaVar, ProductTerm, Term, fn, pow as pow_,
@@ -432,17 +432,3 @@ class FormulaParser:
             if cls.logRejects:
                 print(f"tryParseFormula: {e}")
             return None, str(e)
-
-
-# -- module-level entry points ---------------------------------------------------------------------
-
-def parse_formula(text: str, vars_: Sequence[str], max_lag: int = 8, freqs: Optional[Sequence[float]] = None,
-                  max_terms: Optional[int] = 40) -> ARX_Formula:
-    """`FormulaParser.parseFormula` (the linear grammar)."""
-    return FormulaParser.parseFormula(text, vars_, max_lag, freqs, max_terms)
-
-
-def try_parse_formula(text: str, vars_: Sequence[str], max_lag: int = 8, freqs: Optional[Sequence[float]] = None,
-                      max_terms: Optional[int] = 40) -> Tuple[Optional[ARX_Formula], Optional[str]]:
-    """`FormulaParser.tryParseFormula` (the linear grammar)."""
-    return FormulaParser.tryParseFormula(text, vars_, max_lag, freqs, max_terms)

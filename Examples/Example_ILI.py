@@ -11,15 +11,15 @@ exogenous variables.  One scenario per `*_test` function, in the shape of ScalaT
     aR_test           AR(p) by Yule-Walker, p = 1..10    In-Sample (example_ILITest5) and TnT
     aRIMA_test        ARIMA(p, 1, q) for a few orders    In-Sample (the ARMA grid of example_ILITest6)
     aRX_D_test        ARX_D (p = q = 10, spec 1)         In-Sample and TnT
-    aRX_SR_D_test     ARX_SR_D.rescale (Pow of y and of each exogenous lag range, spec 1, cross terms)
+    aRX_SR_D_test     ARX_SR_D.rescale (Log1p; Pow of y and of each exogenous lag range, spec 1, cross terms)
                                                           In-Sample and TnT (example_ILITest10's model, direct)
 
 Run from the repository root:  python Examples/Example_ILI.py [rw|ar|arima|arx_d|arx_sr_d|all]
 (no argument: the quick default -- RandomWalk and ARX_D TnT).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -32,7 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 
 from Util.tools import banner
-from Util.transform import PowForm
+from Util.transform import PowForm, TransformT
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arima import ARIMA
 from modeling.forecasting.arx_d import ARX_D
@@ -50,15 +50,15 @@ RESPONSE = Example_ILI.RESPONSE                                         # ILITOT
 
 def load_ili():
     """(y, xe): the weekly ILI total and the two exogenous variables (ScalaTion's `loadData`)."""
-    return Example_ILI.load_data(EXO)
+    return Example_ILI.loadData(EXO)
 
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing (example_ILITest3) and TnT with rolling validation (example_ILITest4)."""
     banner(f"In-ST Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(y, hh).inSample_Test()
+    RandomWalk(None, y, hh).inSample_Test()
     banner(f"TnT Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(y, hh).tnT_Test(RC)
+    RandomWalk(None, y, hh).tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
@@ -81,29 +81,29 @@ def aRIMA_test(y, hh=HH, orders=((1, 1, 0), (1, 1, 1), (2, 1, 1), (3, 1, 2))):
         mod.inSample_Test()
 
 
-def aRX_D_test(y, xe, hh=HH, args=None, method="sm_ols"):
+def aRX_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
     """ARX_D (direct) with p = q = 10 lags and a linear trend (spec 1): In-Sample and TnT."""
-    args = {"p": 10, "q": 10, "spec": 1} if args is None else args
-    mod = ARX_D(args, y, hh, xe, method=method)
+    hparam = {"p": 10, "px": 10, "spec": 1} if hparam is None else hparam
+    mod = ARX_D(hparam, y, hh, xe, method=method)
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_D(args, y, hh, xe, method=method)
+    mod = ARX_D(hparam, y, hh, xe, method=method)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_D_test(y, xe, hh=HH, args=None, method="ridge"):
+def aRX_SR_D_test(y, xe, hh=HH, hparam=None, method="ridge"):
     """ARX_SR_D (direct, SR terms) as example_ILITest10's model: y^1.5 next to the lags of y, xe_j^1.5 next to
-    each exogenous variable's lags, a linear trend and ENDO-EXO cross terms, rescaled to (0, 4) first; the
-    centered ridge (lambda 1) of ScalaTion's RidgeRegression: In-Sample and TnT."""
-    args = {"p": 10, "q": 10, "spec": 1, "cross": True, "lambda": 1.0} if args is None else args
+    each exogenous variable's lags, a linear trend and ENDO-EXO cross terms, rescaled by Log1p first (as
+    ScalaTion's tests); the centered ridge (lambda 1) of ScalaTion's RidgeRegression: In-Sample and TnT."""
+    hparam = {"p": 10, "px": 10, "spec": 1, "crx": 1, "lambda": 1.0} if hparam is None else hparam
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[PowForm()] for _ in range(xe.shape[1])]                     # (xe_j + 0)^1.5
-    mod = ARX_SR_D.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_SR_D.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 
@@ -126,7 +126,7 @@ def main(argv):
     for w in which:
         if w == "default":
             randomWalk_test(y)
-            mod = ARX_D({"p": 10, "q": 10, "spec": 1}, y, HH, xe)
+            mod = ARX_D({"p": 10, "px": 10, "spec": 1}, y, HH, xe)
             banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
             mod.tnT_Test(RC)
         elif w in SCENARIOS:

@@ -28,15 +28,14 @@ array (None for a non-CEM technique); the random stream of the CEM sampler is `C
 (ScalaTion's `Random` port).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-import math
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -44,7 +43,7 @@ import numpy as np
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import Cols, SelectionTech
 from modeling.fit import QoF
-from modeling.forecasting.arx_formula import FUNCTIONS, FormulaVar, LabelMode, Term, WaveTerm, fn, wave as wave_k
+from modeling.forecasting.arx_formula import FormulaVar, LabelMode, Term, WaveTerm, fn, wave as wave_k
 from modeling.forecasting.nonlinear.narx_formula import (NARX_Formula, Par, ParWaveTerm, decay, ema, half, hinge,
                                                         pow as pow_p, power, sat, shift, thresh)
 from modeling.forecasting.arx_formula import log, pow as pow_fixed

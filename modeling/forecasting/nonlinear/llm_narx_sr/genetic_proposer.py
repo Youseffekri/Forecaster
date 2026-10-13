@@ -17,8 +17,8 @@ uniform random numbers come from numpy's `default_rng (stream)` (ScalaTion: its 
 reproduces a Python run, not the Scala draw sequence.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -29,8 +29,9 @@ from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
-from modeling.forecasting.arx_formula import (FUNCTIONS, FormulaVar, PowerTerm, ProductTerm, Term, TransformedTerm,
-                                              WaveTerm, exp, fn, log, pow as pow_fixed, wave as wave_k)
+from Util.transform import TransformT
+from modeling.forecasting.arx_formula import (FormulaVar, PowerTerm, ProductTerm, Term, TransformedTerm, WaveTerm,
+                                              exp, fn, log, pow as pow_fixed, wave as wave_k)
 from modeling.forecasting.nonlinear.narx_formula import (DqTerm, EmaTerm, HingeTerm, NARX_Formula, ParPowerTerm, ParTerm,
                                                         ParWaveTerm, SatTerm, ScaleTerm, ShiftTerm, TransTerm, cap as cap_p,
                                                         decay, dq, ema, freq, half, hinge, pow as pow_p, power, rate, sat,
@@ -42,8 +43,7 @@ from modeling.forecasting.nonlinear.llm_narx_sr.term_library import fresh_terms,
 
 
 def _tform(tFormT):
-    """The Log1p transform type (lazily, from `Util.transform`)."""
-    from Util.transform import TransformT
+    """The Log1p transform type when none is given (for the transformed proposals)."""
     return TransformT.Log1p if tFormT is None else None
 
 

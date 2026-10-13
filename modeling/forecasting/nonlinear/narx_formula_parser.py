@@ -17,15 +17,15 @@ in a parameter position is a constant.  The same validity rules and rejects as t
 parser apply, plus the ones of the forms above (e.g., powr keeps a fixed exponent).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from modeling.forecasting.arx_formula import FUNCTIONS, Term, fn, powr
 from modeling.forecasting.formula_parser import Ast, FormulaError, FormulaParser
@@ -161,22 +161,3 @@ class NARX_FormulaParser(FormulaParser):
             f"A lag range shares one parameter: pow({x}~(3,1), ?) is three terms with one exponent.  Each free parameter\n"
             "costs a penalty like a term, so use one only where a fixed number would be a guess."
         )
-
-
-# -- module-level entry points ---------------------------------------------------------------------
-
-def parse_formula(text: str, vars_: Sequence[str], max_lag: int = 8, freqs: Optional[Sequence[float]] = None,
-                  max_terms: Optional[int] = 40) -> NARX_Formula:
-    """`NARX_FormulaParser.parseFormula` (the grammar with free parameters)."""
-    return NARX_FormulaParser.parseFormula(text, vars_, max_lag, freqs, max_terms)
-
-
-def try_parse_formula(text: str, vars_: Sequence[str], max_lag: int = 8, freqs: Optional[Sequence[float]] = None,
-                      max_terms: Optional[int] = 40) -> Tuple[Optional[NARX_Formula], Optional[str]]:
-    """`NARX_FormulaParser.tryParseFormula`."""
-    return NARX_FormulaParser.tryParseFormula(text, vars_, max_lag, freqs, max_terms)
-
-
-def grammar_lines(x: str = "x1") -> str:
-    """`NARX_FormulaParser.grammarLines`."""
-    return NARX_FormulaParser.grammarLines(x)

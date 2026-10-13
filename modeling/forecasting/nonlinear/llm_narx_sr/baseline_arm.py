@@ -21,8 +21,8 @@ the comparison.
 The Python counterpart of ScalaTion's `llm_narx_sr/BaselineArm.scala`.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import List, Sequence
 
 from modeling.feature_selection import SelectionTech
+from modeling.forecasting.random_walk import RandomWalk
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
@@ -108,9 +109,8 @@ class BaselineArm(SearchArm):
             best = scorer.score(f) if not fitted else min(fitted, key=lambda c: c.score)
             return self.record(scorer, cfg, -1, best, sorted(fitted, key=lambda c: c.score)).copy(nEval=scorer.evaluations - eval0)
         # Method.RandomWalk
-        from modeling.forecasting.random_walk import RandomWalk
         y = scorer.fullSet[cfg.resp]
-        cand = scorer.score(RandomWalk(y, scorer.hh), "RandomWalk: y_t+h = y_t-1")
+        cand = scorer.score(RandomWalk(None, y, scorer.hh), "RandomWalk: y_t+h = y_t-1")
         return self.record(scorer, cfg, -1, cand).copy(nEval=scorer.evaluations - eval0)
 
     @staticmethod

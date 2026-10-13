@@ -26,8 +26,8 @@ regression is ScalaTion's `CenteredRidgeMV`, and `aRX_DTest8_test` reproduces th
 Run from the repository root:  python Examples/Example_FeatureSelection.py [5|6|7|8|9|search|cem|all]
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -40,7 +40,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 
 from Util.tools import banner, set_str, vector_str
-from Util.transform import Log1pForm
+from Util.transform import TransformT
 from modeling.cem_selector import CEM_Selector, Random
 from modeling.feature_selection import BestStep, FeatureSelection, SelectionTech
 from modeling.fit import N_QoF, QoF, diagnose
@@ -55,7 +55,7 @@ HH = 6                                                                  # maximu
 
 def load_covid():
     """(xe, y): the two best exogenous variables and the weekly deaths, the first 116 weeks (ScalaTion's clip (loadData (BEST2_EXO)))."""
-    y, xe = Example_Covid.load_data(Example_Covid.BEST2_EXO)
+    y, xe = Example_Covid.loadData(Example_Covid.BEST2_EXO)
     return xe, y
 
 
@@ -68,10 +68,10 @@ def aRX_DTest5_test(techs=(SelectionTech.CEM,)):
     h = 1 is printed first as the reference for reading the selection traces in ORIGINAL space.
     """
     xe, y = load_covid()
-    args = {"p": 10, "q": 5, "spec": 2, "lambda": 1.0}               # endo lags, exo lags, trend spec, regularization
+    hparam = {"p": 10, "px": 5, "spec": 2, "lambda": 1.0}               # endo lags, exo lags, trend spec, regularization
     FeatureSelection.fullset_FS = True                                 # in-sample test: select on all the rows
 
-    mod = ARX_D.rescale(args, y, HH, xe, method="ridge", tForm=Log1pForm)   # create model for time series data
+    mod = ARX_D.rescale(hparam, y, HH, xe, method="ridge", tFormT=TransformT.Log1p)   # create model for time series data
     mod.inSample_Test()                                                # the full model: the reference
 
     banner(f"reference for the selection trace: {mod.modelName} at h = 1 as a single-horizon ARX")
@@ -90,10 +90,10 @@ def aRX_DTest6_test(techs=(SelectionTech.CEM,)):
     `ARX` at h = 1, so its QoF has one horizon).
     """
     xe, y = load_covid()
-    args = {"p": 10, "q": 5, "spec": 2, "lambda": 1.0}
+    hparam = {"p": 10, "px": 5, "spec": 2, "lambda": 1.0}
     FeatureSelection.fullset_FS = False                                # TnT test: select on the training rows
 
-    mod = ARX_D.rescale(args, y, HH, xe, method="ridge", tForm=Log1pForm)
+    mod = ARX_D.rescale(hparam, y, HH, xe, method="ridge", tFormT=TransformT.Log1p)
     mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY,
                                                                        # as `tnT_Test` sets skip = 0 and the
                                                                        # selection below must keep the burn-in
@@ -110,10 +110,10 @@ def aRX_DTest7_test(techs=(SelectionTech.Backward,)):
     over the horizons (`aggFPE`); the selected model is tested in-sample against the full model.
     """
     xe, y = load_covid()
-    args = {"p": 6, "q": 6, "spec": 1, "lambda": 1.0}
+    hparam = {"p": 6, "px": 6, "spec": 1, "lambda": 1.0}
     FeatureSelection.fullset_FS = True
 
-    mod = ARX_D(args, y, HH, xe, method="ridge")                       # create model for time series data
+    mod = ARX_D(hparam, y, HH, xe, method="ridge")                       # create model for time series data
     mod.inSample_Test()                                                # the full model: the reference
 
     for tech in techs:
@@ -130,10 +130,10 @@ def aRX_DTest8_test(techs=(SelectionTech.CEM,)):
     log this reproduces).
     """
     xe, y = load_covid()
-    args = {"p": 6, "q": 6, "spec": 1, "lambda": 1.0}
+    hparam = {"p": 6, "px": 6, "spec": 1, "lambda": 1.0}
     FeatureSelection.fullset_FS = False
 
-    mod = ARX_D.rescale(args, y, HH, xe, method="ridge", tForm=Log1pForm)   # the rescaled version
+    mod = ARX_D.rescale(hparam, y, HH, xe, method="ridge", tFormT=TransformT.Log1p)   # the rescaled version
     mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY
 
     for tech in techs:
@@ -150,10 +150,10 @@ def aRX_DTest9_test(techs=(SelectionTech.Backward,)):
     its features.
     """
     xe, y = load_covid()
-    args = {"p": 6, "q": 6, "spec": 1, "lambda": 1.0}
+    hparam = {"p": 6, "px": 6, "spec": 1, "lambda": 1.0}
     FeatureSelection.fullset_FS = False
 
-    mod = ARX_D(args, y, HH, xe, method="ridge")
+    mod = ARX_D(hparam, y, HH, xe, method="ridge")
     mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY
 
     for tech in techs:

@@ -68,13 +68,6 @@ class MHAttn_Regressor(nn.Module):
             y_true = torch.cat(y_true_list, dim=0)
             test_loss = criterion(y_pred, y_true).item()
             print(f"Final Test Loss: {test_loss:.4f}")
-            # y_org = scalerY.inverse_transform(y_true.numpy())
-            # yp_org = scalerY.inverse_transform(y_pred.numpy())
-            y_org = y_true.numpy()
-            yp_org = y_pred.numpy()
-            # print(f"mse: {mse(y_org, yp_org)}")
-            # print(f"mae: {mae(y_org, yp_org)}")
-            # print(f"smape: {smape(y_org, yp_org)}")
 
             heatMap_np = heatMap.numpy()
             med = np.max(heatMap_np) /2.0

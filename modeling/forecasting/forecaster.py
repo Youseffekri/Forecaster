@@ -21,9 +21,15 @@ the rolling validation, the diagnosis over all horizons and the two standard tes
             rSq      -> VectorD(h = 1, h = 2, ..., h = hh)
             ...
 
+The hyper-parameters start from `hp` (ScalaTion's `AR.hp`: p, d, q, P, D, Q, s, px, spec, crx, nneg
+with their defaults), a `HyperParameter`, which the REPORT prints as ScalaTion does
+("HyperParameter(p -> (6,1), ...)").  The regression the forecasters delegate to (`_make_model`) is
+"sm_ols" (statsmodels), "sk_lr" (scikit-learn) or "ridge" -- ScalaTion's `CenteredRidge(MV)`, its
+only regression, with penalty hparam["lambda"] (default `CenteredRidge.hp`, 0.1) and `scaled`.
+
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05 (rev 2026-10-12)
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 """
 
@@ -34,10 +40,31 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from sklearn.linear_model import LinearRegression
 
-from Util.tools import array_str, banner, hparam_str, matrix_str, report, vector_str
-from modeling.fit import N_QoF, QoF, showFitMap
+from Util.make_matrix4ts import centered
+from Util.tools import array_str, banner, matrix_str, vector_str
+from modeling.centered_ridge import CenteredRidge
+from modeling.fit import N_QoF, fitMap, showFitMap
 from modeling.forecasting.diagnoser import Diagnoser
+from modeling.hyper_parameter import HyperParameter
+
+#: ScalaTion's `AR.hp`: the base hyper-parameters every forecaster starts from (value, default);
+#: `AR.hp` is this object.  Python-only entries ("skip", "lambda", ...) are added per model.
+hp = HyperParameter()
+hp.add("p", 1, 1)                  # number of Auto-Regressive (AR) parameters (lags of y)
+hp.add("d", 1, 1)                  # number of Differences to take
+hp.add("q", 1, 1)                  # number of Moving-Average (MA) parameters
+hp.add("P", 1, 1)                  # number of Seasonal Auto-Regressive (AR) parameters
+hp.add("D", 1, 1)                  # number of Seasonal Differences to take
+hp.add("Q", 1, 1)                  # number of Seasonal Moving-Average (MA) parameters
+hp.add("s", 7, 7)                  # length of the Seasonal Period
+hp.add("px", 1, 1)                 # number of lags for the eXogenous variables
+hp.add("spec", 1, 1)               # trend terms: 0 - implicit constant via centering, 1 - linear, 2 - quadratic, 3 - cubic
+hp.add("crx", 0, 0)                # 0 - no ENDO-EXO cross terms, 1 - include ENDO-EXO cross terms
+hp.add("nneg", 1, 1)               # 0 - unrestricted, 1 - predictions must be non-negative
+
+REGRESSION_METHODS = ("sm_ols", "sk_lr", "ridge")
 
 
 def teSize(m: int, te_ratio: float = 0.2) -> int:
@@ -61,11 +88,12 @@ class Forecaster(Diagnoser, ABC):
 
     Attributes
     ----------
-    args : dict
-        The hyper-parameters: "spec" (number of trend terms: 0 implicit constant, 1 linear,
-        2 quadratic, 3 cubic -- ScalaTion's convention), "p" (lags of y), "q" (lags of each
-        exogenous variable, ScalaTion's px), "cross" (ENDO-EXO cross terms, ScalaTion's crx),
-        "skip" (rows skipped in the In-Sample diagnosis, defaults to p).
+    hparam : HyperParameter
+        The hyper-parameters: `hp` (ScalaTion's `AR.hp`: "p" lags of y, "px" lags of each exogenous
+        variable, "spec" trend terms -- 0 implicit constant, 1 linear, 2 quadratic, 3 cubic --, "crx"
+        ENDO-EXO cross terms, "nneg" non-negative forecasts, ...) updated by the given ones, plus
+        "skip" (rows skipped in the In-Sample diagnosis, defaults to p) and, for method "ridge",
+        "lambda".
     hh : int
         The maximum forecasting horizon (h = 1 to hh).
     y : np.ndarray, shape (m,)
@@ -76,18 +104,19 @@ class Forecaster(Diagnoser, ABC):
         The regression parameters with the intercept FIRST: a vector (n + 1,) for a recursive
         model, a matrix (n + 1, hh) for a direct one.
     parameter : np.ndarray, shape (n,)
-        The slopes (horizon 1 for a direct model), as ScalaTion's `parameter` (b).
+        The coefficients b (horizon 1 for a direct model), as ScalaTion's `parameter`: the slopes, in
+        the standardized space for method "ridge" with scaled = True (`slopes` are original units).
     fname : list of str
         The column names of X (ScalaTion's `getFname`).
     modelName : str
-        E.g., "ARX_D_6_6_2" (p, q, n_exo), as ScalaTion names its models.
+        E.g., "ARX_D_6_6_2" (p, px, n_exo), as ScalaTion names its models.
     Yf : np.ndarray, shape (m, hh + 2)
         The FORECAST MATRIX in ORIGINAL units: column 0 the actual series, columns 1..hh the
         forecasts -- Yf[t, h] is the h-steps ahead forecast of y[t + h - 1], made from the
         information up to t - 1 -- and the last column the time index.
-    yForm : TransformerMixin, optional
-        The scaler of y (None unless made by `rescale`); forecasts are inverted before being
-        stored in Yf.
+    yForm : Transform, optional
+        The transform of y (None unless made by `rescale` or by a formula with a TFORM); forecasts
+        are inverted before being stored in Yf.
     tr_size, te_size : int
         The sizes of the initial training set and of the testing set (ScalaTion's `Model.trSize`/
         `teSize`, 80/20 by default).
@@ -99,20 +128,18 @@ class Forecaster(Diagnoser, ABC):
     """
 
     TE_RATIO = 0.2
-    _TE_RATIO = TE_RATIO
-    _lu = (0, 4)                                                   # default feature range of the MinMax scaler
     DO_REPORT = True                                               # print the REPORT in trainNtest
     SHOW_QoF = True                                                # print the QoF table in diagnoseAll
 
-    def __init__(self, args: Dict[str, Any], y: np.ndarray, hh: int, hasIntercept: bool = True) -> None:
+    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, hasIntercept: bool = True) -> None:
         """
         Initializes the Forecaster.
 
         Parameters
         ----------
-        args : dict
-            The hyper-parameters (see the class attributes); missing ones take ScalaTion's defaults
-            (spec 1, p 6, q 0, cross False, skip p).
+        hparam : dict or HyperParameter, optional
+            The hyper-parameters (see the class attributes); missing ones take the defaults of `hp`
+            (ScalaTion's `AR.hp`: p 1, px 1, spec 1, crx 0, nneg 1, ...) and skip = p.
         y : np.ndarray, shape (m,)
             The response vector (endogenous time series).
         hh : int
@@ -120,21 +147,24 @@ class Forecaster(Diagnoser, ABC):
         hasIntercept : bool, default=True
             Whether the model has an intercept (counted in the degrees of freedom).
         """
-        self.args = {"spec": args.get("spec", 1),
-                     "p": args.get("p", 6),
-                     "q": args.get("q", 0),
-                     "cross": args.get("cross", False),
-                     **args}
-        self.args["skip"] = args.get("skip", self.args["p"])
-        super().__init__(dfr=1.0, df=max(1.0, len(y) - 1.0), hasIntercept=hasIntercept, skip=self.args["skip"])
+        self.hparam: HyperParameter = hp.copy()
+        self.hparam.update(hparam or {})
+        for k in ("crx", "nneg"):                                      # ScalaTion keeps the switches as 0 / 1
+            if isinstance(self.hparam[k], (bool, np.bool_)):
+                self.hparam[k] = int(self.hparam[k])
+        self.hparam.setdefault("skip", self.hparam["p"])
+        super().__init__(dfr=1.0, df=max(1.0, len(y) - 1.0), hasIntercept=hasIntercept, skip=self.hparam["skip"])
         self.hh = hh
         self._y = np.asarray(y, dtype=float)
         self._X: Optional[np.ndarray] = None
         self._params: Optional[np.ndarray] = None
-        self._nneg = bool(self.args.get("nneg", True))
+        self._b: Optional[np.ndarray] = None                          # ScalaTion's b / bb (fitted space)
+        self._method: Optional[str] = None
+        self._scaled = False
+        self._nneg = self.hparam["nneg"] == 1
         self._tr_size = trSize(len(y), self.TE_RATIO)
         self._te_size = len(y) - self._tr_size
-        self._Yf = self.initialize_forecast_matrix()
+        self._Yf = self.makeForecastMatrix()
         self._yForm = None
         self._modelName: Optional[str] = None
         self._fname: Optional[List[str]] = None
@@ -147,9 +177,9 @@ class Forecaster(Diagnoser, ABC):
         return self._modelName if self._modelName is not None else self.__class__.__name__
 
     @property
-    def hparameter(self) -> Dict[str, Any]:
+    def hparameter(self) -> Optional[HyperParameter]:
         """The hyper-parameters (ScalaTion's `hparameter`)."""
-        return self.args
+        return self.hparam
 
     @property
     def fname(self) -> List[str]:
@@ -202,8 +232,22 @@ class Forecaster(Diagnoser, ABC):
 
     @property
     def yForm(self):
-        """The scaler of y (None unless made by `rescale`)."""
+        """The transform of y (None unless made by `rescale` or by a formula with a TFORM)."""
         return self._yForm
+
+    def _setYForm(self, tForm_y: Any, y_org: Optional[np.ndarray] = None) -> None:
+        """
+        Records the transform of y (the model works on the transformed y): column 0 of `Yf` holds
+        the series in ORIGINAL units (`y_org`, or the inverse of the model's y), and a transform into
+        a space where y can be negative turns the non-negativity off (ScalaTion's `centered`).
+        """
+        self._yForm = tForm_y
+        if tForm_y is None:
+            return
+        y0 = tForm_y.inverse_transform(self._y) if y_org is None else np.asarray(y_org, dtype=float)
+        self._Yf[:, 0] = np.asarray(y0, dtype=float).ravel()
+        if centered(tForm_y):
+            self._nneg = False
 
     @property
     def tr_size(self) -> int:
@@ -220,7 +264,7 @@ class Forecaster(Diagnoser, ABC):
         """Whether the forecasts are constrained to be non-negative."""
         return self._nneg
 
-    def initialize_forecast_matrix(self) -> np.ndarray:
+    def makeForecastMatrix(self) -> np.ndarray:
         """
         The FORECAST MATRIX in original units: column 0 holds y, columns 1..hh are zero (to hold
         the forecasts) and the last column holds the time index (ScalaTion's `makeForecastMatrix`).
@@ -268,7 +312,9 @@ class Forecaster(Diagnoser, ABC):
     @property
     def params(self) -> np.ndarray:
         """
-        The trained parameters with the intercept first: (n + 1,) or (n + 1, hh).
+        The intercept and the slopes stacked, intercept first: (n + 1,) or (n + 1, hh) -- the Python
+        storage layout.  Prefer ScalaTion's names: `parameter` (the slopes b), `intercept`, and `bb`
+        (the slope matrix of a direct model).
 
         Raises
         ------
@@ -281,7 +327,13 @@ class Forecaster(Diagnoser, ABC):
 
     @property
     def parameter(self) -> np.ndarray:
-        """The slope parameters b (horizon 1 for a direct model), as ScalaTion's `parameter`."""
+        """
+        The coefficients b (horizon 1 for a direct model), as ScalaTion's `parameter`: the regression's
+        own coefficients (in the standardized space for method "ridge" with scaled = True), the
+        slopes otherwise.
+        """
+        if self._b is not None:
+            return self._b[:, 0] if self._b.ndim == 2 else self._b
         p = self.params
         b = p[:, 0] if p.ndim == 2 else p
         return b[1:] if self._hasIntercept else b
@@ -311,6 +363,32 @@ class Forecaster(Diagnoser, ABC):
         """
         self.resetDF_k(size, self.nparams)
 
+    # -- the regression (ScalaTion's `reg` of `Forecaster_Reg` / `Forecaster_D`) ---------------
+
+    def _make_model(self):
+        """
+        The regression object of `method` (ScalaTion's `reg`): None for "sm_ols" (statsmodels, fitted
+        per call), scikit-learn's `LinearRegression` for "sk_lr", and `CenteredRidge` (penalty
+        hparam["lambda"], default `CenteredRidge.hp`; `scaled`) for "ridge".
+        """
+        if self._method == "sk_lr":
+            return LinearRegression()
+        if self._method == "ridge":
+            return CenteredRidge(CenteredRidge.ridge(self.hparam), self._scaled)
+        if self._method == "sm_ols":
+            return None
+        raise ValueError(f"method '{self._method}' unknown: sm_ols | sk_lr | ridge")
+
+    @property
+    def method(self) -> Optional[str]:
+        """The regression method ("sm_ols", "sk_lr" or "ridge"; None for a model without one)."""
+        return self._method
+
+    @property
+    def scaled(self) -> bool:
+        """Whether the ridge regression standardizes the columns (ScalaTion's `scaled`)."""
+        return self._scaled
+
     def _subModel(self, sub: "Forecaster", cols: Sequence[int], modelName: Optional[str] = None) -> "Forecaster":
         """
         Finishes a sub-model built on the columns `cols` of this model's input matrix (the model
@@ -318,7 +396,9 @@ class Forecaster(Diagnoser, ABC):
         `getModel` / `getModel_h`): this model's response in model units (scaled when it was made by
         `rescale`), its target matrix, transform of y, non-negativity, training/testing sizes, skip
         and the feature names of the columns, so the sub-model forecasts in the same units and on
-        the same rows; a sub-model has no lag structure to forge, so its `_useforge` is False.
+        the same rows; a sub-model has no lag structure to forge, so its `_useforge` is False, and its
+        skip is its own default (hparam["skip"]) -- as a new ScalaTion model's, not this model's current
+        skip (a `tnT_Test` sets that to 0).
 
         Parameters
         ----------
@@ -348,16 +428,15 @@ class Forecaster(Diagnoser, ABC):
         if hasattr(self, "_n_exo"):
             sub._n_exo = self._n_exo
         sub._modelName = self.modelName if modelName is None else modelName
-        sub._useforge = False
-        sub.setSkip(self.getSkip())
-        return sub
+        sub._useforge = False                                             # the skip is the sub-model's own default
+        return sub                                                        # (a new ScalaTion model), not this one's current
 
     def __repr__(self) -> str:
         """A string showing the model name, horizon and key hyper-parameters."""
-        s = f"{self.modelName}(p={self.args['p']}"
+        s = f"{self.modelName}(p={self.hparam['p']}"
         if hasattr(self, "_n_exo"):
-            s += f", q={self.args['q']}, n_exo={self._n_exo}"
-        s += f"), hh = {self.hh}, skip = {self.args['skip']}"
+            s += f", px={self.hparam['px']}, n_exo={self._n_exo}"
+        s += f"), hh = {self.hh}, skip = {self.hparam['skip']}"
         if hasattr(self, "_method"):
             s += f", method={self._method}"
         return s
@@ -399,6 +478,21 @@ class Forecaster(Diagnoser, ABC):
         """Forecasts all rows and all horizons (ScalaTion's `forecastAll`) and returns `Yf`."""
         self.forecast()
         return self._Yf
+
+    def forecastAt(self, h: int) -> np.ndarray:
+        """
+        The h-steps ahead forecasts of all the rows (ScalaTion's `forecastAt`): column h of the
+        forecast matrix (original units) after forecasting every row.
+
+        Parameters
+        ----------
+        h : int
+            The horizon (1 to hh).
+        """
+        if not 1 <= h <= self.hh:
+            raise ValueError(f"forecastAt: horizon h = {h} out of range [1, {self.hh}]")
+        self.forecast()
+        return self._Yf[:, h]
 
     def _adjust_range(self, t_start: int, t_end: int) -> Tuple[int, int]:
         """
@@ -444,13 +538,20 @@ class Forecaster(Diagnoser, ABC):
     def report(self, qof: np.ndarray) -> str:
         """
         Prints "b = VectorD(...), fn = Array(...)" and returns the REPORT block (ScalaTion's
-        `Model.report`): model name, hyper-parameters, feature names, parameters and the fit map.
+        `Model.report`): model name, hyper-parameters, feature names, parameters and the fit map of
+        horizon 1.
         """
         b, fn = self.parameter, self.fname
         print(f"b = {vector_str(b)}, fn = {array_str(fn)}")
         if len(fn) != len(b):
             print(f"report: fn: # features = {len(fn)} != # parameters = {len(b)}")
-        return report(self.modelName, self.hparameter, fn, b, qof)
+        rule = "    " + "-" * 76
+        hpr = "null" if self.hparameter is None else repr(self.hparameter)
+        return (f"\nREPORT\n{rule}\n    modelName  mn  = {self.modelName}\n{rule}\n"
+                f"    hparameter hp  = {hpr}\n{rule}\n"
+                f"    features   fn  = {array_str(fn)}\n{rule}\n"
+                f"    parameter  b   = {vector_str(b)}\n{rule}\n"
+                f"    fitMap     qof = {fitMap(qof)}\n{rule}\n        ")
 
     def trainNtest(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None
                    ) -> Tuple[np.ndarray, np.ndarray]:
@@ -607,7 +708,3 @@ class Forecaster(Diagnoser, ABC):
         if showParams:
             print(f"params = \n{self.params}")
         return ftMat
-
-    def trainNtest_Test(self, rc: int = 5, showYf: bool = False, showParams: bool = False) -> np.ndarray:
-        """The former name of `tnT_Test` (kept for compatibility)."""
-        return self.tnT_Test(rc, showYf, showParams)

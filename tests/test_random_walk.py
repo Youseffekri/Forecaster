@@ -12,18 +12,18 @@ HH = 3
 
 
 def covid_y():
-    y, _ = Example_Covid.load_data(["icu_patients", "positive_rate"])
+    y, _ = Example_Covid.loadData(["icu_patients", "positive_rate"])
     return y
 
 
 def test_no_parameters_and_the_scala_names():
     y = covid_y()
-    mod = RandomWalk(y, HH)
+    mod = RandomWalk(None, y, HH)
     assert mod.modelName == "RandomWalk"
     assert mod.fname == ["no-x features"]
     assert mod.parameter.shape == (0,) and mod.params.shape == (0,)
     assert mod.intercept is None
-    assert mod.args == {"skip": 1} and mod.getSkip() == 1               # ScalaTion: skip = max (1, AR.hp("p")) = 1
+    assert mod.hparam == {"skip": 1} and mod.getSkip() == 1               # ScalaTion: skip = max (1, AR.hp("p")) = 1
     mod.train()                                                          # a no-op
     assert mod.parameter.shape == (0,)
     assert repr(mod) == f"RandomWalk(), hh = {HH}, skip = 1"
@@ -32,13 +32,13 @@ def test_no_parameters_and_the_scala_names():
 def test_args_first_order_is_accepted():
     y = covid_y()
     a = RandomWalk({"skip": 2}, y, HH)
-    b = RandomWalk(y, HH, {"skip": 2})
-    assert a.args == b.args == {"skip": 2} and a.hh == b.hh == HH
+    b = RandomWalk({"skip": 2}, y, HH)
+    assert a.hparam == b.hparam == {"skip": 2} and a.hh == b.hh == HH
 
 
 def test_forecast_is_the_last_value_for_every_horizon():
     y = covid_y()
-    mod = RandomWalk(y, HH)
+    mod = RandomWalk(None, y, HH)
     mod.train()
     yf = mod.forecast()
     assert yf.shape == (len(y), HH)
@@ -52,7 +52,7 @@ def test_forecast_is_the_last_value_for_every_horizon():
 
 def test_in_sample_prints_the_scala_blocks(capsys):
     y = covid_y()
-    mod = RandomWalk(y, HH)
+    mod = RandomWalk(None, y, HH)
     yp, qof = mod.inSample_Test()
     out = capsys.readouterr().out
     assert "| In-Sample Test: RandomWalk |" in out and "| diagnoseAll: RandomWalk |" in out
@@ -68,7 +68,7 @@ def test_tnt_h1_forecasts_equal_y_shifted_and_reproduce_the_scala_smape():
     """TnT with rolling validation (rc 20): the testing rows' h = 1 forecasts are y shifted by one and
     the sMAPE per horizon is ScalaTion's example_CovidTest4 RW row (18.1532, 27.2211, 40.3519, ...)."""
     y = covid_y()
-    mod = RandomWalk(y, 6)
+    mod = RandomWalk(None, y, 6)
     ft = mod.tnT_Test(rc=20)
     te = teRng(len(y))
     assert np.array_equal(mod.Yf[te.start:, 1], y[te.start - 1:-1])
@@ -80,12 +80,12 @@ def test_tnt_h1_forecasts_equal_y_shifted_and_reproduce_the_scala_smape():
 
 def test_small_vectors_of_the_scala_tests():
     y5 = np.array([1, 3, 5, 7, 9, 11, 13, 15, 17, 19], dtype=float)      # randomWalkTest5
-    mod = RandomWalk(y5, 3)
+    mod = RandomWalk(None, y5, 3)
     mod.train()
     yf = mod.forecast()
     assert np.array_equal(yf[1:, 0], y5[:-1]) and np.all(yf[1:, 0] == y5[1:] - 2)
     y6 = np.array([1, 3, 4, 2, 5, 7, 9, 8, 6, 3], dtype=float)           # randomWalkTest6
-    _, qof = RandomWalk(y6, 1).inSample_Test()
+    _, qof = RandomWalk(None, y6, 1).inSample_Test()
     e = y6[1:] - y6[:-1]                                                 # the errors of rows 1..9 (skip 1)
     assert qof[QoF.sse.ordinal] == pytest.approx(float(e @ e)) == 40.0
 

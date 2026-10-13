@@ -15,8 +15,8 @@ same (W, z, p) as ScalaTion's; its p-value equals scipy's `wilcoxon (a, b, metho
 correction=True)` for n >= 2 (scipy is not used, so a tiny n gives the same number as the Scala run).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 import numpy as np
+from scipy.stats import norm, rankdata, spearmanr
 
 from Util.tools import banner
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import ExpRun, Method
@@ -40,7 +41,6 @@ def wilcoxon_test(a: Sequence[float], b: Sequence[float], show: bool = False) ->
     tie-corrected variance) and the two-sided p-value.  Pairs with a(i) == b(i) are dropped before
     ranking; if none remain, (0, 0, 1).  The normal approximation is the usual one for n >= 10 pairs.
     """
-    from scipy.stats import norm, rankdata
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     if len(a) != len(b):
         print("wilcoxon_test: samples must have the same length")
@@ -68,7 +68,6 @@ def wilcoxon_test(a: Sequence[float], b: Sequence[float], show: bool = False) ->
 
 def scorr(a: Sequence[float], b: Sequence[float]) -> float:
     """Spearman's rank correlation (ScalaTion's `VectorD.scorr`)."""
-    from scipy.stats import spearmanr
     return float(spearmanr(np.asarray(a, dtype=float), np.asarray(b, dtype=float)).statistic)
 
 

@@ -23,8 +23,8 @@ from scipy's chi-square.  The module functions `top_freqs`, `periods`, `amplitud
 core are kept.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -36,6 +36,8 @@ import warnings
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
+from scipy.stats import chi2
+from statsmodels.tsa.stattools import kpss
 
 # ---------------------------------------------------------------------------------------------
 #  Periodogram (ScalaTion's `EDA4TS` companion object)
@@ -88,8 +90,6 @@ def topFreqs(y: np.ndarray, k: int = 2, min_period: float = 2.0) -> np.ndarray:
     order = idx[np.argsort(-amp[idx], kind="stable")]
     return freqs[order[:k]]
 
-
-top_freqs = topFreqs                                                   # the former name
 
 
 def periods(y: np.ndarray, k: int = 2) -> np.ndarray:
@@ -195,7 +195,6 @@ def ljungBox(e: np.ndarray, maxLag: int, dof: int = 0) -> Tuple[float, float]:
     Q = n (n + 2) sum_{k=1}^{L} r_k^2 / (n - k), r_k the lag-k autocorrelation (MLE form);
     under H0 Q ~ ChiSquare (L - dof).  Returns (Q, p-value); the p-value is NaN when L - dof < 1.
     """
-    from scipy.stats import chi2
     e = np.asarray(e, dtype=float)
     n = len(e)
     ml = min(maxLag, n - 1)
@@ -306,7 +305,6 @@ class EDA4TS:
     def _kpss(y: np.ndarray) -> Tuple[float, float]:
         """The KPSS level-stationarity test (statsmodels; the "short" lag rule), (NaN, NaN) on failure."""
         try:
-            from statsmodels.tsa.stattools import kpss
             lags = int(4 * (len(y) / 100.0) ** 0.25)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

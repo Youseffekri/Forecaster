@@ -36,8 +36,8 @@ only); the validation folds refit fresh copies of a formula, so the candidate ke
 the fit rows (ScalaTion refits the same parameter objects per block).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -53,12 +53,13 @@ import numpy as np
 
 from Util.tools import vector_str
 from modeling.feature_selection import BestStep, Cols
-from modeling.fit import Fit, MAXI, QoF, fitMapDict, qoF_names
-from modeling.forecasting.forecaster import Forecaster
+from modeling.fit import Fit, MAXI, QoF, fitMapDict, qoF_names, showFitMap
+from modeling.forecasting.forecaster import Forecaster, trSize
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula as Formula, Par, ParRole
 from modeling.forecasting.formula_parser import FormulaError
-from modeling.forecasting.nonlinear.narx_formula_parser import parse_formula
-from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
+from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
+from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
+from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import acorr, topFreqs
 
 
 #: The search hyper-parameters (ScalaTion's `FormulaScorer.hp`, aliased as `LLM_NARX_SR.hp`): the
@@ -90,7 +91,7 @@ DEFAULT_HP: Dict[str, Any] = {
     "cemSample": 300,     # CEM: column sets per round on a library (-1 => CEM_Selector's default)
     "cemIter": 15,        # CEM: maximum rounds on a library
     "maxFits": 0,         # model fits a loop may make per run (0 => no budget)
-    "optimizer": "varpro",  # the optimizer of the nonlinear parameters: varpro, lbfgsb, joint
+    "optimizer": None,    # the optimizer of the nonlinear parameters (an `OptimizerNL` or its name); None => `OPTIMIZER_NL`
     "nneg": True,         # forecasts clipped at zero (count data); set False for series that go negative
 }
 
@@ -114,29 +115,29 @@ class Candidate:
         The formula (its parameters hold the fitted values); None for a base model or a failed parse.
     score : float
         The selection score J (lower is better); inf for a failed or rejected fit.
-    qof_train : list of dict
-        The QoF per horizon on the fit rows (ScalaTion's `qofTrain`, hh x N_QoF; empty when failed).
-    n_terms : int
+    qofTrain : list of dict
+        The QoF per horizon on the fit rows (ScalaTion's hh x N_QoF matrix; empty when failed).
+    nTerms : int
         The number of terms / columns (the parsimony measure).
-    qof_val : list of dict, optional
+    qofVal : list of dict, optional
         The QoF per horizon on the validation rows, averaged over the blocks (None => the fit rows').
     reason : str, optional
         Why the candidate failed or was rejected (None when it was not).
     label : str
         The display name of a base model (or of a failed parse).
-    extra_df : int
+    extraDF : int
         Parameters charged by J beyond the model's own (free parameters of a library set held fixed).
     model : Forecaster, optional
         The base model itself (None for a formula: rebuilt by `FormulaScorer.fit`).
     """
     formula: Optional[Formula]
     score: float
-    qof_train: List[Dict[str, float]] = field(default_factory=list)
-    n_terms: int = 0
-    qof_val: Optional[List[Dict[str, float]]] = None
+    qofTrain: List[Dict[str, float]] = field(default_factory=list)
+    nTerms: int = 0
+    qofVal: Optional[List[Dict[str, float]]] = None
     reason: Optional[str] = None
     label: str = ""
-    extra_df: int = 0
+    extraDF: int = 0
     model: Optional[Forecaster] = None
 
     # -- ScalaTion's names ------------------------------------------------------------------
@@ -162,94 +163,48 @@ class Candidate:
         return self.formula.proposalStr if self.formula is not None else self.label
 
     @property
-    def nTerms(self) -> int:
-        return self.n_terms
-
-    @property
     def nFree(self) -> int:
         """The number of free nonlinear parameters."""
         return self.formula.nFree if self.formula is not None else 0
 
     @property
-    def qofTrain(self) -> List[Dict[str, float]]:
-        return self.qof_train
-
-    @property
-    def qofVal(self) -> Optional[List[Dict[str, float]]]:
-        return self.qof_val
-
-    @property
-    def extraDF(self) -> int:
-        return self.extra_df
-
-    @property
     def smapeH(self) -> np.ndarray:
         """The in-sample sMAPE per horizon (fit rows)."""
-        return np.array([q["smape"] for q in self.qof_train]) if self.qof_train else np.array([])
+        return np.array([q["smape"] for q in self.qofTrain]) if self.qofTrain else np.array([])
 
     @property
     def smape(self) -> float:
         """The mean in-sample sMAPE over the horizons."""
-        return float(self.smapeH.mean()) if self.qof_train else math.inf
+        return float(self.smapeH.mean()) if self.qofTrain else math.inf
 
     @property
     def qofV(self) -> List[Dict[str, float]]:
         """The validation QoF (or the fit rows' when there is none)."""
-        return self.qof_val if self.qof_val is not None else self.qof_train
+        return self.qofVal if self.qofVal is not None else self.qofTrain
 
     @property
     def smapeValH(self) -> np.ndarray:
         """The validation sMAPE per horizon."""
-        return np.array([q["smape"] for q in self.qofV]) if self.qof_train else np.array([])
+        return np.array([q["smape"] for q in self.qofV]) if self.qofTrain else np.array([])
 
     @property
     def smapeVal(self) -> float:
         """The mean validation sMAPE over the horizons."""
-        return float(self.smapeValH.mean()) if self.qof_train else math.inf
+        return float(self.smapeValH.mean()) if self.qofTrain else math.inf
 
     @property
     def scoreH(self) -> np.ndarray:
         """J per horizon (`FormulaScorer.jOf`)."""
-        return FormulaScorer.jOf(self.qof_train, self.qofV, self.extra_df) if self.qof_train else np.array([])
+        return FormulaScorer.jOf(self.qofTrain, self.qofV, self.extraDF) if self.qofTrain else np.array([])
 
     @property
     def why(self) -> str:
         """The rejection reason, for display ("" when none)."""
         return f" -- {self.reason}" if self.reason else ""
 
-    # -- the former snake_case names ---------------------------------------------------------
-
-    @property
-    def formula_str(self) -> str:
-        return self.formulaStr
-
-    @property
-    def proposal_str(self) -> str:
-        return self.proposalStr
-
-    @property
-    def n_free(self) -> int:
-        return self.nFree
-
-    @property
-    def smape_h(self) -> np.ndarray:
-        return self.smapeH
-
-    @property
-    def qof_v(self) -> List[Dict[str, float]]:
-        return self.qofV
-
-    @property
-    def smape_val(self) -> float:
-        return self.smapeVal
-
-    @property
-    def score_h(self) -> np.ndarray:
-        return self.scoreH
-
     def __repr__(self) -> str:
         s = f"Candidate({self.formulaStr}, score={self.score:.4f}" if not self.failed else f"Candidate({self.formulaStr}, FAILED"
-        return s + f", n_terms={self.n_terms}, n_free={self.nFree}{self.why})"
+        return s + f", nTerms={self.nTerms}, nFree={self.nFree}{self.why})"
 
 
 def qof_table(qof: Sequence[Dict[str, float]], title: str = "") -> str:
@@ -263,7 +218,6 @@ def qof_table(qof: Sequence[Dict[str, float]], title: str = "") -> str:
 
 def qof_table_full(qof: Sequence[Dict[str, float]]) -> str:
     """The per-horizon QoF list as the full `Fit.showFitMap` table (all 26 measures)."""
-    from modeling.fit import showFitMap
     return showFitMap(np.column_stack([qof_vector(q) for q in qof]))
 
 
@@ -303,7 +257,7 @@ class FormulaScorer:
     """
 
     #: ScalaTion's `FormulaScorer.hp`: the module-level map a harness edits before building a scorer.
-    hp_defaults = DEFAULT_HP
+    hp = DEFAULT_HP
     CACHE_SZ = 64                                                      # fitted models kept (oldest evicted)
 
     def __init__(self, data: Dict[str, np.ndarray], hh: Optional[int] = None,
@@ -317,42 +271,41 @@ class FormulaScorer:
         self.hh = int(hh if hh is not None else self.hp["hh"])
         self.scaled = scaled
         self.m = len(next(iter(self.data.values())))
-        self.tr_size = _tr_size(self.m)                                   # ScalaTion's `Model.trSize`
-        self.te_size = self.m - self.tr_size
-        self.tr_rows = range(0, self.tr_size)
-        self.te_rows = range(self.tr_size, self.m)
+        self.trSize = trSize(self.m, NARX_SR_D.TE_RATIO)                 # ScalaTion's `Model.trSize`
+        self.teSize = self.m - self.trSize
+        self.trRng = range(0, self.trSize)
+        self.teRng = range(self.trSize, self.m)
         self.skip = int(self.hp["skip"])
-        self.h_sel = int(self.hp["hSel"])
+        self.hSel = int(self.hp["hSel"])
         self.rc = int(self.hp["rc"])
         self.ridge = float(self.hp["lambda"])
-        self.val_frac = float(self.hp["valFrac"])
-        self.val_folds = max(1, int(self.hp["valFolds"]))
-        self.n_val = 0 if self.val_frac <= 0.0 else max(self.val_folds * (self.hh + 1), int(round(self.val_frac * self.tr_size)))
-        self.fit_size = self.tr_size - self.n_val
-        self.fit_rows = range(0, self.fit_size)
-        self.val_rows = range(self.fit_size, self.tr_size)
-        if self.n_val == 0:
+        self.valFrac = float(self.hp["valFrac"])
+        self.valFolds = max(1, int(self.hp["valFolds"]))
+        self.nVal = 0 if self.valFrac <= 0.0 else max(self.valFolds * (self.hh + 1), int(round(self.valFrac * self.trSize)))
+        self.fitSize = self.trSize - self.nVal
+        self.fitRng = range(0, self.fitSize)
+        self.valRng = range(self.fitSize, self.trSize)
+        if self.nVal == 0:
             self.blocks: List[range] = []
         else:
-            b = self.n_val // self.val_folds
-            self.blocks = [range(self.fit_size + i * b, self.tr_size if i == self.val_folds - 1 else self.fit_size + (i + 1) * b)
-                           for i in range(self.val_folds)]
-        self.max_free = int(self.hp["maxFree"])
-        self.bound_tol = float(self.hp["boundTol"])
-        self.max_vif = float(self.hp["maxVIF"])
-        self.optimizer = str(self.hp["optimizer"])
+            b = self.nVal // self.valFolds
+            self.blocks = [range(self.fitSize + i * b, self.trSize if i == self.valFolds - 1 else self.fitSize + (i + 1) * b)
+                           for i in range(self.valFolds)]
+        self.maxFree = int(self.hp["maxFree"])
+        self.boundTol = float(self.hp["boundTol"])
+        self.maxVIF = float(self.hp["maxVIF"])
+        self.optimizer = OptimizerNL.of(self.hp["optimizer"])              # the optimizer of the free parameters
         self.evaluations = 0
         self._fitCache: "OrderedDict[str, NARX_SR_D]" = OrderedDict()   # key -> fitted model (fit rows)
-        if self.tr_size <= self.skip + 2:
-            raise ValueError(f"FormulaScorer: trSize = {self.tr_size} too small for skip = {self.skip}")
-        if self.n_val > 0 and self.fit_size <= self.skip + self.hh + 1:
-            raise ValueError(f"FormulaScorer: fit rows = {self.fit_size} too few for skip = {self.skip} and hh = {self.hh}: lower valFrac")
+        if self.trSize <= self.skip + 2:
+            raise ValueError(f"FormulaScorer: trSize = {self.trSize} too small for skip = {self.skip}")
+        if self.nVal > 0 and self.fitSize <= self.skip + self.hh + 1:
+            raise ValueError(f"FormulaScorer: fit rows = {self.fitSize} too few for skip = {self.skip} and hh = {self.hh}: lower valFrac")
         if freqs is not None:
             self.freqs = list(freqs)
         else:
-            from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import topFreqs
             resp = "y" if "y" in self.data else self.vars[0]
-            self.freqs = list(topFreqs(self.data[resp][: self.tr_size], int(self.hp["nFreqs"])))
+            self.freqs = list(topFreqs(self.data[resp][: self.trSize], int(self.hp["nFreqs"])))
 
     # -- ScalaTion's names of the rows ------------------------------------------------------
 
@@ -364,63 +317,7 @@ class FormulaScorer:
     @property
     def trainSet(self) -> Dict[str, np.ndarray]:
         """The training rows' columns."""
-        return {k: v[: self.tr_size] for k, v in self.data.items()}
-
-    @property
-    def trSize(self) -> int:
-        return self.tr_size
-
-    @property
-    def teSize(self) -> int:
-        return self.te_size
-
-    @property
-    def fitSize(self) -> int:
-        return self.fit_size
-
-    @property
-    def nVal(self) -> int:
-        return self.n_val
-
-    @property
-    def trRng(self) -> range:
-        return self.tr_rows
-
-    @property
-    def teRng(self) -> range:
-        return self.te_rows
-
-    @property
-    def fitRng(self) -> range:
-        return self.fit_rows
-
-    @property
-    def valRng(self) -> range:
-        return self.val_rows
-
-    @property
-    def valFrac(self) -> float:
-        return self.val_frac
-
-    @property
-    def valFolds(self) -> int:
-        return self.val_folds
-
-    @property
-    def maxFree(self) -> int:
-        return self.max_free
-
-    @property
-    def boundTol(self) -> float:
-        return self.bound_tol
-
-    @property
-    def maxVIF(self) -> float:
-        return self.max_vif
-
-    @property
-    def hSel(self) -> int:
-        return self.h_sel
+        return {k: v[: self.trSize] for k, v in self.data.items()}
 
     def hparam(self, **nvs: Any) -> Dict[str, Any]:
         """The hyper-parameter map a model built here carries: the scorer's ridge penalty with the
@@ -431,7 +328,7 @@ class FormulaScorer:
 
     def parse(self, text: str) -> Formula:
         """Parses a formula string against this dataset (variables, maxLag, frequencies)."""
-        return parse_formula(text, self.vars, int(self.hp["maxLag"]), self.freqs)
+        return NARX_FormulaParser.parseFormula(text, self.vars, int(self.hp["maxLag"]), self.freqs)
 
     def _formula(self, f: Union[str, Formula]) -> Formula:
         return self.parse(f) if isinstance(f, str) else Formula.of(f)
@@ -443,11 +340,10 @@ class FormulaScorer:
         fit rows; `trSize` for the final model), the parameters then held fixed
         (`NARX_SR_D.fromTerms`).
         """
-        size = self.fit_size if size is None else size
-        return NARX_SR_D.fromTerms(self._formula(f), self.data, self.hh, trSize=size, lam=self.ridge,
-                                   scaled=self.scaled, optimizer=self.optimizer,
-                                   maxLag=int(self.hp["maxLag"]), freqs=self.freqs,
-                                   nneg=bool(self.hp["nneg"]), fit_params=fit_params)
+        size = self.fitSize if size is None else size
+        return NARX_SR_D.fromTerms(self._formula(f), self.data, self.hh, self.hparam(nneg=int(bool(self.hp["nneg"]))),
+                                   trSize=size, scaled=self.scaled, optimizer=self.optimizer,
+                                   maxLag=int(self.hp["maxLag"]), freqs=self.freqs, fit_params=fit_params)
 
     def buildFixed(self, f: Union[str, Formula]) -> NARX_SR_D:
         """
@@ -457,10 +353,10 @@ class FormulaScorer:
         would be too costly.  Unset parameters are resolved from the fit rows first.
         """
         f = self._formula(f)
-        f.prepare(self.data, self.fit_size)                              # resolves the unset parameters
+        f.prepare(self.data, self.fitSize)                              # resolves the unset parameters
         copies: Dict[int, Par] = {id(p): Par.const(p.value) for p in f.params()}
         frozen = Formula(f.resp, [t.fresh(copies) for t in f.preds], f.tFormT)
-        return self.build(frozen, self.fit_size, fit_params=False)
+        return self.build(frozen, self.fitSize, fit_params=False)
 
     def train(self, mod: Forecaster, rows: Optional[range] = None) -> Forecaster:
         """
@@ -468,7 +364,7 @@ class FormulaScorer:
         rows for a final model) and sets the fixed skip; counts one fit (ScalaTion's `train`).
         A direct model trains on its (Y, X) rows, a model without an input matrix on its y rows.
         """
-        rows = self.tr_rows if rows is None else rows
+        rows = self.trRng if rows is None else rows
         sl = slice(rows.start, rows.stop)
         X = getattr(mod, "X", None)
         if X is not None and getattr(mod, "Y", None) is not None:
@@ -491,7 +387,7 @@ class FormulaScorer:
         key = self.keyOf(f)
         mod = self._fitCache.get(key)
         if mod is None:
-            mod = self.train(self.build(f), self.fit_rows)
+            mod = self.train(self.build(f), self.fitRng)
             if len(self._fitCache) >= self.CACHE_SZ:
                 self._fitCache.popitem(last=False)                       # evict the oldest
             self._fitCache[key] = mod
@@ -504,10 +400,7 @@ class FormulaScorer:
 
     def fitFull(self, f: Union[str, Formula]) -> NARX_SR_D:
         """The final model: parameters and coefficients fitted on ALL the training rows (not cached)."""
-        return self.train(self.build(f, self.tr_size), self.tr_rows)
-
-    def fit_full(self, f: Union[str, Formula]) -> NARX_SR_D:
-        return self.fitFull(f)
+        return self.train(self.build(f, self.trSize), self.trRng)
 
     # -- scoring -----------------------------------------------------------------------------
 
@@ -527,8 +420,8 @@ class FormulaScorer:
                 return Candidate(None, math.inf, reason=f"parse: {e}", label=f.strip())
         f = Formula.of(f)
         nf = f.nFree
-        if 0 <= self.max_free < nf:
-            return self.failed(f, f.nTerms, reason=f"{nf} free parameters, at most {self.max_free} allowed")
+        if 0 <= self.maxFree < nf:
+            return self.failed(f, f.nTerms, reason=f"{nf} free parameters, at most {self.maxFree} allowed")
         try:
             mod = self.fit(f)
             why = self.rejection(f, mod)
@@ -536,7 +429,7 @@ class FormulaScorer:
                 return self.failed(f, f.nTerms, reason=why)
             q = self.qofFit(mod)
             qv = self.qofValidationAll(mod, lambda size: self.build(f.fresh(), size))   # own copies: the candidate keeps its fit
-            return Candidate(f, self.scoreOf(q, qv), q, f.nTerms, qof_val=qv)
+            return Candidate(f, self.scoreOf(q, qv), q, f.nTerms, qofVal=qv)
         except (ValueError, np.linalg.LinAlgError, FloatingPointError, OverflowError, ZeroDivisionError) as e:
             return self.failed(f, f.nTerms, reason=f"fit failed: {e}")
 
@@ -547,14 +440,14 @@ class FormulaScorer:
         same object retrained per validation block, then left as trained on the fit rows.
         """
         try:
-            self.train(mod, self.fit_rows)
+            self.train(mod, self.fitRng)
             q = self.qofFit(mod)
             qv = self.qofValidationAll(mod, lambda size: mod)
-            if self.val_folds > 1 and self.n_val > 0:
-                self.train(mod, self.fit_rows)
+            if self.valFolds > 1 and self.nVal > 0:
+                self.train(mod, self.fitRng)
             X = getattr(mod, "X", None)
             k = X.shape[1] if X is not None else 0
-            return Candidate(None, self.scoreOf(q, qv), q, k, qof_val=qv, label=label, model=mod)
+            return Candidate(None, self.scoreOf(q, qv), q, k, qofVal=qv, label=label, model=mod)
         except (ValueError, np.linalg.LinAlgError, FloatingPointError, OverflowError, ZeroDivisionError) as e:
             return self.failed(None, 0, label, reason=f"fit failed: {e}")
 
@@ -574,20 +467,20 @@ class FormulaScorer:
         for p in pars:
             rng = p.ub - p.lb
             if math.isfinite(rng) and rng > 0.0:
-                tol = self.bound_tol * rng
+                tol = self.boundTol * rng
                 if p.value - p.lb <= tol:
                     return f"{p.role.value} {p.value:.4g} at its lower bound {p.lb:.4g}"
                 if p.ub - p.value <= tol:
                     return f"{p.role.value} {p.value:.4g} at its upper bound {p.ub:.4g}"
             if p.role is ParRole.POWER and abs(p.value - 1.0) < 0.05:
                 return f"exponent {p.value:.4g} is a plain lag"
-        if self.max_vif > 0.0 and pars and f.nTerms > 1:
-            X = mod.X[: self.fit_size]
+        if self.maxVIF > 0.0 and pars and f.nTerms > 1:
+            X = mod.X[: self.fitSize]
             Xc = X - X.mean(axis=0)
             for j, t in enumerate(f.preds):
                 if any(p.free for p in t.params()):
                     v = self.vif(Xc, j)
-                    if v > self.max_vif:
+                    if v > self.maxVIF:
                         return f"term {t.label()} is collinear with the others (VIF {v:.1f})"
         return None
 
@@ -622,13 +515,13 @@ class FormulaScorer:
             return ""
         k = int(self.hp["maxLag"]) if k is None else k
         try:
-            from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import acorr
+            # deferred: `explainer` imports this module (through `llm_proposer`), a genuine cycle
             from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
             mod = self.fit(cand.formula)
-            yt, yp = self._true_pred(mod, self.fit_rows, 1, False)
+            yt, yp = self._true_pred(mod, self.fitRng, 1, False)
             e = yt - yp                                                   # h = 1 residuals on the fit rows
             acf = "[" + ", ".join(f"{acorr(e, l):.2f}" for l in range(1, k + 1)) + "]"
-            imp = Explainer.importance(mod, cand.formula, self.fit_size)
+            imp = Explainer.importance(mod, cand.formula, self.fitSize)
             tot = sum(abs(i.effect) for i in imp)
             top = ", ".join(f"{i.label} {100 * abs(i.effect) / tot if tot > 0 else 0.0:.0f}%"
                             for i in sorted(imp, key=lambda i: -abs(i.effect))[:5])
@@ -659,10 +552,10 @@ class FormulaScorer:
     def qofTnt(self, mod: Forecaster, yf: np.ndarray) -> List[Dict[str, float]]:
         """The QoF per horizon of the rolling forecasts `yf` (teSize-by-hh, model units) of the testing rows."""
         out = []
-        te = self.te_size
+        te = self.teSize
         for h in range(1, self.hh + 1):
             n = te - h + 1
-            idx = np.arange(self.tr_size, self.tr_size + n)
+            idx = np.arange(self.trSize, self.trSize + n)
             y_true = mod.y[idx + h - 1]
             y_pred = yf[:n, h - 1]
             if mod.yForm is not None:
@@ -670,9 +563,6 @@ class FormulaScorer:
                 y_pred = mod.yForm.inverse_transform(y_pred.reshape(-1, 1)).ravel()
             out.append(self._diagnose(y_true, y_pred, self._dof(mod), len(y_true)))
         return out
-
-    def qof_tnt(self, mod: Forecaster, yf: np.ndarray) -> List[Dict[str, float]]:
-        return self.qofTnt(mod, yf)
 
     # -- QoF -----------------------------------------------------------------------------------
 
@@ -727,40 +617,25 @@ class FormulaScorer:
         y_true, y_pred = self._true_pred(mod, rows, h, noSkip)
         if y_true is None:
             raise ValueError(f"diagnoseH: no rows for horizon {h} in {rows}")
-        size = max(len(y_true), self.fit_size - self.skip) if noSkip else len(y_true)
+        size = max(len(y_true), self.fitSize - self.skip) if noSkip else len(y_true)
         return self._diagnose(y_true, y_pred, self._dof(mod), size)
-
-    def diagnose_h(self, mod: Forecaster, rows: range, h: int, no_skip: bool = False) -> Dict[str, float]:
-        return self.diagnoseH(mod, rows, h, no_skip)
 
     def qofByH(self, mod: Forecaster, rng: range, noSkip: bool = False) -> List[Dict[str, float]]:
         """The QoF per horizon (a list of hh dicts) of a model over the given rows."""
         return [self.diagnoseH(mod, rng, h, noSkip) for h in range(1, self.hh + 1)]
 
-    def qof_by_h(self, mod: Forecaster, rows: range, no_skip: bool = False) -> List[Dict[str, float]]:
-        return self.qofByH(mod, rows, no_skip)
-
     def qofTrain(self, mod: Forecaster) -> List[Dict[str, float]]:
         """The in-sample QoF of a model trained on the training rows (the first `skip` rows dropped)."""
-        return self.qofByH(mod, self.tr_rows)
-
-    def qof_train(self, mod: Forecaster) -> List[Dict[str, float]]:
-        return self.qofTrain(mod)
+        return self.qofByH(mod, self.trRng)
 
     def qofFit(self, mod: Forecaster) -> List[Dict[str, float]]:
         """The in-sample QoF of a model trained on the fit rows (the first `skip` rows dropped)."""
-        return self.qofByH(mod, self.fit_rows)
-
-    def qof_fit(self, mod: Forecaster) -> List[Dict[str, float]]:
-        return self.qofFit(mod)
+        return self.qofByH(mod, self.fitRng)
 
     def qofValidation(self, mod: Forecaster) -> List[Dict[str, float]]:
         """The QoF on the first validation block, every forecast there out of sample, no row
         skipped (the fit rows' QoF when there are no validation rows)."""
-        return self.qofFit(mod) if self.n_val == 0 else self.qofByH(mod, self.blocks[0], noSkip=True)
-
-    def qof_validation(self, mod: Forecaster) -> List[Dict[str, float]]:
-        return self.qofValidation(mod)
+        return self.qofFit(mod) if self.nVal == 0 else self.qofByH(mod, self.blocks[0], noSkip=True)
 
     def qofValidationAll(self, mod: Forecaster, fresh: Callable[[int], Forecaster]) -> List[Dict[str, float]]:
         """
@@ -769,17 +644,14 @@ class FormulaScorer:
         the QoF averaged over the blocks; with one block it is `qofValidation`.
         """
         q0 = self.qofValidation(mod)
-        if self.val_folds == 1 or self.n_val == 0:
+        if self.valFolds == 1 or self.nVal == 0:
             return q0
         qs = [q0]
-        for i in range(1, self.val_folds):
+        for i in range(1, self.valFolds):
             rows = range(0, self.blocks[i].start)
             m_i = self.train(fresh(rows.stop), rows)
             qs.append(self.qofByH(m_i, self.blocks[i], noSkip=True))
         return [{k: float(np.mean([q[h][k] for q in qs])) for k in qs[0][h]} for h in range(self.hh)]
-
-    def qof_validation_all(self, mod: Forecaster, fresh) -> List[Dict[str, float]]:
-        return self.qofValidationAll(mod, fresh)
 
     @staticmethod
     def keyOf(f: Formula) -> str:
@@ -797,20 +669,13 @@ class FormulaScorer:
         """
         return np.array([qv["smape"] * (1.0 + 2.0 * (q["dfr"] + 1.0 + extra) / q["m"]) for q, qv in zip(qof, qofV)])
 
-    @staticmethod
-    def j_of(qof, qof_v, extra: int = 0) -> np.ndarray:
-        return FormulaScorer.jOf(qof, qof_v, extra)
-
     def scoreOf(self, qof: Sequence[Dict[str, float]], qofV: Optional[Sequence[Dict[str, float]]] = None,
                 extra: int = 0) -> float:
         """The selection score J: the mean over horizons of `jOf`, or its h = 1 value when
         hp["hSel"] = 1; inf when undefined."""
         sj = self.jOf(qof, qof if qofV is None else qofV, extra)
-        s = float(sj[0]) if self.h_sel == 1 else float(sj.mean())
+        s = float(sj[0]) if self.hSel == 1 else float(sj.mean())
         return s if math.isfinite(s) else math.inf
-
-    def score_of(self, qof, qof_v=None, extra: int = 0) -> float:
-        return self.scoreOf(qof, qof_v, extra)
 
     # -- libraries (the cross-entropy stage, see `TermLibrary`) ------------------------------
 
@@ -839,11 +704,11 @@ class FormulaScorer:
         if not cols:
             return BestStep(-1, None, None, cols, qk)                     # the mean model is not a candidate
         try:
-            sub = self.train(lib.getModel(cols), self.fit_rows)
+            sub = self.train(lib.getModel(cols), self.fitRng)
             q = self.qofFit(sub)
             qv = self.qofValidationAll(sub, lambda size: lib.getModel(cols))
             s0 = self.scoreOf(q, qv, nFree)
-            s = s0 * (1.0 + (nFree - self.max_free)) if (0 <= self.max_free < nFree and math.isfinite(s0)) else s0
+            s = s0 * (1.0 + (nFree - self.maxFree)) if (0 <= self.maxFree < nFree and math.isfinite(s0)) else s0
             if not math.isfinite(s):
                 return BestStep(-1, None, None, cols, qk)
             qof = qof_vector(q[0])
@@ -859,7 +724,7 @@ class FormulaScorer:
         """A text report of a candidate: formula, score, in-sample and validation sMAPE, and
         (optionally) the rolling TnT sMAPE on the testing rows."""
         lines = [f"formula:    {cand.formulaStr}", f"key:        {cand.key}",
-                 f"score J:    {cand.score:.4f}   (n_terms = {cand.n_terms}, n_free = {cand.nFree}){cand.why}"]
+                 f"score J:    {cand.score:.4f}   (nTerms = {cand.nTerms}, nFree = {cand.nFree}){cand.why}"]
         if not cand.failed:
             lines.append("fit sMAPE:  " + " ".join(f"{v:7.3f}" for v in cand.smapeH))
             lines.append("val sMAPE:  " + " ".join(f"{q['smape']:7.3f}" for q in cand.qofV))
@@ -870,8 +735,3 @@ class FormulaScorer:
                              f"   mean {np.mean([q['smape'] for q in qt]):.3f}")
         return "\n".join(lines)
 
-
-def _tr_size(m: int) -> int:
-    """ScalaTion's `Model.trSize`."""
-    from modeling.forecasting.forecaster import trSize
-    return trSize(m, NARX_SR_D.TE_RATIO)

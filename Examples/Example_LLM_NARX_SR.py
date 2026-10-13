@@ -16,7 +16,7 @@ Run from the repository root:
     python Examples/Example_LLM_NARX_SR.py [covid|optimizers|gef14|etth1|baseline|genetic|random|mockllm|grid|all]
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
+Date: 2026-10-13
 License: MIT License
 Note: AI assisted code
 """
@@ -31,11 +31,12 @@ import numpy as np
 
 from modeling.feature_selection import SelectionTech
 from modeling.llm_client import MockLLMClient
-from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
+from modeling.forecasting.nonlinear import narx_sr_d
+from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, Example_GEFCom
 from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
-from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer, qof_table
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLM_NARX_SR
 from modeling.forecasting.nonlinear.llm_narx_sr.pipeline_arm import PipelineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.plausibility_checker import PlausibilityChecker
@@ -54,7 +55,7 @@ def banner(s: str) -> None:
 
 def score_table(sc: FormulaScorer, formulas, tnt: bool = True) -> None:
     """Scores each formula and prints J, the fit / validation sMAPE and (optionally) the rolling TnT sMAPE."""
-    print(f"{'J':>9s}  {'fit':>6s}  {'val':>6s}  {'TnT':>6s}  n_free  formula")
+    print(f"{'J':>9s}  {'fit':>6s}  {'val':>6s}  {'TnT':>6s}  nFree  formula")
     for s in formulas:
         c = sc.score(s)
         if c.failed:
@@ -101,17 +102,21 @@ def covid_test() -> None:
 
 
 def optimizer_test() -> None:
-    """The three optimizers of the nonlinear parameters on one Covid-19 formula."""
-    banner("optimizers of the nonlinear parameters: varpro, lbfgsb, joint (Covid-19)")
+    """The three optimizers of `OptimizerNL` on one Covid-19 formula (the counterpart of nARX_SR_DTest8):
+    the fitted parameters, the evaluations and the fitting time; the objective is in the debug line
+    of `NARX_SR_D.fitNL` (`narx_sr_d.DEBUG = True`)."""
+    banner("optimizers of the nonlinear parameters: OptimizerNL.VarPro, LBFGS_B, Joint (Covid-19)")
     data = Datasets.COVID2.load()
     formula = "y ~= y~(3,1) + log(? + icu~1) + pow(y~1, ?) + sat(pRate~1, ?)"
-    print(f"formula: {formula}\n{'optimizer':10s} {'scaled':6s} {'objective':>16s} {'evals':>6s} {'time':>7s}  fitted")
+    narx_sr_d.DEBUG = True                                                 # fitNL prints a, the objective and the steps
+    print(f"formula: {formula}\n{'optimizer':10s} {'scaled':6s} {'evals':>6s} {'time':>7s}  fitted")
     for scaled in (False, True):
-        for opt in NARX_SR_D.OPTIMIZERS:
+        for opt in OptimizerNL:
             t0 = time.time()
-            m = NARX_SR_D.fromTerms(formula, data, hh=6, lam=1.0, scaled=scaled, optimizer=opt, max_nfev=600)
-            print(f"{opt:10s} {str(scaled):6s} {m.steps['objective']:16.2f} {m.steps['nfev']:6d} {time.time() - t0:6.2f}s  "
+            m = NARX_SR_D.fromTerms(formula, data, 6, {"lambda": 1.0}, scaled=scaled, optimizer=opt, max_nfev=600)
+            print(f"{str(opt):10s} {str(scaled):6s} {m.stepCounts['nfev']:6d} {time.time() - t0:6.2f}s  "
                   f"{m.formulaStr.split('+ log')[1]}")
+    narx_sr_d.DEBUG = False
     print("VarPro eliminates the coefficients (6 horizons x 7 columns here) and searches the 3 parameters only;")
     print("the joint fit searches all 45 unknowns at once -- the same optimum when the columns are standardized, "
           "far more evaluations when they are not.")
@@ -124,10 +129,10 @@ def gefcom_test() -> None:
     data = Datasets.GEF14.load()
     sc = FormulaScorer(data, hh=6, hp={"maxLag": 7, "skip": 7})      # the weekly cycle
     print(f"rows {sc.m}: training {sc.trSize}, testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} days")
-    for opt in NARX_SR_D.OPTIMIZERS:
-        m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, hh=6, lam=1.0, scaled=True, optimizer=opt, maxLag=7)
-        print(f"{opt:7s}: hinge threshold = {m.formula.params()[0].value:6.2f} F   "
-              f"({m.steps['nfev']} evaluations) -- the cooling point of the V")
+    for opt in OptimizerNL:
+        m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, 6, {"lambda": 1.0}, scaled=True, optimizer=opt, maxLag=7)
+        print(f"{str(opt):7s}: hinge threshold = {m.formula.params()[0].value:6.2f} F   "
+              f"({m.stepCounts['nfev']} evaluations) -- the cooling point of the V")
     score_table(sc, [
         Datasets.GEF14.baselineFormulaStr(7),                  # 21 lag terms: TnT 12.78, the rev3.3 ScalaTion number
         "y ~= y~(7,1) + hinge(temp~1, ?)",

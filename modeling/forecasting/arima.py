@@ -26,8 +26,8 @@ constant (delta +: phi); here too `parameter` returns every fitted coefficient b
 variance sigma2, under the statsmodels names ("const", "ar.L1", "ma.L1", ...).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA as _SM_ARIMA
 
-from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.forecaster import Forecaster, hp as AR_hp
 
 
 class ARIMA(Forecaster):
@@ -49,9 +49,9 @@ class ARIMA(Forecaster):
 
     Attributes
     ----------
-    hp : dict (class attribute)
-        The default hyper-parameters, ScalaTion's `AR.hp`: p = 1, d = 1, q = 1.
-    args : dict
+    hp : HyperParameter (class attribute)
+        The default hyper-parameters, ScalaTion's `AR.hp` (p = 1, d = 1, q = 1, ...).
+    hparam : dict
         "p", "d", "q", "trend" and "skip" (default max (p, q + 1) + d).
     trend : str or sequence
         The statsmodels trend: "n" (none), "c" (constant), "t" (linear drift), "ct", or a
@@ -74,9 +74,9 @@ class ARIMA(Forecaster):
     AR : the Yule-Walker / OLS auto-regressive model of `ar.py`.
     """
 
-    hp: Dict[str, int] = {"p": 1, "d": 1, "q": 1}                      # ScalaTion's AR.hp defaults
+    hp = AR_hp                                                         # ScalaTion's AR.hp
 
-    def __init__(self, args: Optional[Dict[str, Any]], y: np.ndarray, hh: int,
+    def __init__(self, hparam: Optional[Dict[str, Any]], y: np.ndarray, hh: int,
                  trend: Union[str, Sequence[int], None] = None, method: Optional[str] = None,
                  **fit_kwargs: Any) -> None:
         """
@@ -84,7 +84,7 @@ class ARIMA(Forecaster):
 
         Parameters
         ----------
-        args : dict, optional
+        hparam : dict, optional
             The hyper-parameters: "p" (AR order), "d" (differences), "q" (MA order), each
             defaulting to `ARIMA.hp` (1, 1, 1); "skip" (default max (p, q + 1) + d); "nneg".
         y : np.ndarray, shape (m,)
@@ -99,7 +99,7 @@ class ARIMA(Forecaster):
         **fit_kwargs
             Further keyword arguments of `ARIMAResults.fit` (e.g., maxiter).
         """
-        a = dict(args or {})
+        a = dict(hparam or {})
         p, d, q = int(a.get("p", self.hp["p"])), int(a.get("d", self.hp["d"])), int(a.get("q", self.hp["q"]))
         if min(p, d, q) < 0:
             raise ValueError(f"ARIMA: p = {p}, d = {d}, q = {q} must be non-negative")
@@ -109,7 +109,7 @@ class ARIMA(Forecaster):
         a.update(p=p, q=q)
         a.setdefault("skip", max(p, q + 1) + d)
         super().__init__(a, np.asarray(y, dtype=float), int(hh), hasIntercept=bool(has_const))
-        self.args = {"p": p, "d": d, "q": q, "trend": self._trend, "skip": self.args["skip"]}
+        self.hparam.update(p=p, d=d, q=q, trend=self._trend)
         self._p, self._d, self._q = p, d, q
         self._method = method
         self._fit_kwargs = dict(fit_kwargs)
@@ -180,7 +180,7 @@ class ARIMA(Forecaster):
         self.resetDF_k(size, max(0, k))
 
     def __repr__(self) -> str:
-        return f"{self.modelName}(trend={self._trend!r}), hh = {self.hh}, skip = {self.args['skip']}"
+        return f"{self.modelName}(trend={self._trend!r}), hh = {self.hh}, skip = {self.hparam['skip']}"
 
     # -- training and forecasting --------------------------------------------------------------
 

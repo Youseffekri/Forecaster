@@ -5,30 +5,32 @@ Forecasting the weekly US Covid-19 deaths (data/covid_19_weekly.csv, the first 1
 `Example_Covid.clip`) h = 1..6 weeks ahead, with icu_patients and positive_rate as the exogenous
 variables (`Example_Covid.BEST2_EXO`).  One scenario per `*_test` function, in the shape of the Scala
 tests (`example_CovidTest3..6`, `randomWalkTest3/4`, `aRX_DTest4`, `aRX_SR_DTest`, `aRX_FormulaTest5`,
-`nARX_FormulaTest5`, `nARX_SR_DTest5`): build the model, In-Sample test it, then Train-and-Test it with
-rolling validation; every model prints ScalaTion's blocks (REPORT, "fitMap QoF =").
+`nARX_FormulaTest5`, `nARX_SR_DTest5..8`): build the model, In-Sample test it, then Train-and-Test it with
+rolling validation; every model prints ScalaTion's blocks (REPORT, "fitMap QoF =", SUMMARY).
 
     randomWalk_test   RandomWalk                                 In-Sample and TnT
     aR_test           AR(p) by Yule-Walker, p = 1..10            In-Sample and TnT (example_CovidTest5/6)
     aRIMA_test        ARIMA(1,1,1), ARIMA(2,1,0), ARIMA(1,0,1)   In-Sample and TnT (statsmodels-backed)
-    aRX_test          ARX (p = q = 6, spec 0), also rescaled     TnT (example_CovidTest16, recursive)
-    aRX_D_test        ARX_D (p = q = 6, spec 0)                  TnT (aRX_DTest4, the paper's baseline, direct)
-    aRX_SR_test       ARX_SR.rescale with PowForm / LogForm      TnT (recursive, SR terms)
-    aRX_SR_D_test     ARX_SR_D.rescale with PowForm, RootForm, LogForm   In-Sample and TnT (aRX_SR_DTest)
+    aRX_test          ARX (p = px = 6, spec 0), also rescaled (Norm)   TnT (example_CovidTest16, recursive)
+    aRX_D_test        ARX_D (p = px = 6, spec 0)                 TnT (aRX_DTest4, the paper's baseline, direct)
+    aRX_SR_test       ARX_SR.rescale (Log1p) with PowForm / LogForm   TnT (recursive, SR terms)
+    aRX_SR_D_test     ARX_SR_D.rescale (Log1p) with PowForm, RootForm, LogForm   In-Sample, SUMMARY, TnT (aRX_SR_DTest)
     aRX_Formula_test  ARX_Formula DSL: fit (ARX) and fit_D (ARX_D), TFORM: Log1p   (aRX_FormulaTest5)
     nARX_Formula_test NARX_Formula fitNL_D and NARX_SR_D.fromTerms on a string formula  (nARX_FormulaTest5)
+    nARX_SR_D_test    NARX_SR_D.rescale with Root transforms, default vs fitted parameters, Backward FS  (nARX_SR_DTest5)
+    optimizers_test   the three OptimizerNL on Pow / Log transforms, lambda = 6  (nARX_SR_DTest8)
     mHAttn_test       the multi-head attention regressor's feature scores (needs torch; skipped otherwise)
 
 Hyper-parameters follow ScalaTion: `spec` counts the trend columns (0 implicit constant, 1 linear
-trend, 2 quadratic, 3 cubic), `p` the lags of y, `q` the lags of each exogenous variable, `skip` the
+trend, 2 quadratic, 3 cubic), `p` the lags of y, `px` the lags of each exogenous variable, `skip` the
 rows dropped from the In-Sample diagnosis (p by default).
 
-Run from the repository root:  python Examples/Example_Covid19.py [rw|ar|arima|arx|arx_d|arx_sr|arx_sr_d|formula|narx|mhattn|all]
+Run from the repository root:  python Examples/Example_Covid.py [rw|ar|arima|arx|arx_d|arx_sr|arx_sr_d|formula|narx|narx_sr|optimizers|mhattn|all]
 (no argument: the quick default -- RandomWalk, AR(6) and ARX_D).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -38,11 +40,13 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import time
+
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 from Util.tools import banner
-from Util.transform import LogForm, PowForm, RootForm
+from Util.transform import LogForm, PowForm, RootForm, TransformT
+from modeling.feature_selection import FeatureSelection, SelectionTech
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arima import ARIMA
 from modeling.forecasting.arx import ARX
@@ -51,7 +55,7 @@ from modeling.forecasting.arx_formula import ARX_Formula, FormulaVar, log1p
 from modeling.forecasting.arx_sr import ARX_SR
 from modeling.forecasting.arx_sr_d import ARX_SR_D
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula, decay, ema, half, sat, thresh, trans, width
-from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
+from modeling.forecasting.nonlinear.narx_sr_d import OPTIMIZER_NL, NARX_SR_D, OptimizerNL
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 from modeling.forecasting.random_walk import RandomWalk
 
@@ -64,15 +68,15 @@ EXO = Example_Covid.BEST2_EXO                                           # icu_pa
 
 def load_covid():
     """(y, xe): the weekly deaths and the two best exogenous variables, the first 116 weeks."""
-    return Example_Covid.load_data(EXO)
+    return Example_Covid.loadData(EXO)
 
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation (randomWalkTest3, randomWalkTest4)."""
-    banner(f"In-ST Forecasts: RandomWalk on COVID-19 Dataset")
-    RandomWalk(y, hh).inSample_Test()
-    banner(f"TnT Forecasts: RandomWalk on COVID-19 Dataset")
-    RandomWalk(y, hh).tnT_Test(RC)
+    banner("In-ST Forecasts: RandomWalk on COVID-19 Dataset")
+    RandomWalk(None, y, hh).inSample_Test()
+    banner("TnT Forecasts: RandomWalk on COVID-19 Dataset")
+    RandomWalk(None, y, hh).tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
@@ -98,50 +102,53 @@ def aRIMA_test(y, hh=HH, orders=((1, 1, 1), (2, 1, 0), (1, 0, 1))):
         mod.tnT_Test(RC)
 
 
-def aRX_test(y, xe, hh=HH, args=None, method="sm_ols"):
-    """ARX (recursive) on the raw series and rescaled with a StandardScaler (ScalaTion's NormForm): TnT."""
-    args = {"p": 6, "q": 6, "spec": 0} if args is None else args
-    mod = ARX(args, y, hh, xe, method=method)
+def aRX_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+    """ARX (recursive) on the raw series and rescaled by NormForm (`tFormT = TransformT.Norm`): TnT."""
+    hparam = {"p": 6, "px": 6, "spec": 0} if hparam is None else hparam
+    mod = ARX(hparam, y, hh, xe, method=method)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
-    mod = ARX.rescale(args, y, hh, xe, method=method, tForm=StandardScaler)
+    mod = ARX.rescale(hparam, y, hh, xe, method=method, tFormT=TransformT.Norm)
     banner(f"TnT Forecasts: {mod.modelName} (rescaled, NormForm) on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_D_test(y, xe, hh=HH, args=None, method="sm_ols"):
+def aRX_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
     """ARX_D (direct, one regression per horizon): In-Sample and TnT (aRX_DTest4 with p = px = 6, spec = 0)."""
-    args = {"p": 6, "q": 6, "spec": 0} if args is None else args
-    mod = ARX_D(args, y, hh, xe, method=method)
+    hparam = {"p": 6, "px": 6, "spec": 0} if hparam is None else hparam
+    mod = ARX_D(hparam, y, hh, xe, method=method)
     banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.inSample_Test()
-    mod = ARX_D(args, y, hh, xe, method=method)
+    mod = ARX_D(hparam, y, hh, xe, method=method)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_test(y, xe, hh=HH, args=None, method="sm_ols"):
+def aRX_SR_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
     """ARX_SR (recursive, symbolic regression terms): y^1.5 next to the lags of y and log (1 + xe_j) next to
-    each exogenous variable's lags; rescaled to (0, 4) first so the powers and logs stay defined."""
-    args = {"p": 6, "q": 4, "spec": 0, "cross": False} if args is None else args
+    each exogenous variable's lags; rescaled by Log1p first (as ScalaTion's tests), so the powers and logs
+    stay defined."""
+    hparam = {"p": 6, "px": 4, "spec": 0, "crx": 0} if hparam is None else hparam
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[LogForm()] for _ in range(xe.shape[1])]                     # log (1 + xe_j)
-    mod = ARX_SR.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+    mod = ARX_SR.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
     print(f"columns: {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_D_test(y, xe, hh=HH, args=None, method="sm_ols"):
-    """ARX_SR_D (direct, SR terms): PowForm and RootForm of y, LogForm of each exogenous variable (aRX_SR_DTest)."""
-    args = {"p": 6, "q": 4, "spec": 0, "cross": False} if args is None else args
+def aRX_SR_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+    """ARX_SR_D (direct, SR terms): PowForm and RootForm of y, LogForm of each exogenous variable, rescaled by
+    Log1p (aRX_SR_DTest5): In-Sample with the coefficient table (`summary`), then TnT."""
+    hparam = {"p": 6, "px": 4, "spec": 0, "crx": 0} if hparam is None else hparam
     fEndo = [PowForm(), RootForm()]                                      # y^1.5 and y^0.5
     fExo = [[LogForm()] for _ in range(xe.shape[1])]                     # log (1 + xe_j)
-    mod = ARX_SR_D.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
     print(f"columns: {mod.fname}")
     banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.inSample_Test()
-    mod = ARX_SR_D.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+    print(mod.summary())                                                 # statistical summary of fit
+    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.Log1p)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
@@ -152,7 +159,7 @@ def aRX_Formula_test(hh=HH):
     and the forecasts come back in deaths."""
     data = Example_Covid.context(EXO)                                     # {"y", "icu", "pRate"}
     y, icu, pRate = FormulaVar("y"), FormulaVar("icu"), FormulaVar("pRate")
-    f = ARX_Formula(y, y.lags(6, 1) + icu.lags(4, 1) + [log1p(pRate.lag_(1))] + [y.lag_(1) * icu.lag_(1)])
+    f = ARX_Formula(y, y.lags(6, 1) + icu.lags(4, 1) + [log1p(pRate.lagged(1))] + [y.lagged(1) * icu.lagged(1)])
     banner(f"ARX_Formula: {f.formulaStr}")
     print(f"key     = {f.key}\nlagHP   = {f.lagHP()}\nnTerms  = {f.nTerms}")
     mod_D = f.fit_D(data, hh)                                             # ARX_D.fromTerms + trainNtest
@@ -179,30 +186,80 @@ def nARX_Formula_test(hh=HH):
     parameters (VarPro); then the same model from a string formula through NARX_SR_D.fromTerms, TnT."""
     data = Example_Covid.context(EXO)
     y, icu, pRate = FormulaVar("y"), FormulaVar("icu"), FormulaVar("pRate")
-    f = NARX_Formula(y, y.lags(3, 1) + [sat(icu.lag_(1), half()), ema(pRate.lag_(1), decay())]
-                     + trans(y.lag_(1), thresh(), width()) * y.lags(3, 1))
+    f = NARX_Formula(y, y.lags(3, 1) + [sat(icu.lagged(1), half()), ema(pRate.lagged(1), decay())]
+                     + trans(y.lagged(1), thresh(), width()) * y.lags(3, 1))
     banner(f"NARX_Formula: {f.formulaStr}")
     print(f"key     = {f.key}\nnParams = {f.nParams}, nFree = {f.nFree}")
 
     banner("fit_D: ARX_D with the parameters at their start values")
-    mod0 = f.fit_D(data, hh, scaled=True)
+    mod0 = f.fit_D(data, hh, scaled=True, method="ridge", hparam={"lambda": 1.0})
     print(f"formula = {f.formulaStr}")
     mod0.forecastAll()
     mod0.diagnoseAll()
 
-    banner("fitNL_D: NARX_SR_D with the parameters fitted by varpro")
-    mod = f.fitNL_D(data, hh, scaled=True)
-    print(f"formula = {f.formulaStr}\nparam_nl = {mod.w_nl}, steps = {mod.steps}")
+    banner(f"fitNL_D: NARX_SR_D with the parameters fitted by {OPTIMIZER_NL}")
+    mod = f.fitNL_D(data, hh, scaled=True, hparam={"lambda": 1.0})          # RidgeRegression.hp("lambda") = 1.0
+    print(f"formula = {f.formulaStr}\nparam_nl = {mod.w_nl}, stepCounts = {mod.stepCounts}")
     mod.forecastAll()
     mod.diagnoseAll()
 
     formula = "y ~= y~(3,1) + log(? + icu~1) + pow(y~1, ?) + sat(pRate~1, ?)"
-    mod2 = NARX_SR_D.fromTerms(formula, data, hh, lam=1.0, scaled=True)
+    mod2 = NARX_SR_D.fromTerms(formula, data, hh, {"lambda": 1.0}, scaled=True)
     banner(f"TnT Forecasts: {mod2.modelName} on {mod2.formulaStr}")
     mod2.tnT_Test(RC)
 
 
-def mHAttn_test(y, xe, hh=HH, args=None):
+def nARX_SR_D_test(y, xe, hh=HH):
+    """NARX_SR_D from transform TYPES (nARX_SR_DTest5): a ROOT transform (y + s)^r of the y lags and of each
+    exogenous variable's lags, rescaled by MinMax to [1, 5]; first with the DEFAULT nonlinear parameters
+    (tune = False, the ARX_SR_D model with those transforms), then with the parameters fitted by
+    `OPTIMIZER_NL`; Backward feature selection at h = 1 on the fitted model, the selected model in TnT."""
+    hparam = {"p": 6, "px": 4, "spec": 1, "crx": 0, "lambda": 6.0}        # RidgeRegression.hp("lambda") = 6.0
+    fEndo = [TransformT.Root]                                           # transform types for the endogenous variable
+    fExo = [[TransformT.Root], [TransformT.Root]]                       # and for each exogenous variable
+
+    banner("NARX_SR_D with the DEFAULT nonlinear parameters")
+    mod0 = NARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, tune=False)
+    mod0.inSample_Test()                                                # In-sample Testing
+    mod0.tnT_Test(rc=2)                                                 # TnT with Rolling Validation
+
+    banner(f"NARX_SR_D with the nonlinear parameters fitted by {OPTIMIZER_NL}")
+    mod = NARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo)
+    mod.inSample_Test()
+    mod.tnT_Test(rc=2)
+
+    banner("nonlinear parameters (shift, root) of f0 (y), g0,0 (icu_patients), g1,0 (positive_rate)")
+    print(f"default: {mod0.parameter_nl}")
+    print(f"fitted:  {mod.parameter_nl}")
+
+    banner("Feature Selection (Backward, horizon 1 decides) on the model with the fitted nonlinear parameters")
+    FeatureSelection.fullset_FS = False                                 # TnT test: select on the training rows
+    colsArr, rSqArr = mod.selectFeatures(SelectionTech.Backward, "none", h=1)
+    mod.reportSelection(colsArr, rSqArr, inSample=False, rc=2)          # TnT of the selected multi-horizon model
+
+
+def optimizers_test(y, xe, hh=HH):
+    """The NONLINEAR OPTIMIZERS of `OptimizerNL` (nARX_SR_DTest8) on a POWER term of y, (y + s)^p, and a LOG
+    term of each exogenous variable, log (xe + s), lambda = 6: for each optimizer the fitted parameters, the
+    fitting time and TnT with rolling validation -- they minimize the same objective, so they agree on the
+    parameters when they converge and differ in cost."""
+    hparam = {"p": 6, "px": 4, "spec": 1, "crx": 0, "lambda": 6.0}
+    fEndo = [TransformT.Pow]                                            # (y + s)^p: shift s and power p are tuned
+    fExo = [[TransformT.Log], [TransformT.Log]]                         # log (xe + s): shift s is tuned
+    w_nl, secs = {}, {}
+    for opt in OptimizerNL:
+        banner(f"NARX_SR_D with the nonlinear parameters fitted by {opt}")
+        t0 = time.time()
+        mod = NARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, optimizer=opt)
+        secs[opt] = time.time() - t0
+        w_nl[opt] = mod.parameter_nl
+        mod.tnT_Test(rc=2)
+    banner("nonlinear parameters: (shift, power) of f0 (y); (shift, scale) of g0,0 (icu_patients), g1,0 (positive_rate)")
+    for opt in OptimizerNL:
+        print(f"{opt}: fitted {w_nl[opt]}, fitting time {secs[opt]:.4f} s")
+
+
+def mHAttn_test(y, xe, hh=HH, hparam=None):
     """The multi-head attention regressor on the ARX_SR design matrix: trains on all rows and ranks the
     columns by their mean attention score (needs torch; skipped with a message when it is missing)."""
     try:
@@ -213,8 +270,8 @@ def mHAttn_test(y, xe, hh=HH, args=None):
     except ImportError as e:
         print(f"mHAttn_test skipped: torch is not installed ({e})")
         return
-    args = {"p": 6, "q": 4, "spec": 0, "cross": False} if args is None else args
-    model = ARX_SR.rescale(args, y, hh, xe, fExo=[[] for _ in range(xe.shape[1])])
+    hparam = {"p": 6, "px": 4, "spec": 0, "crx": 0} if hparam is None else hparam
+    model = ARX_SR.rescale(hparam, y, hh, xe, fExo=[[] for _ in range(xe.shape[1])], tFormT=TransformT.Log1p)
     X_torch = torch.tensor(model.X, dtype=torch.float32)
     y_torch = torch.tensor(model.y.reshape(-1, 1), dtype=torch.float32)
     train_loader = DataLoader(TensorDataset(X_torch, y_torch), batch_size=len(y), shuffle=False)
@@ -238,6 +295,8 @@ SCENARIOS = {
     "arx_sr_d": lambda y, xe: aRX_SR_D_test(y, xe),
     "formula": lambda y, xe: aRX_Formula_test(),
     "narx": lambda y, xe: nARX_Formula_test(),
+    "narx_sr": lambda y, xe: nARX_SR_D_test(y, xe),
+    "optimizers": lambda y, xe: optimizers_test(y, xe),
     "mhattn": lambda y, xe: mHAttn_test(y, xe),
 }
 

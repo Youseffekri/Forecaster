@@ -1,24 +1,27 @@
 """
-Matrix Utilities for Time Series Forecasting
+MakeMatrix4TS: Matrices from Lagged Endogenous and Exogenous Variables
 
-This module provides utility functions for preprocessing time series data
-in preparation for forecasting tasks. It includes functionality for:
+The Python counterpart of ScalaTion's `MakeMatrix4TS.scala` (its object's methods, same names):
 
-- Constructing lagged feature matrices from the time series data.
-- Generating trend-based feature matrices (e.g., linear, quadratic, sine, cosine).
-- Handling missing or initial zero values using weighted backcasting and backfilling.
-
-The Python counterpart of ScalaTion's `MakeMatrix4TS.scala` (lags in descending order, trend
-columns named as `MakeMatrix4TS.trend`, the target matrix Y padded with NaN for NO_DOUBLE).
+    makeMatrix4L   the lag matrix of a series (lags p .. 1, DESCENDING, first values padded)
+    makeMatrix4T   the trend columns (`spec`: 1 linear, 2 + quadratic, 3 + cubic; 4, 5 sin / cos)
+    makeMatrix4Y   the target matrix of a direct model (column h - 1 = y shifted by h - 1, NaN = NO_DOUBLE)
+    backcast, backfill, backfill_matrix   weighted backcasting of the zero prefix of an exogenous variable
+    trend_names    the trend-column names of `MakeMatrix4TS.trend` ("cons", "lin", "quad", ...)
+    centered       whether a response transform maps y into a space where it can be negative
+                   (CenterForm, NormForm, MinMaxForm): forecasts there must not be rectified
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05 (rev 2026-10-12)
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 """
 
+from typing import Any
 
 import numpy as np
+
+from Util.transform import CenterForm, MinMaxForm, NormForm
 
 q_mean = 2  # Number of prior values used for weighted average in backcasting
 
@@ -99,7 +102,7 @@ def trend_names(spec: int) -> list:
     return [TREND[j] for j in range(spec)]
 
 
-def build_trend_matrix(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
+def makeMatrix4T(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
     """
     Constructs the matrix of trend columns (ScalaTion's `MakeMatrix4TS.makeMatrix4T`).
 
@@ -145,9 +148,9 @@ def build_trend_matrix(m: int, spec: int = 1, lwave: int = 20) -> np.ndarray:
 
     return x_t
 
-def build_lagged_matrix(z: np.ndarray, lag: int) -> np.ndarray:
+def makeMatrix4L(z: np.ndarray, lag: int) -> np.ndarray:
     """
-    Constructs a lagged matrix from a 1D time series.
+    Constructs the lag matrix of a 1D time series (ScalaTion's `MakeMatrix4TS.makeMatrix4L`).
 
     Parameters
     ----------
@@ -179,7 +182,7 @@ def build_lagged_matrix(z: np.ndarray, lag: int) -> np.ndarray:
 
 
 
-def build_matrix_Y(y: np.ndarray, hh: int) -> np.ndarray:
+def makeMatrix4Y(y: np.ndarray, hh: int) -> np.ndarray:
     """
     Builds the matrix of future target values for DIRECT multi-step forecasting (ScalaTion's
     `MakeMatrix4TS.makeMatrix4Y`).
@@ -205,32 +208,17 @@ def build_matrix_Y(y: np.ndarray, hh: int) -> np.ndarray:
     return Y
 
 
-def fit_scaler(scaler, data: np.ndarray, tr_size: int):
+def centered(tForm_y: Any) -> bool:
     """
-    Fits an sklearn-style scaler on the TRAINING rows only (the first `tr_size` rows), the
-    convention of ScalaTion's `rescale` factories: the same (min, max) or (mean, std) serve the
-    in-sample and the train-and-test evaluations, and the testing rows never leak into the scale.
+    Whether the response transform maps the response into a space where it can be negative --
+    centered (`CenterForm`), standardized (`NormForm`) or min-max scaled (`MinMaxForm`, centered to
+    [-2, 2] by default) -- so predictions made there must NOT be rectified to be non-negative
+    (non-negativity is a property of the ORIGINAL scale); a transform that keeps zero at zero (e.g.,
+    `Log1pForm`) may be rectified (ScalaTion's `MakeMatrix4TS.centered`).
 
     Parameters
     ----------
-    scaler : TransformerMixin
-        E.g., MinMaxScaler or StandardScaler.
-    data : np.ndarray, shape (n_samples,) or (n_samples, n_cols)
-        The data (a vector is treated as one column).
-    tr_size : int
-        The number of training rows.
-
-    Returns
-    -------
-    TransformerMixin
-        The fitted scaler.
+    tForm_y : Transform or None
+        The transform of the response (None => no transform).
     """
-    d = data.reshape(-1, 1) if data.ndim == 1 else data
-    scaler.fit(d[:tr_size])
-    return scaler
-
-
-def tr_size_of(n: int, te_ratio: float = 0.2) -> int:
-    """The number of training rows of a series of n rows (ScalaTion's `Model.trSize`: n - round_up(n * TE_RATIO))."""
-    from modeling.forecasting.forecaster import trSize
-    return trSize(n, te_ratio)
+    return isinstance(tForm_y, (CenterForm, NormForm, MinMaxForm))
