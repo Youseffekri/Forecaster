@@ -3,4 +3,4 @@ pandas
 scipy
 scikit-learn
 statsmodels
-torch
+# torch          (optional: the neural models, `pip install -e .[neural]`)

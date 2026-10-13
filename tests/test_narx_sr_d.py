@@ -6,8 +6,8 @@ import pytest
 from Util.tools import dotdict
 from modeling.optimization.varpro import VarPro
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.narx_sr_d import NARX_SR_D
-from modeling.forecasting.llm_narx_sr.datasets import Example_Covid
+from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
+from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 
 OPTIMIZERS = ["varpro", "lbfgsb", "joint"]
 
@@ -46,7 +46,7 @@ def test_plain_lags_equal_arx_d():
     """y ~= y~(6,1) with no ridge is the base's ARX_D with p = 6 (the compatibility test)."""
     data = covid_context()
     hh = 6
-    args = dotdict(p=6, q=0, spec=1, skip=6, cross=False)
+    args = dotdict(p=6, q=0, spec=0, skip=6, cross=False)
     ref = ARX_D(args, data["y"], hh, None, method="sk_lr")
     ref.train()
     yf_ref = ref.forecast()
@@ -72,10 +72,10 @@ def test_planted_log_shift_is_recovered(optimizer):
     mod = NARX_SR_D.from_formula("y ~= y~1 + log(? + z~1)", data, hh=2, lam=1e-8, optimizer=optimizer)
     s = mod.formula.params()[0]
     assert s.role.value == "Shift" and s.value == pytest.approx(0.3, abs=0.05), mod.formula_str
-    assert mod.n_free == 1 and mod.dfr == 3 and mod.optimizer == optimizer
+    assert mod.n_free == 1 and mod.dof == 3 and mod.optimizer == optimizer
     mod.train()
     yf = mod.forecast()
-    assert yf.shape == (n - 1, 2)
+    assert yf.shape == (n, 2)                                         # every row is forecast (skip affects the diagnosis only)
 
 
 def test_three_optimizers_agree_on_covid_when_scaled():

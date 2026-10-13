@@ -1,15 +1,22 @@
 """
-Utility Functions for Model Evaluation and Dot-Accessible Dictionaries
+Utility Functions: ScalaTion-style Printing and Small Helpers
 
-Includes common regression evaluation metrics (MSE, MAE, R2, Adjusted R2, SMAPE)
-and a dot-accessible dictionary class for convenience.
+The Python counterpart of the printing helpers of ScalaTion (`banner`, `fmt`, `VectorD.toString`,
+`MatrixD.toString`, `stringOf (Array)`), so that the output of the forecasting models reads as
+ScalaTion's: "b = VectorD(0.946883,\t...), fn = Array(yl1, ...)", "fitMap QoF = ...".  Also the
+`dotdict` and the legacy metric functions kept for compatibility (the QoF measures now live in
+`modeling/fit.py`, in ScalaTion's `Fit` form).
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05
-Version: 1.0
+Date: 2026-10-12
+Version: 1.1
 License: MIT License
+Note: AI assisted code
 """
 
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -39,192 +46,154 @@ class dotdict(dict):
         del self[name]
 
 
-def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+# ---------------------------------------------------------------------------------------------
+# ScalaTion-style printing
+# ---------------------------------------------------------------------------------------------
+
+def banner(s: str) -> None:
+    """Prints the string in a box of dashes (ScalaTion's `banner`)."""
+    line = "-" * (len(s) + 4)
+    print(line)
+    print("| " + s + " |")
+    print(line)
+
+
+def fmt(x: float) -> str:
+    """Six decimals (ScalaTion's `fmt`, "%.6f")."""
+    return "%.6f" % x
+
+
+def fmt_g(x: float) -> str:
+    """Six significant digits keeping trailing zeros, as Java's "%g" used by `VectorD.toString`."""
+    if isinstance(x, (bool, np.bool_)):
+        return str(bool(x))
+    xf = float(x)
+    if np.isnan(xf):
+        return "NaN"
+    if np.isinf(xf):
+        return "Infinity" if xf > 0 else "-Infinity"
+    return "%#.6g" % xf
+
+
+def vector_str(v: Sequence[float], name: str = "VectorD") -> str:
+    """The vector as ScalaTion prints it: "VectorD(0.946883,\\t0.676751,\\t...)"."""
+    v = np.asarray(v, dtype=float).ravel()
+    if v.size == 0:
+        return f"{name}()"
+    return f"{name}(" + ",\t".join(fmt_g(x) for x in v) + ")"
+
+
+def matrix_str(a: np.ndarray, name: str = "MatrixD") -> str:
+    """The matrix as ScalaTion prints it: "\\nMatrixD (v,\\tv, ...\\n \\tv,\\tv, ...)"."""
+    a = np.asarray(a, dtype=float)
+    if a.ndim == 1:
+        a = a.reshape(-1, 1)
+    if a.size == 0:
+        return f"\n{name} ()"
+    rows = [",\t".join(fmt_g(x) for x in row) for row in a]
+    return f"\n{name} (" + ",\n \t".join(rows) + ")"
+
+
+def array_str(items: Iterable[Any]) -> str:
+    """An array as Scala's `stringOf` prints it: "Array(cons, yl6, yl5)"."""
+    return "Array(" + ", ".join(str(x) for x in items) + ")"
+
+
+def set_str(items: Iterable[Any]) -> str:
+    """A column set as Scala prints a `LinkedHashSet`: "LinkedHashSet(0, 1, 3)"."""
+    return "LinkedHashSet(" + ", ".join(str(x) for x in items) + ")"
+
+
+def hparam_str(hp: Mapping[str, Any]) -> str:
+    """The hyper-parameters as ScalaTion prints a `HyperParameter`: "HyperParameter(p -> 6, q -> 0, ...)"."""
+    return "HyperParameter(" + ", ".join(f"{k} -> {v}" for k, v in hp.items()) + ")"
+
+
+def report(modelName: str, hparam: Mapping[str, Any], fname: Sequence[str], b: np.ndarray,
+           qof: np.ndarray, qoF_names: Optional[Sequence[str]] = None) -> str:
     """
-    Computes the Mean Squared Error (MSE).
+    The REPORT block of ScalaTion's `Model.report` (model name, hyper-parameters, feature names,
+    parameters, fit map); `b` may be a vector (one line) or a matrix (one column per horizon).
 
     Parameters
     ----------
-    y_true : np.ndarray, shape (n_samples,)
-        Ground truth values.
-    y_pred : np.ndarray, shape (n_samples,)
-        Predicted values.
-
-    Returns
-    -------
-    float
-        Mean squared error.
+    modelName : str
+        The model name, e.g., "ARX_D_6_6_2".
+    hparam : Mapping[str, Any]
+        The hyper-parameters.
+    fname : Sequence[str]
+        The feature (column) names.
+    b : np.ndarray
+        The parameter vector (or matrix for a direct model).
+    qof : np.ndarray, shape (N_QoF,)
+        The QoF vector (horizon 1).
+    qoF_names : Sequence[str], optional
+        The QoF labels (defaults to ScalaTion's `QoF` names).
     """
+    from modeling.fit import fitMap, qoF_names as _names
+    labels = _names if qoF_names is None else qoF_names
+    b = np.asarray(b, dtype=float)
+    b_str = vector_str(b) if b.ndim == 1 else matrix_str(b)
+    rule = "    " + "-" * 76
+    return (f"\nREPORT\n{rule}\n    modelName  mn  = {modelName}\n{rule}\n"
+            f"    hparameter hp  = {hparam_str(hparam)}\n{rule}\n"
+            f"    features   fn  = {array_str(fname)}\n{rule}\n"
+            f"    parameter  b   = {b_str}\n{rule}\n"
+            f"    fitMap     qof = {fitMap(qof, labels)}\n{rule}\n        ")
+
+
+# ---------------------------------------------------------------------------------------------
+# Legacy metric functions (kept for compatibility; see `modeling/fit.py` for the QoF measures)
+# ---------------------------------------------------------------------------------------------
+
+def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """The Mean Squared Error (sse / m)."""
     return float(np.mean((y_true - y_pred) ** 2))
 
 
 def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Computes the Mean Absolute Error (MAE).
-
-    Parameters
-    ----------
-    y_true : np.ndarray, shape (n_samples,)
-        Ground truth values.
-    y_pred : np.ndarray, shape (n_samples,)
-        Predicted values.
-
-    Returns
-    -------
-    float
-        Mean absolute error.
-    """
+    """The Mean Absolute Error."""
     return float(np.mean(np.abs(y_true - y_pred)))
 
 
 def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """
-    Computes the coefficient of determination (R-squared).
-
-    Parameters
-    ----------
-    y_true : np.ndarray, shape (n_samples,)
-        Ground truth values.
-    y_pred : np.ndarray, shape (n_samples,)
-        Predicted values.
-
-    Returns
-    -------
-    float
-        R-squared score.
-    """
+    """The coefficient of determination R^2 (0 when y is constant)."""
     ss_total = np.sum((y_true - np.mean(y_true)) ** 2)
     if ss_total == 0:
         return 0.0
-    ss_residual = np.sum((y_true - y_pred) ** 2)
-    return float(1 - (ss_residual / ss_total))
+    return float(1 - np.sum((y_true - y_pred) ** 2) / ss_total)
 
 
 def r2_adjusted(y_true: np.ndarray, y_pred: np.ndarray, n_features: int) -> float:
-    """
-    Computes the Adjusted R-squared score.
-
-    Parameters
-    ----------
-    y_true : np.ndarray, shape (n_samples,)
-        Ground truth values.
-    y_pred : np.ndarray, shape (n_samples,)
-        Predicted values.
-    n_features : int
-        The number of features used in the model.
-
-    Returns
-    -------
-    float
-        Adjusted R-squared score.
-    """
+    """The adjusted R^2 with n_features slopes and an intercept (nan when m <= n_features + 1)."""
     m = len(y_true)
     if m <= n_features + 1:
         return np.nan
-    r2_ = r2(y_true, y_pred)
-    return float(1 - (1 - r2_) * (m - 1) / (m - n_features - 1))
+    return float(1 - (1 - r2(y_true, y_pred)) * (m - 1) / (m - n_features - 1))
 
 
 def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """The symmetric Mean Absolute Percentage Error in percent (ScalaTion's `smapeF`, zero errors skipped)."""
+    from modeling.fit import smapeF
+    return smapeF(np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float))
+
+
+def diagnose(y_true: np.ndarray, y_pred: np.ndarray, n_features: int = 1) -> Dict[str, float]:
     """
-    Computes the Symmetric Mean Absolute Percentage Error (SMAPE).
-
-    Parameters
-    ----------
-    y_true : np.ndarray, shape (n_samples,)
-        Ground truth values.
-    y_pred : np.ndarray, shape (n_samples,)
-        Predicted values.
-
-    Returns
-    -------
-    float
-        SMAPE score, expressed as a percentage.
+    The QoF measures of a prediction as a dictionary keyed by ScalaTion's QoF names
+    (rSq, rSqBar, sst, sse, ..., smapeC); `n_features` is the number of slopes (dfr).
     """
-    return float(100 * np.mean(2 * np.abs(y_true - y_pred) / (np.abs(y_true) + np.abs(y_pred) + 1e-10)))
+    from modeling.fit import diagnose as _diagnose, fitMapDict
+    return fitMapDict(_diagnose(np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float), n_features))
 
 
-def diagnose(y_true: np.ndarray, y_pred: np.ndarray, n_features: int = 1) -> dict:
+def fit_map(y_true_arr: Sequence[np.ndarray], y_fcast_arr: Sequence[np.ndarray], dfr: int = 1) -> str:
     """
-    Computes multiple evaluation metrics for model performance.
-
-    Parameters
-    ----------
-    y_true : np.ndarray
-        Ground truth values.
-    y_pred : np.ndarray
-        Predicted values.
-    n_features : int, default = 1
-        The number of features used in the model.
-
-    Returns
-    -------
-    dict
-        Dictionary containing evaluation metrics:
-        - MSE   : Mean Squared Error.
-        - MAE   : Mean Absolute Error.
-        - R2    : R-squared.
-        - R2Bar : Adjusted R-squared.
-        - SMAPE : Symmetric Mean Absolute Percentage Error.
-        - m     : The number of samples.
+    The QoF table of per-horizon (actual, forecast) pairs in ScalaTion's `showFitMap` form
+    (one "label -> VectorD(...)" line per measure, the horizons as the columns).
     """
-    return {
-        "MSE"   : mse(y_true, y_pred),
-        "MAE"   : mae(y_true, y_pred),
-        "R2"    : r2(y_true, y_pred),
-        "R2Bar" : r2_adjusted(y_true, y_pred, n_features),
-        "SMAPE" : smape(y_true, y_pred),
-        "m"     : len(y_true)
-    }
-
-
-
-def fit_map(y_true_arr: list[np.ndarray], y_fcast_arr: list[np.ndarray]) -> str:
-    """
-    Calculate multiple quality-of-fit metrics for each forecast horizon.
-
-    For each horizon, computes:
-    - Mean Squared Error (MSE)
-    - Mean Absolute Error (MAE)
-    - Coefficient of Determination (R² and Adjusted R²)
-    - Symmetric Mean Absolute Percentage Error (SMAPE)
-    - Number of samples (m)
-
-    Parameters
-    ----------
-    y_true_arr : list of np.ndarray
-        List of true values for each horizon (aligned to forecast values).
-    y_fcast_arr : list of np.ndarray
-        List of forecasted values for each horizon.
-
-    Returns
-    -------
-    str
-        A formatted string reporting the metrics across all horizons.
-    """
-    horizon_all = f"horizon\t->"
-    mse_all     = f"mse\t->"
-    mae_all     = f"mae\t->"
-    r2_all      = f"R^2\t->"
-    r2Bar_all   = f"R^2Bar\t->"
-    smape_all   = f"smape\t->"
-    m_all       = f"m\t->"
-
-    for h in range(len(y_true_arr)):
-        metrics = diagnose(y_true_arr[h], y_fcast_arr[h])
-        horizon_all += f"\t  {h + 1}\t"
-        mse_all     += f"\t{metrics['MSE']:.4f}\t"
-        mae_all     += f"\t{metrics['MAE']:.4f}\t"
-        r2_all      += f"\t{metrics['R2']:.4f}\t"
-        r2Bar_all   += f"\t{metrics['R2Bar']:.4f}\t"
-        smape_all   += f"\t{metrics['SMAPE']:.4f}\t"
-        m_all       += f"\t{metrics['m']}\t"
-
-    qof = (horizon_all + "\n" +
-            mse_all    + "\n" +
-            mae_all    + "\n" +
-            r2_all     + "\n" +
-            r2Bar_all  + "\n" +
-            smape_all  + "\n" +
-            m_all      + "\n")
-    return qof
+    from modeling.fit import N_QoF, diagnose as _diagnose, showFitMap
+    ft = np.zeros((N_QoF, len(y_true_arr)))
+    for h, (yy, yfh) in enumerate(zip(y_true_arr, y_fcast_arr)):
+        ft[:, h] = _diagnose(np.asarray(yy, dtype=float), np.asarray(yfh, dtype=float), dfr)
+    return showFitMap(ft)

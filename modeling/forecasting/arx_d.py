@@ -1,16 +1,21 @@
 """
 ARX_D Model for Time Series Forecasting
 
-Implements an ARX_D (Autoregressive model with Exogenous variables) using linear regression.
-Uses DIRECT (as opposed to RECURSIVE) multi-horizon forecasting.
+Implements ARX_D (Auto-Regressive model with eXogenous variables, DIRECT multi-horizon
+forecasting): the same input matrix as `ARX` (trend columns, lags of y, lags of each exogenous
+variable) with one regression per horizon on the target matrix Y, so no forecasts are fed back
+into the lags.  The Python counterpart of ScalaTion's `ARX_D.scala` (`ARX_D.apply` /
+`ARX_D.rescale`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05
-Version: 1.0
+Date: 2025-03-05 (rev 2026-10-12)
+Version: 1.1
 License: MIT License
 """
 
-from typing import Any, Dict, Optional, Type
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Sequence, Type
 
 import numpy as np
 import statsmodels.api as sm
@@ -18,236 +23,228 @@ from sklearn.linear_model import LinearRegression
 from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from Util.build_matrix import *
-from modeling.forecasting.forecaster_d import Forecaster_D
+from Util.build_matrix import build_matrix_Y, fit_scaler
 from modeling.forecasting.arx import ARX
+from modeling.forecasting.forecaster_d import Forecaster_D
+from modeling.regression import CenteredRidge
 
 
 class ARX_D(Forecaster_D):
     """
-    Autoregressive model with Exogenous inputs (ARX_D) for time series forecasting.
-
-    Extends the `Forecaster_D` class and uses linear regression to perform 
-    DIRECT multi-steps forecasting. with lagged endogenous and optional exogenous variables.
+    Auto-Regressive model with eXogenous variables, DIRECT multi-horizon forecasting (ARX_D).
 
     Attributes
     ----------
-    model : LinearRegression
-        Linear regression model used for training and forecasting.
-    method : {"sm_ols", "sk_lr"}, default="sm_ols"
-        Whether to use statsmodels or sklearn linear regression.
-    xe : Optional[np.ndarray], shape (n_samples, n_exo), default=None
-        Exogenous variables aligned with y for multivariate forecasting.
+    method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
+        The regression per horizon: statsmodels OLS, scikit-learn LinearRegression, or the
+        centered ridge of ScalaTion's `CenteredRidgeMV` (penalty args["lambda"], default 1.0;
+        args["scaled"]).
+    xe : np.ndarray, shape (m, n_exo), optional
+        The exogenous variables aligned with `y`.
     n_exo : int
-        Number of exogenous input variables used in the model.
-    use_forge : bool
-        Whether the input matrix `X` was constructed internally and supports dynamic forecasting.
+        The number of exogenous variables.
     tForms : dict
-        Dictionary of transformations to apply.
+        "tForm_y" / "tForm_exo": the scalers (None unless made by `rescale`), "tr_size".
+    modelName : str
+        "ARX_D_{p}_{q}_{n_exo}".
+    fname : list of str
+        The column names (`ARX.form_names`).
 
     See Also
     --------
-    Forecaster_D : For base forecasting logic and shared attributes like y, X, Yf, tr_size, etc.
+    Forecaster_D : the direct forecasting logic (Y, fit_rows, rollValidate, tests).
+    ARX : the recursive counterpart and the shared `_build_matrix` / `form_names`.
     """
-    
-    def __init__(self, 
-                 args: Dict[str, Any], 
+
+    def __init__(self,
+                 args: Dict[str, Any],
                  y: np.ndarray,
-                 hh: int, 
-                 xe: Optional[np.ndarray] = None, 
-                 method: str ="sk_lr", 
+                 hh: int,
+                 xe: Optional[np.ndarray] = None,
+                 method: str = "sm_ols",
                  X: Optional[np.ndarray] = None) -> None:
         """
-        Initializes the ARX Forecaster.
-
-        Parameters
-        ----------
-        args : dict
-            Dictionary of model configuration parameters.
-        y : np.ndarray, shape (n_samples,)
-            The input endogenous time series data.   
-        hh : int
-            The maximum forecasting horizon (h = 1 to hh).
-        xe : Optional[np.ndarray], shape (n_samples, n_exo), default=None
-            Exogenous variables aligned with y for multivariate forecasting.
-        method : {"sm_ols", "sk_lr"}, default="sm_ols"
-            Whether to use statsmodels OLS or sklearn Linear Regression.
-        X : Optional[np.ndarray], shape (n_samples, n_lagged_columns), default=None
-            Input feature matrix. If None, the model will build it from `y`, `xe`, and other configuration settings.
+        Initializes the ARX_D forecaster (parameters as in `ARX`).
         """
         super().__init__(args, y, hh)
         self._X = X
-        self._model = LinearRegression()
         self._method = method
         self._xe = xe
         self._n_exo = xe.shape[1] if xe is not None else 0
-        self._useforge = True if self._X is None else False
+        self._useforge = self._X is None
+        self._model = self._make_model()
+        self._modelName = f"ARX_D_{self.args['p']}_{self.args['q']}_{self._n_exo}"
 
-        if not hasattr(self, "_tForms"): 
-            self._tForms = {"tForm_y": None}
+        if not hasattr(self, "_tForms"):
+            self._tForms = {"tForm_y": None, "tForm_exo": None}
 
         if self._X is None:
-            self._set_X(self._build_matrix(args   = self.args,
-                                           y      = self._y,
-                                           xe      = self._xe,
-                                           tForms = self._tForms))
-            self._Y = build_matrix_Y(self._y, hh)
+            self._set_X(self._build_matrix(args=self.args, y=self._y, xe=self._xe, tForms=self._tForms))
 
+    def _make_model(self):
+        """The regression object of `method` (None for statsmodels, fitted per call)."""
+        if self._method == "sk_lr":
+            return LinearRegression()
+        if self._method == "ridge":
+            return CenteredRidge(lam=float(self.args.get("lambda", 1.0)), scaled=bool(self.args.get("scaled", False)))
+        if self._method == "sm_ols":
+            return None
+        raise ValueError(f"method '{self._method}' unknown: sm_ols | sk_lr | ridge")
 
     @classmethod
-    def rescale(cls, 
-                args: Dict[str, Any], 
-                y: np.ndarray, 
+    def rescale(cls,
+                args: Dict[str, Any],
+                y: np.ndarray,
                 hh: int,
-                xe: Optional[np.ndarray] = None, 
-                method: str ="sk_lr", 
-                tForm = None, 
+                xe: Optional[np.ndarray] = None,
+                method: str = "sm_ols",
+                tForm: Optional[Type[TransformerMixin]] = None,
                 X: Optional[np.ndarray] = None) -> "ARX_D":
         """
-        Alternative constructor that enables rescaling.
-
-        Parameters
-        ----------
-        args : dict
-            Dictionary of model configuration parameters.
-        y : np.ndarray, shape (n_samples,)
-            The input endogenous time series data.   
-        hh : int
-            The maximum forecasting horizon (h = 1 to hh).
-        xe : Optional[np.ndarray], shape (n_samples, n_exo), default=None
-            Exogenous variables aligned with y for multivariate forecasting.
-        method : {"sm_ols", "sk_lr"}, default="sm_ols"
-            Whether to use statsmodels OLS or sklearn Linear Regression.
-        tForm : Optional[Type[TransformerMixin]]
-            Transformation used for scaling `y` and forecast outputs,
-            e.g., MinMaxScaler or StandardScaler.
-        X : Optional[np.ndarray], shape (n_samples, n_lagged_columns), default=None
-            Input feature matrix. If None, the model will build it from `y`, `xe`, and other configuration settings.
+        Alternative constructor that rescales y and the exogenous variables (ScalaTion's
+        `ARX_D.rescale`): the scalers are fitted on the TRAINING rows only; `StandardScaler`
+        turns the non-negativity constraint off.
 
         Returns
         -------
         ARX_D
-            An instance of ARX_D with scaling enabled.
+            The model on the scaled series (Y rebuilt from the scaled y).
         """
-        ARX_D_re = cls(args, y, hh, xe, method, np.array([0]))
-        ARX_D_re._X = X
+        mod = cls(args, y, hh, xe, method, np.array([0]))
+        mod._X = X
+        mod._tForms["tr_size"] = mod._tr_size
         if tForm is not None:
-            ARX_D_re._tForms["tForm_y"],  ARX_D_re._tForms["tForm_exo"] = tForm(), tForm()
-            if isinstance(ARX_D_re._tForms["tForm_y"], StandardScaler): ARX_D_re._nneg = False
+            mod._tForms["tForm_y"], mod._tForms["tForm_exo"] = tForm(), tForm()
+            if isinstance(mod._tForms["tForm_y"], StandardScaler):
+                mod._nneg = False
         else:
-            ARX_D_re._tForms["tForm_y"]    = MinMaxScaler(feature_range=ARX_D_re._lu)
-            ARX_D_re._tForms["tForm_exo"]  = MinMaxScaler(feature_range=ARX_D_re._lu)
+            mod._tForms["tForm_y"] = MinMaxScaler(feature_range=mod._lu)
+            mod._tForms["tForm_exo"] = MinMaxScaler(feature_range=mod._lu)
 
-        if ARX_D_re._X is None:
-            ARX_D_re._useforge = True
-            ARX_D_re._set_X(ARX_D_re._build_matrix(y      = ARX_D_re._y,
-                                                   xe     = ARX_D_re._xe,
-                                                   args   = ARX_D_re.args,
-                                                   tForms = ARX_D_re._tForms))
+        if mod._X is None:
+            mod._useforge = True
+            mod._set_X(mod._build_matrix(args=mod.args, y=mod._y, xe=mod._xe, tForms=mod._tForms))
         else:
-            ARX_D_re._X = ARX_D_re._tForms["tForm_exo"].fit_transform(ARX_D_re._X)
+            mod._X = fit_scaler(mod._tForms["tForm_exo"], mod._X, mod._tr_size).transform(mod._X)
+            fit_scaler(mod._tForms["tForm_y"], mod._y, mod._tr_size)
 
-        ARX_D_re._yForm = ARX_D_re._tForms["tForm_y"]
-        ARX_D_re._y = ARX_D_re._tForms["tForm_y"].transform(ARX_D_re._y.reshape(-1, 1)).flatten()
-        ARX_D_re._Y = build_matrix_Y(ARX_D_re._y, hh)
-        return ARX_D_re
-   
+        mod._yForm = mod._tForms["tForm_y"]
+        mod._y = mod._tForms["tForm_y"].transform(mod._y.reshape(-1, 1)).flatten()
+        mod._Y = build_matrix_Y(mod._y, hh)
+        return mod
+
+    @classmethod
+    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, tFormT=None, trSize: int = -1,
+                  scaled: bool = False, method: str = "sm_ols", args: Optional[Dict[str, Any]] = None) -> "ARX_D":
+        """
+        Creates the direct model from the terms of a formula (ScalaTion's `ARX_D.fromTerms`): one
+        column per term, the response's transform kept for inverting forecasts, no intercept
+        column; every formula is supported since no forging is needed (see `ARX.fromTerms`).
+        """
+        mod = ARX.fromTerms.__func__(cls, formula, dataset, hh, tFormT, trSize, scaled, method, args)
+        mod._useforge = True                                          # no forging in a direct model
+        return mod
 
     @staticmethod
-    def _build_matrix(args: Dict[str, Any], 
-                      y: np.ndarray, 
-                      xe: Optional[np.ndarray] = None, 
-                      tForms : Optional[Dict[str, Any]] = {"tForm_y": None}) -> np.ndarray:
-        """
-        Builds the design matrix using lagged endogenous and optional exogenous inputs.
-
-        Parameters
-        ----------
-        args : dict
-            Model configuration parameters including lag orders and trend specification.
-        y : np.ndarray, shape (n_samples,)
-            Endogenous time series.
-        xe : Optional[np.ndarray], shape (n_samples, n_exo)
-            Exogenous input matrix aligned with `y`.
-        tForms : dict, optional
-            Dictionary of transformations to apply. Can include:
-            - "tForm_y"    : transformation applied to the target series `y`
-            - "tForm_exo"  : transformation applied to derived exogenous features
-            
-        Returns
-        -------
-        np.ndarray
-            Feature matrix combining trend, endogenous, and exogenous lagged variables.
-        """
+    def _build_matrix(args: Dict[str, Any],
+                      y: np.ndarray,
+                      xe: Optional[np.ndarray] = None,
+                      tForms: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        """The input matrix of `ARX` (same columns, same order)."""
         return ARX._build_matrix(args, y, xe, tForms)
-    
 
-    def train(self, Y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None):
+    @property
+    def fname(self) -> List[str]:
+        """The column names of X (generic when X was given)."""
+        if self._fname is not None:
+            return self._fname
+        if self._useforge:
+            return ARX.form_names(self.args, self._n_exo)
+        return [f"x{j}" for j in range(self._X.shape[1])]
+
+    def train(self, Y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None) -> None:
         """
-        Trains the ARX model.
-
-        Parameters
-        ----------
-        y_ : Optional[np.ndarray]
-            Target values.
-        X_ : Optional[np.ndarray]
-            Input feature matrix.
+        Trains one regression per horizon on (X_, Y_) (the full data by default; the padded
+        trailing rows are dropped by `fit_rows`); the parameters (n + 1, hh) are stored with the
+        intercept first.
         """
-        if X_ is None:
-            X_ = self._X
-
-        if Y_ is None:
-            Y_ = self._Y
+        X_ = self._X if X_ is None else X_
+        Y_ = self._Y if Y_ is None else Y_
+        Y_, X_ = self.fit_rows(Y_, X_)
 
         if self._method == "sm_ols":
-            self._models_fit = []
-            n = Y_.shape[1]
-
-            for j in range(n):
-                mod = sm.OLS(Y_[:, j], sm.add_constant(X_))
-                self._models_fit.append(mod.fit())
-
-            self._set_params(np.column_stack([self._models_fit[j].params for j in range(n)]))
+            Xc = sm.add_constant(X_, has_constant="add")
+            self._models_fit = [sm.OLS(Y_[:, j], Xc).fit() for j in range(Y_.shape[1])]
+            self._set_params(np.column_stack([np.asarray(f.params) for f in self._models_fit]))
+        elif self._method == "ridge":
+            self._model.fit(X_, Y_)
+            self._set_params(self._model.params)
         else:
             self._model.fit(X_, Y_)
             self._set_params(np.column_stack([self._model.intercept_, self._model.coef_]).T)
 
-
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
         """
-        Generates a multi-step forecast matrix.
-
-        Parameters
-        ----------
-        t_start : int
-            Start index for forecasting.
-        t_end : int
-            End index for forecasting (exclusive).
+        Forecasts h = 1..hh steps ahead for the rows [t_start, t_end) directly and records them
+        in `Yf` (original units).
 
         Returns
         -------
-        np.ndarray
-            Matrix containing forecast values for all hh horizons.
+        np.ndarray, shape (t_end - t_start, hh)
+            The forecasts (model units).
 
         Raises
         ------
         ValueError
             If the model has not been trained.
         """
-
         if self._params is None:
             raise ValueError("The model has not been trained. Call train first.")
-        
         t_st, t_en = self._adjust_range(t_start, t_end)
-        y_fcast = np.zeros((t_en - t_st, self.hh))
-        X_window = self._X[t_st: t_en].copy()
-        
+        X_window = self._X[t_st:t_en]
+
         if self._method == "sm_ols":
-            X_w_cst = sm.add_constant(X_window)
-            y_fcast = np.column_stack([mod.predict(X_w_cst) for mod in self._models_fit])
+            Xc = sm.add_constant(X_window, has_constant="add")
+            y_fcast = np.column_stack([f.predict(Xc) for f in self._models_fit])
         else:
             y_fcast = self._model.predict(X_window)
 
         y_fcast = self._rectify(y_fcast)
-        self._Yf[t_st: t_en, 1:-1] = y_fcast if self._yForm is None else self._yForm.inverse_transform(y_fcast)      
+        self._store(t_st, t_en, y_fcast)
         return y_fcast
+
+    # -- feature selection: the sub-models (ScalaTion's `ARX_D.getModel` / `getModel_h`) -------
+
+    def getModel(self, cols: Optional[Sequence[int]] = None) -> "ARX_D":
+        """
+        Builds an `ARX_D` on the columns `cols` of X (ScalaTion's `ARX_D.getModel`): the same y, Y,
+        hh, scaling, hyper-parameters and regression method, the feature names of the columns,
+        e.g., the selected model after feature selection, `getModel(getBest().mod_cols)`;
+        `getModel()` is a copy on all the columns.
+
+        Parameters
+        ----------
+        cols : sequence of int, optional
+            The columns of the input matrix with the selected features (defaults to all).
+        """
+        from modeling.forecasting.feature_selection_d import subModel
+        cols = self.mcols if cols is None else list(cols)
+        sub = ARX_D(self.args, self.getY(), self.hh, None, self._method, self._X[:, cols])
+        return subModel(self, sub, cols)
+
+    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1) -> ARX:
+        """
+        Builds the single-horizon `ARX` at horizon h on the columns `cols` (ScalaTion's
+        `ARX_D.getModel_h`: `ARX` is the base model of the ARX*_D family): hh = 1, response
+        Y[:, h - 1], X given (no forging), the parent's scaling, skip and training size.
+
+        Parameters
+        ----------
+        cols : sequence of int, optional
+            The columns of the input matrix with the selected features (defaults to all).
+        h : int, default=1
+            The horizon.
+        """
+        from modeling.forecasting.feature_selection_d import subModel_h
+        cols = self.mcols if cols is None else list(cols)
+        return subModel_h(self, cols, h, self._method)
