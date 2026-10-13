@@ -11,8 +11,8 @@ One scenario per `*_test` function, each printing ScalaTion's blocks:
 
     randomWalk_test   RandomWalk                                  In-Sample and TnT
     aR_test           AR(24) by Yule-Walker (a day of lags)       In-Sample and TnT
-    aRX_D_test        ARX_D (p = q = 6, spec 0, the six loads)    TnT (the paper's baseline layout)
-    aRX_SR_D_test     ARX_SR_D.rescale (Pow of y, Log of each load; MinMax to (0, 4))   TnT
+    aRX_D_test        ARX_D (p = px = 6, spec 0, the six loads)   TnT (the paper's baseline layout)
+    aRX_SR_D_test     ARX_SR_D.rescale (sign-safe PowR of y and of each load; MinMax to [-2, 2])   TnT
     nARX_Formula_test NARX_SR_D.fromTerms: lags of y, an ema (thermal lag) of two loads with free decays
                                                                    TnT
 
@@ -21,8 +21,8 @@ The rolling validation retrains every RC = 24 rows (a day) to keep the run short
 (no argument: the quick default -- RandomWalk and ARX_D TnT).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -35,7 +35,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import numpy as np
 
 from Util.tools import banner
-from Util.transform import LogForm, PowForm
+from Util.transform import PowRForm, TransformT
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
@@ -49,20 +49,20 @@ HH = 6                                                                  # maximu
 RC = 24                                                                 # retraining cycle: a day
 RNG = Example_ETTh1.ONE_YEAR                                            # the first year, range (0, 8760)
 LOADS = Example_ETTh1.LOADS
-NNEG = {"nneg": False}                                                  # OT goes negative: no clipping at zero
+NNEG = {"nneg": 0}                                                  # OT goes negative: no clipping at zero
 
 
 def load_etth1():
     """(y, xe): the oil temperature and the six loads over the first year."""
-    return Example_ETTh1.load_data(LOADS, rng=RNG)
+    return Example_ETTh1.loadData(LOADS, rng=RNG)
 
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation."""
     banner("In-ST Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(y, hh).inSample_Test()
+    RandomWalk(None, y, hh).inSample_Test()
     banner("TnT Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(y, hh).tnT_Test(RC)
+    RandomWalk(None, y, hh).tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, p=24, method="adjusted"):
@@ -75,22 +75,23 @@ def aR_test(y, hh=HH, p=24, method="adjusted"):
     mod.tnT_Test(RC)
 
 
-def aRX_D_test(y, xe, hh=HH, args=None, method="sm_ols"):
+def aRX_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
     """ARX_D (direct) on the lags of OT and of the six loads: TnT."""
-    args = {"p": 6, "q": 6, "spec": 0, **NNEG} if args is None else args
-    mod = ARX_D(args, y, hh, xe, method=method)
+    hparam = {"p": 6, "px": 6, "spec": 0, **NNEG} if hparam is None else hparam
+    mod = ARX_D(hparam, y, hh, xe, method=method)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
 
 
-def aRX_SR_D_test(y, xe, hh=HH, args=None, method="sm_ols"):
-    """ARX_SR_D (direct, SR terms): y^1.5 next to the lags of OT and log (1 + load) next to each load's lags,
-    rescaled to (0, 4) first so the powers and logs of a temperature below zero stay defined: TnT."""
-    args = {"p": 6, "q": 3, "spec": 0, "cross": False, **NNEG} if args is None else args
-    fEndo = [PowForm()]                                                  # (y + 0)^1.5 on the (0, 4) scale
-    fExo = [[LogForm()] for _ in range(xe.shape[1])]                     # log (1 + xe_j) on the (0, 4) scale
-    mod = ARX_SR_D.rescale(args, y, hh, xe, fEndo, fExo, method=method)
+def aRX_SR_D_test(y, xe, hh=HH, hparam=None, method="sm_ols"):
+    """ARX_SR_D (direct, SR terms): the sign-safe power sign(y) |y|^0.67 next to the lags of OT and of each load
+    (`PowRForm`), rescaled by MinMax to ScalaTion's centered [-2, 2] first -- a power or log of a negative value
+    is not defined there, and OT and the loads go below zero anyway: TnT."""
+    hparam = {"p": 6, "px": 3, "spec": 0, "crx": 0, **NNEG} if hparam is None else hparam
+    fEndo = [PowRForm()]                                                 # sign (y) |y|^0.67 on the [-2, 2] scale
+    fExo = [[PowRForm()] for _ in range(xe.shape[1])]                    # sign (xe_j) |xe_j|^0.67
+    mod = ARX_SR_D.rescale(hparam, y, hh, xe, fEndo, fExo, method=method, tFormT=TransformT.MinMax)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
@@ -102,8 +103,8 @@ def nARX_Formula_test(hh=HH):
     rows; then TnT with rolling validation (the coefficients refitted, the decays held)."""
     data = Example_ETTh1.context(LOADS, rng=RNG)                         # {"y", "hufl", "hull", "mufl", "mull", "lufl", "lull"}
     formula = "y ~= y~(3,1) + ema(hufl~1, ?) + ema(mufl~1, ?) + lufl~1"
-    mod = NARX_SR_D.fromTerms(formula, data, hh, lam=1.0, nneg=False)
-    print(f"formula  = {mod.formulaStr}\nparam_nl = {mod.w_nl}, nFree = {mod.nFree}, steps = {mod.steps}")
+    mod = NARX_SR_D.fromTerms(formula, data, hh, {"lambda": 1.0, **NNEG})
+    print(f"formula  = {mod.formulaStr}\nparam_nl = {mod.w_nl}, nFree = {mod.nFree}, stepCounts = {mod.stepCounts}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
 

@@ -5,8 +5,9 @@ Defines the abstract `Forecaster_Reg` class, the base of the forecasting models 
 REGRESSION on an input matrix X (lagged columns of y and of the exogenous variables) and forecast
 RECURSIVELY -- `ARX`, `ARX_SR` and the models built by `ARX.fromTerms`.  The Python counterpart of
 ScalaTion's `Forecaster_Reg.scala`: the regression (`train`, `_predict`; methods "sm_ols",
-"sk_lr" and the centered ridge "ridge" of ScalaTion's `CenteredRidge`), the recursive forecasting
-(`forecast` through the subclass's `_forge`), the sub-model on a column set (`getModel`) and the
+"sk_lr" and the centered ridge "ridge" of ScalaTion's `CenteredRidge`, made by `_make_model`), the
+recursive forecasting (`forecast` through the subclass's `forge`), the coefficient table
+(`summary`), the sub-model on a column set (`getModel`) and the
 FEATURE SELECTION of ScalaTion's `Forecaster_Reg`: `forwardSelAll`, `backwardElimAll`,
 `stepwiseSelAll`, `beamSelAll`, `cemSelAll` (through `SubsetSearch` / `CEM_Selector`), `correctQoF`
 (every candidate set scored on the FS rows in ORIGINAL space with the skip rows dropped),
@@ -21,7 +22,7 @@ tests a selected recursive model at h = 1 as well).
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.0
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -32,14 +33,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import statsmodels.api as sm
-from sklearn.linear_model import LinearRegression
 
 from Util.tools import array_str, banner, set_str, vector_str
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import BestStep, Cols, FeatureSelection, given_qk, updateQoF
-from modeling.fit import diagnose as diagnose_, showFitMap
+from modeling.fit import Fit, diagnose as diagnose_, showFitMap, vif
 from modeling.forecasting.forecaster import Forecaster
-from modeling.regression import CenteredRidge
 from modeling.subset_search import SubsetSearch
 
 
@@ -54,23 +53,25 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         The data/input matrix (no intercept column: the regression adds / recovers its own).
     method : {"sm_ols", "sk_lr", "ridge"}
         The regression: statsmodels OLS, scikit-learn LinearRegression, or the centered ridge of
-        ScalaTion's `CenteredRidge` (penalty args["lambda"], default 1.0; args["scaled"]).
+        ScalaTion's `CenteredRidge` (penalty hparam["lambda"], default `CenteredRidge.hp`, 0.1).
+    scaled : bool
+        Whether the ridge regression standardizes the columns (ScalaTion's `scaled`).
     useforge : bool
-        Whether X has the lag structure `_forge` needs for the horizons h > 1 (False for a given X).
+        Whether X has the lag structure `forge` needs for the horizons h > 1 (False for a given X).
     fs_rng : range
         The rows feature selection fits on: the training rows (or all rows when
         `FeatureSelection.fullset_FS`), cut off at the first undefined (NaN) response.
     """
 
-    def __init__(self, args: Dict[str, Any], y: np.ndarray, hh: int, X: Optional[np.ndarray] = None,
-                 method: str = "sm_ols", hasIntercept: bool = True) -> None:
+    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, X: Optional[np.ndarray] = None,
+                 method: str = "sm_ols", scaled: bool = False, hasIntercept: bool = True) -> None:
         """
         Initializes the regression-based forecaster.
 
         Parameters
         ----------
-        args : dict
-            The hyper-parameters (see `Forecaster`; "lambda" / "scaled" for method "ridge").
+        hparam : dict
+            The hyper-parameters (see `Forecaster`; "lambda" for method "ridge").
         y : np.ndarray, shape (m,)
             The response vector.
         hh : int
@@ -79,33 +80,21 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
             The input matrix (a subclass builds it when None).
         method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
             The regression method.
+        scaled : bool, default=False
+            Whether the ridge regression standardizes the columns, so the penalty is unit-free.
         hasIntercept : bool, default=True
             Whether the model has an intercept.
         """
-        super().__init__(args, y, hh, hasIntercept)
+        super().__init__(hparam, y, hh, hasIntercept)
         self._X = X
         self._method = method
+        self._scaled = scaled
         self._model = self._make_model()
         self._useforge = False
         self._theBest = BestStep()                                        # the best model from Feature Selection (FS)
         self._lastProbs: Optional[np.ndarray] = None                      # the last CEM run's inclusion probabilities
 
     # -- the regression -------------------------------------------------------------------
-
-    def _make_model(self):
-        """The regression object of `method` (None for statsmodels, fitted per call)."""
-        if self._method == "sk_lr":
-            return LinearRegression()
-        if self._method == "ridge":
-            return CenteredRidge(lam=float(self.args.get("lambda", 1.0)), scaled=bool(self.args.get("scaled", False)))
-        if self._method == "sm_ols":
-            return None
-        raise ValueError(f"method '{self._method}' unknown: sm_ols | sk_lr | ridge")
-
-    @property
-    def method(self) -> str:
-        """The regression method."""
-        return self._method
 
     def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None) -> None:
         """
@@ -119,15 +108,43 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         if len(nan):
             X_, y_ = X_[:nan[0]], y_[:nan[0]]
 
+        self._b = None
         if self._method == "sm_ols":
             self._model_fit = sm.OLS(y_, sm.add_constant(X_, has_constant="add")).fit()
             self._set_params(np.asarray(self._model_fit.params))
         elif self._method == "ridge":
             self._model.fit(X_, y_)
             self._set_params(self._model.params[:, 0])
+            self._b = self._model.parameter[:, 0]                         # ScalaTion's b = reg.parameter
         else:
             self._model.fit(X_, y_)
             self._set_params(np.append(self._model.intercept_, self._model.coef_))
+
+    def summary(self, x_: Optional[np.ndarray] = None, fname_: Optional[Sequence[str]] = None,
+                b_: Optional[np.ndarray] = None, vifs: Optional[np.ndarray] = None) -> str:
+        """
+        The coefficient table (ScalaTion's `Forecaster_Reg.summary`): the intercept followed by the
+        slopes in original units, with a column of ones prepended to x so `Fit.summary`'s standard
+        errors and VIF indexing (column 0 = intercept) apply; the VIFs are those of the slope columns
+        given an intercept.  Reflects the last `diagnose` call.
+
+        Parameters
+        ----------
+        x_ : np.ndarray, shape (m, n), optional
+            The data/input matrix without an intercept column (defaults to X).
+        fname_ : sequence of str, optional
+            The feature names (defaults to `fname`).
+        b_ : np.ndarray, shape (n + 1,), optional
+            The parameters, intercept first (defaults to the fitted ones).
+        vifs : np.ndarray, shape (n,), optional
+            The Variance Inflation Factors (computed when None).
+        """
+        x_ = self._X if x_ is None else x_
+        fname_ = self.fname if fname_ is None else fname_
+        x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
+        b1 = self.params if b_ is None else b_                         # intercept +: slopes (original units)
+        v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
+        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1)
 
     def _predict(self, X_rows: np.ndarray) -> np.ndarray:
         """The one-step predictions of the given input rows (clipped at zero when nneg)."""
@@ -141,7 +158,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
 
     # -- recursive forecasting ------------------------------------------------------------
 
-    def _forge(self, X_window: np.ndarray, y_fcast: np.ndarray, h: int) -> np.ndarray:
+    def forge(self, X_window: np.ndarray, y_fcast: np.ndarray, h: int) -> np.ndarray:
         """
         The input rows for horizon h (ScalaTion's `forge`): the lags of the earlier horizons
         replaced by their forecasts (the subclass knows the lag structure of its X).
@@ -155,7 +172,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         h : int
             The horizon (>= 2).
         """
-        raise NotImplementedError(f"{self.modelName}._forge: the model class must implement it")
+        raise NotImplementedError(f"{self.modelName}.forge: the model class must implement it")
 
     def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
         """
@@ -181,10 +198,10 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         y_fcast[:, 0] = self._predict(X_window)
 
         if self.hh > 1 and not self._useforge:
-            raise ValueError("Cannot use forge when the input matrix X was not built by _build_matrix.")
+            raise ValueError("Cannot use forge when the input matrix X was not built by buildMatrix.")
 
         for h in range(2, self.hh + 1):
-            y_fcast[:, h - 1] = self._predict(self._forge(X_window, y_fcast, h))
+            y_fcast[:, h - 1] = self._predict(self.forge(X_window, y_fcast, h))
 
         self._store(t_st, t_en, y_fcast)
         return y_fcast

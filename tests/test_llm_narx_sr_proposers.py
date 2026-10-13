@@ -1,16 +1,15 @@
 """Tests of the proposers (counterparts of geneticProposerTest, lLMProposerTest), the explainer
 (explainerTest) and the LLM clients (lLMClientTest) -- all offline, with a MockLLMClient."""
-import math
 
 import numpy as np
 import pytest
 
 from modeling.feature_selection import SelectionTech
 from modeling.llm_client import CachedClient, CountingClient, Json, LLMClient, LocalClient, MockLLMClient
-from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser, parse_formula
+from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
 from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import EDA4TS
-from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer, TermEffect
+from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import Candidate, FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.genetic_proposer import GeneticProposer, RandomTerms
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import LLMProposer, genericSchema
@@ -44,8 +43,8 @@ def test_random_sampling_is_legal_and_reproducible():
 
 
 def test_offspring_inherit_and_never_share_parameters():
-    f1 = parse_formula("y ~= y~1 + hosp~2", VARS, MAX_LAG, FREQS)
-    f2 = parse_formula("y ~= y~(2,1) + log1p(icu~1) + wave(1)", VARS, MAX_LAG, FREQS)
+    f1 = NARX_FormulaParser.parseFormula("y ~= y~1 + hosp~2", VARS, MAX_LAG, FREQS)
+    f2 = NARX_FormulaParser.parseFormula("y ~= y~(2,1) + log1p(icu~1) + wave(1)", VARS, MAX_LAG, FREQS)
     c1, c2 = Candidate(f1, 10.0, [], 2), Candidate(f2, 12.0, [], 5)
     top = [Trace(0, Source.Seed, c1, None, c1), Trace(0, Source.Seed, c2, None, c2)]
     gp = GeneticProposer("y", ["hosp", "icu"], MAX_LAG, FREQS, stream=2)
@@ -54,7 +53,7 @@ def test_offspring_inherit_and_never_share_parameters():
     parentTerms = {t.label() for t in f1.preds + f2.preds}
     inherited = sum(1 for k in kids if any(t.label() in parentTerms for t in k.preds))
     assert inherited >= len(kids) // 2 and all(k.preds and len(k.preds) <= 12 for k in kids)
-    f3 = parse_formula("y ~= y~1 + pow(hosp~1, ?) + log(? + icu~1)", VARS, MAX_LAG, FREQS)
+    f3 = NARX_FormulaParser.parseFormula("y ~= y~1 + pow(hosp~1, ?) + log(? + icu~1)", VARS, MAX_LAG, FREQS)
     c3 = Candidate(f3, 9.0, [], 3)
     kid3 = GeneticProposer("y", ["hosp", "icu"], MAX_LAG, FREQS, stream=3).propose([Trace(0, Source.Seed, c3, None, c3)], 10)
     pp = f3.params()
@@ -62,9 +61,9 @@ def test_offspring_inherit_and_never_share_parameters():
         for p in k.params():
             assert not any(p is q for q in pp), f"shared parameter object in {k.formulaStr}"
     assert any(k.nFree > 0 for k in kid3)
-    shifted = gp.shift(parse_formula("y ~= log1p(hosp~6)", VARS, MAX_LAG).preds[0])
+    shifted = gp.shift(NARX_FormulaParser.parseFormula("y ~= log1p(hosp~6)", VARS, MAX_LAG).preds[0])
     assert shifted.label() == "log1p(hosp~5)"
-    capped = gp.cap(parse_formula("y ~= y~1 + pow(hosp~1, ?) + log(? + icu~1) + sat(y~2, ?)", VARS, MAX_LAG))
+    capped = gp.cap(NARX_FormulaParser.parseFormula("y ~= y~1 + pow(hosp~1, ?) + log(? + icu~1) + sat(y~2, ?)", VARS, MAX_LAG))
     assert capped.nFree <= 2
 
 
@@ -88,8 +87,8 @@ def test_llm_proposer_blind_prompt_and_parsing():
     assert lp.source is Source.LLM
     assert "x1" in lp.system and "icu" not in lp.system and "pow(x1~1, ?)" in lp.system and "sat(x1~1, ?)" in lp.system
     assert genericSchema(2) in lp.system and "at most 2 are allowed" in lp.system
-    c0 = sc.score(parse_formula("y ~= y~1 + icu~2", sc.vars, 6))
-    cF = sc.score(parse_formula("y ~= y~1 + icu~2 + pRate~3", sc.vars, 6))
+    c0 = sc.score(NARX_FormulaParser.parseFormula("y ~= y~1 + icu~2", sc.vars, 6))
+    cF = sc.score(NARX_FormulaParser.parseFormula("y ~= y~1 + icu~2 + pRate~3", sc.vars, 6))
     top = [Trace(0, Source.Seed, c0, None, c0), Trace(1, Source.LLM, cF, SelectionTech.CEM, c0)]
     out = lp.propose(top, 5)
     assert "proposed y ~= y~1 + x1~2 + x2~3  ->  kept y ~= y~1 + x1~2  (dropped: x2~3)" in lp.lastPrompt
@@ -120,7 +119,7 @@ def test_explainer_checks_the_claims():
     cfg = Datasets.COVID2
     data = cfg.load()
     sc = FormulaScorer(data, hh=6)
-    f = parse_formula("y ~= y~(2,1) + icu~1 + log1p(pRate~3)", sc.vars, 6)
+    f = NARX_FormulaParser.parseFormula("y ~= y~(2,1) + icu~1 + log1p(pRate~3)", sc.vars, 6)
     cand = sc.score(f)
     mod = sc.fit(f)
     eff = Explainer.importance(mod, f, sc.trSize)

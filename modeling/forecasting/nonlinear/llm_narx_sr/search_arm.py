@@ -20,8 +20,8 @@ QoF matrices are lists of per-horizon dicts (`qofTest`), an `Option` is None, a 
 (..., -0.0)` of a failed run is an empty list; `ArmSpec.copy (...)` is `ArmSpec.copy (**changes)`.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.2
 License: MIT License
 Note: AI assisted code
 """
@@ -397,7 +397,7 @@ class ExpRun:
     def smapeTest(self) -> np.ndarray:
         """The TnT sMAPE per horizon of the best model (testing rows, rolling); NaN when failed."""
         if not self.qofTest:
-            return np.full(len(self.best.qof_train) if self.best.qof_train else 1, math.nan)
+            return np.full(len(self.best.qofTrain) if self.best.qofTrain else 1, math.nan)
         return np.array([q["smape"] for q in self.qofTest])
 
     @property

@@ -24,8 +24,8 @@ The nonlinear terms with free parameters (shift, exponent, threshold, ...) exten
 `modeling/forecasting/nonlinear/narx_formula.py` (ScalaTion's `NARX_Formula.scala`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -35,15 +35,14 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Union
+from typing import Callable, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
 from Util.transform import HP as TRANSFORM_HP, TransformT, transform_t
-
-if TYPE_CHECKING:                                                # the model classes import this module
-    from modeling.forecasting.arx import ARX
-    from modeling.forecasting.arx_d import ARX_D
+from modeling.forecasting.arx import ARX
+from modeling.forecasting.arx_d import ARX_D
+from modeling.forecasting.forecaster import trSize as tr_size_of
 
 
 class LabelMode(Enum):
@@ -57,8 +56,6 @@ class LabelMode(Enum):
     SLOT_VALUE = 2
 
 
-START = LabelMode.SLOT_VALUE                                     # the former name
-
 
 def fmt(v: float) -> str:
     """A number in a term label: four significant digits (ScalaTion's `Par.fmt`, "%.4g")."""
@@ -68,7 +65,7 @@ def fmt(v: float) -> str:
 def lagv(x: np.ndarray, lag: int) -> np.ndarray:
     """
     Lags a series by `lag` steps, padding the first `lag` rows with the first value (ScalaTion's
-    `VectorD.lagv`, the convention of `build_lagged_matrix`).
+    `VectorD.lagv`, the convention of `makeMatrix4L`).
 
     Parameters
     ----------
@@ -200,7 +197,7 @@ class FormulaVar(Term):
     def column(self, dataset: Dict[str, np.ndarray]) -> np.ndarray:
         return lagv(dataset[self._name], self._lag)
 
-    def lag_(self, l: int) -> "FormulaVar":
+    def lagged(self, l: int) -> "FormulaVar":
         """The variable lagged l steps (ScalaTion's `x ~ l`)."""
         return FormulaVar(self._name, l)
 
@@ -211,7 +208,7 @@ class FormulaVar(Term):
         return [FormulaVar(self._name, l) for l in range(max_lag, min_lag - 1, -1)]
 
     def __invert__(self):
-        raise TypeError("write x.lag_(k) or x.lags(h, l) for the lags of a variable")
+        raise TypeError("write x.lagged(k) or x.lags(h, l) for the lags of a variable")
 
     def __eq__(self, other) -> bool:
         return isinstance(other, FormulaVar) and other._name == self._name and other._lag == self._lag
@@ -228,11 +225,6 @@ class TransformedTerm(Term):
             raise ValueError(f"unknown function '{op}'")
         self.source = source
         self.op = op
-
-    @property
-    def fn(self) -> str:
-        """The function name (the former attribute name)."""
-        return self.op
 
     @property
     def name(self) -> str:
@@ -349,11 +341,6 @@ class WaveTerm(Term):
         self.idx = idx
 
     @property
-    def ph(self) -> float:
-        """The phase (the former attribute name)."""
-        return self.phase
-
-    @property
     def name(self) -> str:
         kind = "sin" if self.phase == 0.0 else "cos"
         return f"{kind}(w={self.w:.4f})"
@@ -403,8 +390,6 @@ def pow(t, p: float):
     """`pow(t, p)`: a fixed exponent (a `Par` exponent is `nonlinear.narx_formula.pow`)."""
     return _each(t, lambda x: PowerTerm(x, float(p)))
 
-
-pow_ = pow                                                       # the former name
 
 
 def powr(t, q: float):
@@ -528,12 +513,8 @@ class ARX_Formula:
 
     @property
     def formulaStr(self) -> str:
-        """The formula as a specification string in the grammar (`parse_formula` rebuilds it)."""
+        """The formula as a specification string in the grammar (`FormulaParser.parseFormula` rebuilds it)."""
         return self._str(LabelMode.VALUE)
-
-    @property
-    def formula_str(self) -> str:
-        return self.formulaStr
 
     @property
     def key(self) -> str:
@@ -561,10 +542,6 @@ class ARX_Formula:
         return len(self.preds)
 
     @property
-    def n_terms(self) -> int:
-        return self.nTerms
-
-    @property
     def vars(self) -> set:
         """The dataset variables the terms read."""
         v: set = set()
@@ -576,10 +553,6 @@ class ARX_Formula:
     def maxLag(self) -> int:
         """The largest lag used by any term (0 if none)."""
         return max((t.lag for t in self.preds), default=0)
-
-    @property
-    def max_lag(self) -> int:
-        return self.maxLag
 
     def fresh(self) -> "ARX_Formula":
         """A copy of the formula (with its own parameters, for a formula with free ones)."""
@@ -611,8 +584,6 @@ class ARX_Formula:
         ValueError
             For a missing variable, a length mismatch, a lag beyond the series, or no terms.
         """
-        from modeling.forecasting.forecaster import trSize as tr_size_of
-
         if not self.preds:
             raise ValueError("fromTerms: no predictor terms (the mean model has no design matrix)")
         if self.resp.name not in dataset:
@@ -666,29 +637,21 @@ class ARX_Formula:
                 raise ValueError(f"fromTerms: term '{self.preds[j].label()}' is not finite (e.g., log of 0 or exp of a large value)")
         return X
 
-    def columns(self, data: Dict[str, np.ndarray], check: bool = True) -> np.ndarray:
-        """The former name of `matrix`."""
-        return self.matrix(data, check)
-
     def lagHP(self) -> Dict[str, int]:
         """
         The lag hyper-parameters of a model built from the formula (ScalaTion's `lagHP`): p (the
-        largest lag of the response), q (the largest lag of the exogenous variables, ScalaTion's
-        px), spec = 0, and n_exo (the distinct exogenous variables in the terms).
+        largest lag of the response), px (the largest lag of the exogenous variables), spec = 0, and n_exo (the distinct exogenous variables in the terms).
         """
         yn = self.resp.name
         p = max((t.lag for t in self.preds if t.vars == {yn}), default=0)
         q = max((t.lag for t in self.preds if t.vars and t.vars != {yn}), default=0)
         n_exo = len(self.vars - {yn})
-        return {"p": p, "q": q, "spec": 0, "n_exo": n_exo}
-
-    def lag_hp(self) -> Dict[str, int]:
-        return self.lagHP()
+        return {"p": p, "px": q, "spec": 0, "n_exo": n_exo}
 
     # -- fitting ----------------------------------------------------------------------------
 
     def fit(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-            scaled: bool = False, method: str = "sm_ols") -> "ARX":
+            scaled: bool = False, method: str = "sm_ols", hparam: Optional[Dict] = None) -> "ARX":
         """
         Fits the recursive `ARX` model with one column per term (ScalaTion's `ARX_Formula.fit`:
         `ARX.fromTerms` then `trainNtest` in-sample).
@@ -706,23 +669,23 @@ class ARX_Formula:
         scaled : bool, default=False
             Whether the regression standardizes the term columns (method "ridge").
         method : str, default="sm_ols"
-            The regression method of `ARX`.
+            The regression method of `ARX` ("ridge" is ScalaTion's `CenteredRidge`).
+        hparam : dict, optional
+            The hyper-parameters of the model ("lambda" for "ridge", default 0.1; "nneg"; ...).
         """
-        from modeling.forecasting.arx import ARX
         mod = ARX.fromTerms(self, dataset, hh, tFormT=tFormT if tFormT is not None else self.tFormT,
-                            trSize=trSize, scaled=scaled, method=method)
+                            trSize=trSize, scaled=scaled, method=method, hparam=hparam)
         mod.trainNtest()
         return mod
 
     def fit_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-              scaled: bool = False, method: str = "sm_ols") -> "ARX_D":
+              scaled: bool = False, method: str = "sm_ols", hparam: Optional[Dict] = None) -> "ARX_D":
         """
         Fits the direct `ARX_D` model with one column per term (ScalaTion's `ARX_Formula.fit_D`:
         `ARX_D.fromTerms` then `trainNtest` in-sample).  Parameters as in `fit`.
         """
-        from modeling.forecasting.arx_d import ARX_D
         mod = ARX_D.fromTerms(self, dataset, hh, tFormT=tFormT if tFormT is not None else self.tFormT,
-                              trSize=trSize, scaled=scaled, method=method)
+                              trSize=trSize, scaled=scaled, method=method, hparam=hparam)
         mod.trainNtest()
         return mod
 
@@ -739,11 +702,3 @@ class ARX_Formula:
                 f"            FN in {{{fns}}}, {pMin} <= p <= {pMax}\n"
                 f"            wave(k) adds sin/cos pairs for the k strongest seasonal frequencies")
 
-
-# -- the former short names (kept for compatibility) ----------------------------------------------
-
-Var = FormulaVar
-Transformed = TransformedTerm
-Power = PowerTerm
-Product = ProductTerm
-Wave = WaveTerm

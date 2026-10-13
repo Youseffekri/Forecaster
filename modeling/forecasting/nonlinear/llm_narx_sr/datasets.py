@@ -26,26 +26,27 @@ The Python counterpart of ScalaTion's `Example_Covid` / `Example_ILI` / `Example
 ILINet file; the configurations and their `load` are kept from the earlier core.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import os
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
-from modeling.forecasting.exo_screen import ExoRank, ExoScreen
+from modeling.forecasting.exo_screen import ExoScreen
+from modeling.forecasting.forecaster import trSize
 
 #: The data directory: <repo>/data (override with the FORECASTER_DATA environment variable).
-import os
 DATA_DIR = Path(os.environ.get("FORECASTER_DATA", Path(__file__).resolve().parents[4] / "data"))
 
 
@@ -73,7 +74,7 @@ def _context(df: pd.DataFrame, y_str: str, x_strs: Sequence[str], names: Optiona
 class Example_Covid:
     """
     Weekly US Covid-19 data (data/covid_19_weekly.csv): new deaths as the response, with the
-    first 116 weeks used (the rows of the ScalaTion tests and of Examples/Example_Covid19.py).
+    first 116 weeks used (the rows of the ScalaTion tests and of Examples/Example_Covid.py).
     """
     FILE = "covid_19_weekly.csv"
     RESPONSE = "new_deaths"
@@ -89,7 +90,7 @@ class Example_Covid:
         return df.iloc[:n_rows].reset_index(drop=True) if n_rows else df
 
     @classmethod
-    def load_data(cls, x_strs: Sequence[str] = ("icu_patients", "positive_rate"), n_rows: Optional[int] = N_ROWS):
+    def loadData(cls, x_strs: Sequence[str] = ("icu_patients", "positive_rate"), n_rows: Optional[int] = N_ROWS):
         """(y, xe): the response and the exogenous matrix (n_rows-by-len(x_strs))."""
         df = cls.frame(n_rows)
         return df[cls.RESPONSE].to_numpy(dtype=float), df[list(x_strs)].to_numpy(dtype=float)
@@ -129,13 +130,13 @@ class Example_ILI:
         return df.iloc[trim:].reset_index(drop=True) if trim > 0 else df
 
     @classmethod
-    def load_data(cls, x_strs: Sequence[str] = EXO, y_str: str = RESPONSE, trim: int = 0):
+    def loadData(cls, x_strs: Sequence[str] = EXO, y_str: str = RESPONSE, trim: int = 0):
         """(y, xe): the response vector and the exogenous matrix (ScalaTion's `loadData`)."""
         df = cls.frame(trim)
         return df[y_str].to_numpy(dtype=float), df[list(x_strs)].to_numpy(dtype=float)
 
     @classmethod
-    def load_data_y(cls, y_str: str = RESPONSE, trim: int = 0) -> np.ndarray:
+    def loadData_y(cls, y_str: str = RESPONSE, trim: int = 0) -> np.ndarray:
         """The response vector alone (ScalaTion's `loadData_y`)."""
         return cls.frame(trim)[y_str].to_numpy(dtype=float)
 
@@ -165,7 +166,7 @@ class Example_ETTh1:
         return _read(cls.FILE)
 
     @classmethod
-    def load_data(cls, x_strs: Sequence[str] = LOADS, rng: Optional[range] = None):
+    def loadData(cls, x_strs: Sequence[str] = LOADS, rng: Optional[range] = None):
         df = cls.frame()
         if rng is not None:
             df = df.iloc[rng.start:rng.stop]
@@ -198,7 +199,7 @@ class Example_GEFCom:
         return _read(cls.FILE)
 
     @classmethod
-    def load_data(cls, x_strs: Sequence[str] = ("temp", "tmax")):
+    def loadData(cls, x_strs: Sequence[str] = ("temp", "tmax")):
         df = cls.frame()
         return df[cls.RESPONSE].to_numpy(dtype=float), df[list(x_strs)].to_numpy(dtype=float)
 
@@ -287,16 +288,10 @@ class DatasetConfig:
         exo = self.exo if exo is None else list(exo)
         return f"{self.resp} ~= " + " + ".join(f"{v}~({maxLag},1)" for v in [self.resp] + exo)
 
-    def baseline_formula_str(self, max_lag: int, exo: Optional[Sequence[str]] = None) -> str:
-        return self.baselineFormulaStr(max_lag, exo)
-
     @property
     def blindNames(self) -> Dict[str, str]:
         """The blind display name per variable (y, x1, x2, ...) over the pool."""
         return {self.resp: "y", **{v: f"x{i + 1}" for i, v in enumerate(self.exo)}}
-
-    def blind_names(self) -> Dict[str, str]:
-        return self.blindNames
 
     def copy(self, **changes) -> "DatasetConfig":
         """A copy with the given fields changed (Scala's `copy`)."""
@@ -376,7 +371,6 @@ class Datasets:
         skipCol : int, default=1
             The leading columns to skip (e.g., a date column).
         """
-        from modeling.forecasting.forecaster import trSize
         df = _read(fileName).iloc[:, skipCol:]
         if rng is not None:
             df = df.iloc[rng.start:rng.stop].reset_index(drop=True)

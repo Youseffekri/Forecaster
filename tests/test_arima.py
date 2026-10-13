@@ -17,7 +17,7 @@ RC = 20
 
 
 def covid_y():
-    y, _ = Example_Covid.load_data(["icu_patients", "positive_rate"])
+    y, _ = Example_Covid.loadData(["icu_patients", "positive_rate"])
     return y
 
 
@@ -25,7 +25,7 @@ def test_defaults_names_and_shapes():
     y = covid_y()
     mod = ARIMA(None, y, HH)                                             # ScalaTion's AR.hp defaults p = d = q = 1
     assert mod.modelName == "ARIMA_1_1_1" and mod.order == (1, 1, 1) and mod.trend == "n"
-    assert mod.args == {"p": 1, "d": 1, "q": 1, "trend": "n", "skip": 3}   # skip = max (p, q + 1) + d
+    assert {k: mod.hparam[k] for k in ("p", "d", "q", "trend", "skip")} == {"p": 1, "d": 1, "q": 1, "trend": "n", "skip": 3}   # skip = max (p, q + 1) + d
     assert mod.fname == ["ar.L1", "ma.L1"] and not mod.hasIntercept
     mod.train()
     assert mod.parameter.shape == (2,) and mod.params.shape == (2,) and mod.intercept is None
@@ -47,20 +47,20 @@ def test_trend_c_gives_a_constant_and_an_intercept():
         ARIMA({"p": -1}, y, HH)
 
 
-@pytest.mark.parametrize("args, trend", [({"p": 1, "d": 0, "q": 0}, "c"), ({"p": 1, "d": 1, "q": 1}, None),
+@pytest.mark.parametrize("hparam, trend", [({"p": 1, "d": 0, "q": 0}, "c"), ({"p": 1, "d": 1, "q": 1}, None),
                                          ({"p": 2, "d": 1, "q": 0}, "t"), ({"p": 1, "d": 0, "q": 2}, "ct")])
-def test_row_t_equals_apply_forecast_from_the_information_up_to_t_minus_1(args, trend):
+def test_row_t_equals_apply_forecast_from_the_information_up_to_t_minus_1(hparam, trend):
     """Row t of the block holds the h = 1..hh forecasts of y[t], ..., y[t + hh - 1] made from y[:t]:
     statsmodels' own res.apply (y[:t]).forecast (hh)."""
     y = covid_y()
-    mod = ARIMA(args, y, HH, trend=trend)
+    mod = ARIMA(hparam, y, HH, trend=trend)
     mod.train(y[:trSize(len(y))])
     yf = mod.forecast()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for t in (1, 2, 5, 40, 92, 115):
             ref = np.asarray(mod.res.apply(y[:t], refit=False).forecast(HH))
-            assert np.allclose(yf[t], np.maximum(ref, 0.0), atol=1e-8), (args, trend, t)
+            assert np.allclose(yf[t], np.maximum(ref, 0.0), atol=1e-8), (hparam, trend, t)
 
 
 def test_arima_1_0_0_with_trend_c_is_close_to_ar_1():
@@ -89,7 +89,7 @@ def test_in_sample_report_and_tnt_rolling(capsys):
     out = capsys.readouterr().out
     assert "| In-Sample Test: ARIMA_1_1_1 |" in out and "modelName  mn  = ARIMA_1_1_1" in out
     assert "features   fn  = Array(ar.L1, ma.L1)" in out and "fitMap QoF =" in out
-    assert "hparameter hp  = HyperParameter(p -> 1, d -> 1, q -> 1, trend -> n, skip -> 3)" in out
+    assert "hparameter hp  = HyperParameter(p -> (1,1), d -> (1,1), q -> (1,1), P -> (1,1), D -> (1,1), Q -> (1,1), s -> (7,7), px -> (1,1), spec -> (1,1), crx -> (0,0), nneg -> (1,1))" in out
     assert qof[QoF.dfr.ordinal] == 2 and qof[QoF.m.ordinal] == len(y) - 3 and qof[QoF.rSq.ordinal] > 0.85
 
     ft = mod.tnT_Test(rc=RC)

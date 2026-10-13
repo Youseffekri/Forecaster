@@ -13,16 +13,19 @@ counterpart of ScalaTion's `Transform.hp`.
     SinForm   sin(2 pi f x + s)    CosForm   cos(2 pi f x + s)
 
     NormForm  (x - mu) / sigma     MinMaxForm  l + (x - min)(u - l)/(max - min)    CenterForm  x - mu
-    (fitted on the data given at construction -- the training slice)
+    (fitted on the data given at construction -- the training slice -- column by column for a
+    matrix; MinMaxForm maps to the CENTERED range [l, u] = [-2, 2] by default, `setLU` changes it)
 
-The Python counterpart of ScalaTion's `scalation.mathstat.Transform` (`TransformT` names the
-types, `TransformT.Log1p.form(x_train)` makes one).  The `rescale` factories of the models
-take sklearn scalers (MinMaxScaler / StandardScaler) instead, which play the roles of
-MinMaxForm / NormForm there.
+The Python counterpart of ScalaTion's `scalation.mathstat.Transform`: `TransformT` names the types
+and `TransformT.X.form(x)` makes one -- fitted on x (the training slice) for Norm, MinMax and
+Center, from the parameter vector x = (w0, w1) for the parameterized ones (the defaults when x is
+None), as ScalaTion's `t.form (VectorD (w0, w1))`; `TransformT.X.wlu` holds the default parameters
+and their bounds (ScalaTion's `TransformS`), the search box of `NARX_SR_D.optimize`.  The `rescale`
+factories of the models take a `TransformT` (`tFormT`), as in ScalaTion.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -30,7 +33,7 @@ Note: AI assisted code
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -75,6 +78,11 @@ class Transform:
 
     def __init__(self, w) -> None:
         self.w = np.asarray(w, dtype=float)
+        self.lu = np.array([-2.0, 2.0])                         # the min-max range (used by MinMaxForm)
+
+    def setLU(self, lu: Sequence[float]) -> None:
+        """Sets the min-max range [l, u] (ScalaTion's `setLU`; only `MinMaxForm` uses it)."""
+        self.lu = np.asarray(lu, dtype=float)
 
     @property
     def name(self) -> str:
@@ -276,50 +284,61 @@ class SinForm(Transform):
 
 
 class NormForm(Transform):
-    """(x - mu) / sigma -- standardization with the mean and (unbiased) standard deviation of the
-    data given at construction (the training slice); ScalaTion's `NormForm`."""
+    """(x - mu) / (sigma + eps) -- standardization with the mean and (unbiased) standard deviation of
+    the data given at construction (the training slice; column by column for a matrix); ScalaTion's
+    robust `NormForm` (eps = 1e-8 keeps a constant column finite)."""
+
+    EPS = 1e-8
 
     def __init__(self, x: np.ndarray) -> None:
         x = np.asarray(x, dtype=float)
-        sd = float(np.std(x, ddof=1)) if len(x) > 1 else 1.0
-        super().__init__([float(np.mean(x)), sd if sd > 0.0 else 1.0])
+        n = x.shape[0]
+        self._mu = x.mean(axis=0)
+        self._sig = x.std(axis=0, ddof=1) if n > 1 else np.zeros_like(self._mu)
+        super().__init__(np.concatenate((np.atleast_1d(self._mu), np.atleast_1d(self._sig))))
 
     def f(self, x):
-        return (np.asarray(x, dtype=float) - self.w[0]) / self.w[1]
+        return (np.asarray(x, dtype=float) - self._mu) / (self._sig + self.EPS)
 
     def fi(self, y):
-        return np.asarray(y, dtype=float) * self.w[1] + self.w[0]
+        return np.asarray(y, dtype=float) * (self._sig + self.EPS) + self._mu
 
 
 class MinMaxForm(Transform):
-    """l + (x - min) (u - l) / (max - min) -- min-max scaling to (l, u) with the extremes of the
-    data given at construction (the training slice); ScalaTion's `MinMaxForm` (lu = (0, 4))."""
+    """l + (x - min) (u - l) / (max - min) -- min-max scaling to [l, u] with the extremes of the data
+    given at construction (the training slice; column by column for a matrix); ScalaTion's
+    `MinMaxForm`: CENTERED to [-2, 2] by default (to reduce collinearity), [0, 4] with
+    centered = False, any range with `setLU` (e.g., [1, 5] keeps powers, roots and logs defined)."""
 
-    def __init__(self, x: np.ndarray, lu=(0.0, 4.0)) -> None:
+    def __init__(self, x: np.ndarray, centered: bool = True) -> None:
         x = np.asarray(x, dtype=float)
-        lo, hi = float(np.min(x)), float(np.max(x))
-        super().__init__([lo, hi if hi > lo else lo + 1.0, float(lu[0]), float(lu[1])])
+        self._lo, self._hi = x.min(axis=0), x.max(axis=0)
+        self._rng = np.where(self._hi > self._lo, self._hi - self._lo, 1.0)     # a constant column maps to l
+        super().__init__(np.concatenate((np.atleast_1d(self._lo), np.atleast_1d(self._hi))))
+        self.lu = np.array([-2.0, 2.0]) if centered else np.array([0.0, 4.0])
 
     def f(self, x):
-        lo, hi, l, u = self.w
-        return l + (np.asarray(x, dtype=float) - lo) * (u - l) / (hi - lo)
+        l, u = self.lu
+        return (np.asarray(x, dtype=float) - self._lo) * (u - l) / self._rng + l
 
     def fi(self, y):
-        lo, hi, l, u = self.w
-        return lo + (np.asarray(y, dtype=float) - l) * (hi - lo) / (u - l)
+        l, u = self.lu
+        return (np.asarray(y, dtype=float) - l) * self._rng / (u - l) + self._lo
 
 
 class CenterForm(Transform):
-    """x - mu -- centering with the mean of the data given at construction; ScalaTion's `CenterForm`."""
+    """x - mu -- centering with the mean of the data given at construction (column by column for a
+    matrix); ScalaTion's `CenterForm`."""
 
     def __init__(self, x: np.ndarray) -> None:
-        super().__init__([float(np.mean(np.asarray(x, dtype=float)))])
+        self._mu = np.asarray(x, dtype=float).mean(axis=0)
+        super().__init__(np.atleast_1d(self._mu))
 
     def f(self, x):
-        return np.asarray(x, dtype=float) - self.w[0]
+        return np.asarray(x, dtype=float) - self._mu
 
     def fi(self, y):
-        return np.asarray(y, dtype=float) + self.w[0]
+        return np.asarray(y, dtype=float) + self._mu
 
 
 #: The transformations by ScalaTion's `TransformT` name.
@@ -332,6 +351,33 @@ TRANSFORMS = {
 #: The transformations fitted on data (the training slice) by ScalaTion's `TransformT` name.
 FITTED_TRANSFORMS = {"Norm": NormForm, "MinMax": MinMaxForm, "Center": CenterForm}
 
+#: ScalaTion's `TransformT.wlu` (`TransformS`): the default parameters w = (w0, w1) of each
+#: parameterized type and their lower (l) and upper (u) bounds; equal bounds fix a parameter.
+WLU: Dict[str, Tuple[Tuple[float, float], Tuple[float, float], Tuple[float, float]]] = {
+    "Pow":    ((HP["s"], HP["p"]),   (0.0, 1.1),     (10.0, 4.0)),     # (x + s)^p, p in [1.1, 4]
+    "PowR":   ((HP["s"], HP["q"]),   (0.0, 0.1),     (10.0, 0.9)),     # sign-safe power q in [0.1, 0.9]
+    "DQuad":  ((0.0, HP["mx"]),      (0.0, -1e9),    (0.0, 1e9)),      # dampened quadratic (max mx)
+    "DIQuad": ((0.0, HP["mx"]),      (0.0, -1e9),    (0.0, 1e9)),      # dampened inverse quadratic
+    "Boxcox": ((HP["l"], 0.0),       (-4.0, 0.0),    (4.0, 0.0)),      # Box-Cox l in [-4, 4]
+    "Root":   ((HP["s"], HP["r"]),   (0.0, 0.1),     (10.0, 0.9)),     # (x + s)^r, r in [0.1, 0.9]
+    "Recip":  ((HP["s"], HP["c"]),   (0.0, -4.0),    (10.0, -0.1)),    # (x + s)^c, c in [-4, -0.1]
+    "Log":    ((HP["ss"], HP["a"]),  (0.0, 0.1),     (10.0, 10.0)),    # log (a x + ss)
+    "Exp":    ((HP["s"], HP["a"]),   (0.0, 0.1),     (10.0, 10.0)),    # exp (a x + s)
+    "NExp":   ((HP["s"], HP["an"]),  (-10.0, -10.0), (0.0, -0.1)),     # exp (an x + s), an < 0
+    "Cos":    ((HP["s"], HP["f"]),   (0.0, 0.01),    (10.0, 10.0)),    # cos (2 pi f x + s)
+    "Sin":    ((HP["s"], HP["f"]),   (0.0, 0.01),    (10.0, 10.0)),    # sin (2 pi f x + s)
+}
+
+
+def _from_w(name: str, w: Sequence[float]) -> Transform:
+    """The transformation of a parameterized type at the parameter vector w = (w0, w1)."""
+    w0, w1 = float(w[0]), float(w[1])
+    if name in ("DQuad", "DIQuad"):
+        return TRANSFORMS[name](w1)                              # (0, mx): the cap only
+    if name == "Boxcox":
+        return BoxcoxForm(w0)                                    # (l, 0): lambda only
+    return TRANSFORMS[name](w0, w1)
+
 
 def transform(name: str, *args) -> Transform:
     """A transformation by name (`transform("Pow", 0, 2)` is (x + 0)^2)."""
@@ -342,9 +388,11 @@ def transform(name: str, *args) -> Transform:
 
 class TransformT(Enum):
     """
-    The transform TYPES (ScalaTion's `TransformT` enum): `form(x)` makes the transformation, fitting
-    it on x (the training slice) for the data-dependent ones (Norm, MinMax, Center) and with the
-    default parameters of `HP` for the others.  `TFORM: Log1p` in a formula names one.
+    The transform TYPES (ScalaTion's `TransformT` enum): `form(x)` makes the transformation -- fitted
+    on x (the training slice) for the data-dependent ones (Norm, MinMax, Center), from the parameter
+    vector x = (w0, w1) for the parameterized ones (ScalaTion's `t.form (VectorD (w0, w1))`), with
+    the default parameters of `HP` when x is None (or is data); `wlu` gives the default parameters
+    and their bounds (None for a type without parameters).  `TFORM: Log1p` in a formula names one.
     """
     Norm = "NormForm"
     MinMax = "MinMaxForm"
@@ -363,11 +411,23 @@ class TransformT(Enum):
     Cos = "CosForm"
     Sin = "SinForm"
 
-    def form(self, x: np.ndarray) -> Transform:
-        """The transformation of this type, fitted on x when data-dependent."""
+    def form(self, x: Optional[np.ndarray] = None) -> Transform:
+        """
+        The transformation of this type: fitted on x when data-dependent; at the parameters x = (w0, w1)
+        when parameterized and x is such a pair; with the default parameters otherwise.
+        """
         if self.name in FITTED_TRANSFORMS:
             return FITTED_TRANSFORMS[self.name](x)
+        if x is not None and self.name in WLU and np.ndim(x) == 1 and len(x) == 2:
+            return _from_w(self.name, x)
         return TRANSFORMS[self.name]()
+
+    @property
+    def wlu(self) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """The default parameters w and their bounds (l, u) -- ScalaTion's `TransformS` -- or None."""
+        if self.name not in WLU:
+            return None
+        return tuple(np.array(v, dtype=float) for v in WLU[self.name])
 
     def __str__(self) -> str:
         return self.name

@@ -36,8 +36,8 @@ plot), the dataset is passed explicitly where Scala uses a `given`, and `runGrid
 to skip the CSV file.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -50,14 +50,13 @@ import os
 import re
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from Util.tools import banner, matrix_str, vector_str
 from modeling.feature_selection import SelectionTech
-from modeling.fit import N_QoF
-from modeling.llm_client import CachedClient, LLMClient, LocalClient, OpenAIClient
+from modeling.llm_client import CachedClient, LocalClient, OpenAIClient
 from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import DatasetConfig, Datasets

@@ -4,8 +4,11 @@ Forecaster_D Module
 Defines the abstract `Forecaster_D` class for DIRECT (non-recursive) multi-horizon forecasting --
 the Python counterpart of ScalaTion's `Forecaster_D.scala`: one regression per horizon on the
 same input matrix, the targets held in the matrix Y (column h - 1 = y shifted by h - 1, padded
-with NaN where the future is unknown, ScalaTion's NO_DOUBLE).  Subclasses implement `train` and
-`forecast`; `fit_rows` drops the padded rows before training, as ScalaTion's `train` does.
+with NaN where the future is unknown, ScalaTion's NO_DOUBLE).  As in ScalaTion the base holds the
+regression (`_make_model`: "sm_ols", "sk_lr" or the centered ridge "ridge" of `CenteredRidgeMV`)
+and fits it (`train`: `fit_rows` drops the padded rows first), exposes `intercept`, `slopes`, `bb`
+and the coefficient tables `summary` / `summary (h)`; the model classes implement `forecast`,
+`getModel` and `getModel_h`.
 
 The FEATURE SELECTION scenarios of ScalaTion's `Forecaster_D` live here as well (the section
 "F E A T U R E   S E L E C T I O N" of the Scala file):
@@ -18,27 +21,27 @@ The FEATURE SELECTION scenarios of ScalaTion's `Forecaster_D` live here as well 
     selectFeaturesPerH  one column set PER HORIZON
     reportSelection     prints and tests any of them, in-sample and/or TnT (`SelectionReport`)
 
-The model classes provide `getModel (cols)` (the direct sub-model) and may override `getModel_h
-(cols, h)`; `smapeFPE` / `aggFPE` are the companion object's functions.
+The model classes provide `getModel (cols)` (the direct sub-model) and `getModel_h (cols, h)` (the
+single-horizon model at h); `smapeFPE` / `aggFPE` are the companion object's functions.
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05 (rev 2026-10-13)
-Version: 1.2
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 """
 
 from __future__ import annotations
 
-from abc import abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import statsmodels.api as sm
 
-from Util.build_matrix import build_matrix_Y
+from Util.make_matrix4ts import makeMatrix4Y
 from Util.tools import array_str, banner, set_str
 from modeling.feature_selection import (BestStep, Cols, FeatureSelection, SelectionReport, SelectionTech, given_qk,
                                         updateQoF)
-from modeling.fit import N_QoF, QoF
+from modeling.fit import N_QoF, Fit, QoF, vif
 from modeling.forecasting.forecaster import Forecaster, trSize
 from modeling.subset_search import SubsetSearch
 
@@ -94,19 +97,35 @@ class Forecaster_D(SelectionReport, Forecaster):
     ----------
     Y : np.ndarray, shape (m, hh)
         The target matrix: Y[t, h - 1] = y[t + h - 1] (NaN beyond the end of the series).
+    method : {"sm_ols", "sk_lr", "ridge"}
+        The regression per horizon (ScalaTion's `reg`, a `CenteredRidgeMV`, is "ridge").
     params : np.ndarray, shape (n + 1, hh)
-        The parameters per horizon, intercept first.
+        The parameters per horizon, intercept first (original units).
     bb : np.ndarray, shape (n, hh)
-        The slopes per horizon (ScalaTion's `bb`); `parameter` is its first column.
+        The coefficients per horizon (ScalaTion's `bb`, the regression's own: standardized when
+        "ridge" is scaled); `parameter` is its first column, `slopes` the original-unit ones.
     """
 
-    def __init__(self, args: Dict[str, Any], y: np.ndarray, hh: int, hasIntercept: bool = True) -> None:
+    def __init__(self, hparam: Dict[str, Any], y: np.ndarray, hh: int, method: str = "ridge",
+                 scaled: bool = False, hasIntercept: bool = True) -> None:
         """
-        Initializes the Forecaster_D (parameters as in `Forecaster`); the target matrix Y is built
-        from y (subclasses made by `rescale` rebuild it from the scaled y).
+        Initializes the Forecaster_D (hparam, y, hh as in `Forecaster`); the target matrix Y is built
+        from y.
+
+        Parameters
+        ----------
+        method : {"sm_ols", "sk_lr", "ridge"}, default="ridge"
+            The regression per horizon.
+        scaled : bool, default=False
+            Whether the ridge regression standardizes the columns (ScalaTion's `scaled`).
+        hasIntercept : bool, default=True
+            Whether the model has an intercept (counted in the degrees of freedom).
         """
-        super().__init__(args, y, hh, hasIntercept)
-        self._Y: Optional[np.ndarray] = build_matrix_Y(self._y, hh)
+        super().__init__(hparam, y, hh, hasIntercept)
+        self._method = method
+        self._scaled = scaled
+        self._model = self._make_model()
+        self._Y: Optional[np.ndarray] = makeMatrix4Y(self._y, hh)
         self._theBest: Optional[BestStep] = None                          # the best step of the last selection
         self._lastProbs: Optional[np.ndarray] = None                      # the last CEM selection's probabilities
 
@@ -121,7 +140,15 @@ class Forecaster_D(SelectionReport, Forecaster):
 
     @property
     def bb(self) -> np.ndarray:
-        """The slope matrix (n, hh): one column per horizon."""
+        """The coefficient matrix (n, hh), one column per horizon (ScalaTion's `bb` = `reg.parameter`)."""
+        if self._b is not None:
+            return self._b
+        return self.slopes
+
+    @property
+    def slopes(self) -> np.ndarray:
+        """The slopes in ORIGINAL units (n, hh), one column per horizon, so that forecast (t) =
+        intercept + X[t] @ slopes (ScalaTion's `slopes`)."""
         p = self.params
         return p[1:, :] if self._hasIntercept else p
 
@@ -149,38 +176,81 @@ class Forecaster_D(SelectionReport, Forecaster):
         idx = int(bad[0])
         return Y_[:idx], X_[:idx]
 
-    @abstractmethod
     def train(self, Y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None) -> None:
         """
-        Trains the forecasting model, one regression per horizon (stores the parameters with
-        `_set_params`, intercept first, one column per horizon).
+        Trains the regression of every horizon on an (X_, Y_) window (ScalaTion's `Forecaster_D.train`):
+        the trailing rows whose last horizon is undefined are dropped (`fit_rows`), the regression
+        refits its centering (and scaling) on the rows that remain, and the parameters (n + 1, hh)
+        are stored with the intercept first; `bb` holds the regression's own coefficients.
 
         Parameters
         ----------
         Y_ : np.ndarray, shape (m_, hh), optional
-            The target matrix (the full Y by default); padded rows are dropped by `fit_rows`.
+            The target matrix (the full Y by default).
         X_ : np.ndarray, shape (m_, n), optional
             The input matrix (the full X by default).
         """
+        X_ = self._X if X_ is None else X_
+        Y_ = self._Y if Y_ is None else Y_
+        Y_, X_ = self.fit_rows(Y_, X_)
+        self._b = None
+        if self._method == "sm_ols":
+            Xc = sm.add_constant(X_, has_constant="add")
+            self._models_fit = [sm.OLS(Y_[:, j], Xc).fit() for j in range(Y_.shape[1])]
+            self._set_params(np.column_stack([np.asarray(f.params) for f in self._models_fit]))
+        elif self._method == "ridge":
+            self._model.fit(X_, Y_)
+            self._set_params(self._model.params)
+            self._b = self._model.parameter                              # ScalaTion's bb = reg.parameter
+        else:
+            self._model.fit(X_, Y_)
+            self._set_params(np.column_stack([self._model.intercept_, self._model.coef_]).T)
+
+    def _predict(self, X_rows: np.ndarray) -> np.ndarray:
+        """The forecasts (rows, hh) of the given input rows, in model units, not rectified
+        (ScalaTion's `reg.predict`)."""
+        if self._params is None:
+            raise ValueError("The model has not been trained. Call train first.")
+        if self._method == "sm_ols":
+            Xc = sm.add_constant(X_rows, has_constant="add")
+            return np.column_stack([f.predict(Xc) for f in self._models_fit])
+        return np.asarray(self._model.predict(X_rows), dtype=float).reshape(len(X_rows), -1)
+
+    def summary(self, x_: Any = None, fname_: Optional[Sequence[str]] = None, b_: Optional[np.ndarray] = None,
+                vifs: Optional[np.ndarray] = None) -> str:
+        """
+        The coefficient table (ScalaTion's `Forecaster_D.summary`): the intercept followed by the
+        slopes of horizon 1 in original units, with a column of ones prepended to x so `Fit.summary`'s
+        standard errors and VIF indexing (column 0 = intercept) apply.  Reflects the last `diagnose`
+        call (the last horizon after `diagnoseAll`).  `summary (h)` -- an int as the first argument,
+        as ScalaTion's overload -- gives the table of horizon h.
+
+        Parameters
+        ----------
+        x_ : np.ndarray, shape (m, n), or int, optional
+            The data/input matrix without an intercept column (defaults to X), or the horizon h.
+        fname_ : sequence of str, optional
+            The feature names (defaults to `fname`).
+        b_ : np.ndarray, shape (n + 1,), optional
+            The parameters, intercept first (defaults to horizon 1's).
+        vifs : np.ndarray, shape (n,), optional
+            The Variance Inflation Factors (computed when None).
+        """
+        if isinstance(x_, (int, np.integer)):                            # summary (h)
+            h = int(x_)
+            if not 1 <= h <= self.hh:
+                raise ValueError(f"summary: horizon h = {h} out of range [1, {self.hh}]")
+            return f"\nhorizon h = {h}\n" + self.summary(b_=self.params[:, h - 1])
+        x_ = self._X if x_ is None else x_
+        fname_ = self.fname if fname_ is None else fname_
+        x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
+        b1 = self.params[:, 0] if b_ is None else b_                   # intercept +: slopes of horizon 1
+        v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
+        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1)
 
     def _train_target(self, is_: int, t: int) -> np.ndarray:
         """The training target rows [is_, t) of the matrix Y."""
         return self._Y[is_:t]
-
-    def diagnose_all(self, y_fcast: np.ndarray, TnT: bool = False) -> str:
-        """
-        The former per-horizon QoF table (kept for compatibility): the forecasts `y_fcast`
-        (rows from `skip`, or the testing rows when TnT) against the targets, in original
-        units, in ScalaTion's `showFitMap` form.
-        """
-        from Util.tools import fit_map
-        start = self._tr_size if TnT else self.args["skip"]
-        y_true = self._Yf[:, 0]
-        ll, hh = len(y_true) - start, y_fcast.shape[1]
-        y_true_arr = [y_true[start + h: start + ll] for h in range(hh)]
-        yf = y_fcast if self._yForm is None else self._yForm.inverse_transform(y_fcast)
-        y_fcast_arr = [yf[:ll - h, h] for h in range(hh)]
-        return fit_map(y_true_arr, y_fcast_arr, self.nparams)
 
     # -- F E A T U R E   S E L E C T I O N  (ScalaTion's `Forecaster_D`) ---------------------------
 
@@ -235,14 +305,11 @@ class Forecaster_D(SelectionReport, Forecaster):
         """
         raise NotImplementedError(f"{self.modelName}.getModel: the model class must implement it")
 
-    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1, method: Optional[str] = None,
-                   args: Optional[Dict[str, Any]] = None):
+    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1):
         """
-        Builds the single-horizon `ARX` at horizon h on the columns `cols` (ScalaTion's
-        `ARX_D.getModel_h`: `ARX` is the base model of the ARX*_D family): an `ARX` with hh = 1
-        whose response is column h - 1 of the target matrix, on the m - h + 1 rows where that
-        response is defined (ScalaTion keeps the NO_DOUBLE rows), with this model's training size
-        (so the FS rows and the testing rows are this model's), scaling and skip.
+        Builds the single-horizon model at horizon h on the columns `cols` (the model classes
+        implement it, ScalaTion's `ARX_D.getModel_h`: an `ARX` with hh = 1 bound to column h - 1 of Y),
+        whose `Forecaster_Reg` selection `selectFeaturesAtH` runs.
 
         Parameters
         ----------
@@ -250,27 +317,8 @@ class Forecaster_D(SelectionReport, Forecaster):
             The columns of the input matrix with the selected features (defaults to all).
         h : int, default=1
             The horizon (1 to hh).
-        method : str, optional
-            The regression method of the `ARX` (this model's `method` when it has one, else "ridge").
-        args : dict, optional
-            The hyper-parameters of the `ARX` (defaults to this model's).
         """
-        from modeling.forecasting.arx import ARX
-        if not 1 <= h <= self.hh:
-            raise ValueError(f"getModel_h: horizon h = {h} out of range [1, {self.hh}]")
-        cols = self.mcols if cols is None else list(cols)
-        args = self.args if args is None else args
-        method = getattr(self, "_method", "ridge") if method is None else method
-        if method not in ("sm_ols", "sk_lr", "ridge"):
-            method = "ridge"
-        m = len(self._y)
-        mh = m - h + 1                                                    # the rows whose horizon-h response is defined
-        sub = ARX(args, self.getY()[h - 1:], 1, None, method, self.getX()[:mh, cols])
-        n_exo = getattr(self, "_n_exo", 0)
-        self._subModel(sub, cols, modelName=f"ARX_{args['p']}_{args['q']}_{n_exo}")
-        sub._y = self._Y[:mh, h - 1]                                      # the horizon-h response (model units)
-        sub._te_size = mh - sub._tr_size
-        return sub
+        raise NotImplementedError(f"{self.modelName}.getModel_h: the model class must implement it")
 
     def fitCols(self, cols: Sequence[int]) -> Tuple["Forecaster_D", np.ndarray]:
         """

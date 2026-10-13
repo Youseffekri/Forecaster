@@ -22,8 +22,8 @@ as ?w), `fresh` (own copies of the parameters), `resolve`, `redundant` (the para
 linear fit already covers) and `fitNL_D` (the `NARX_SR_D` model with the parameters fitted).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -37,9 +37,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from modeling.forecasting.arx_formula import (ARX_Formula, FUNCTIONS, FormulaVar, LabelMode, PowerTerm,
-                                              ProductTerm, Term, TransformedTerm, WaveTerm, _each, distinct,
-                                              fmt, powr, wave as wave_k, wave_pair)
+from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, PowerTerm, ProductTerm, Term,
+                                              TransformedTerm, _each, fmt, wave as wave_k)
+
+from modeling.forecasting.forecaster import trSize as tr_size_of
 
 if TYPE_CHECKING:
     from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
@@ -181,7 +182,6 @@ class Par:
         """
         if self.resolved:
             return
-        from modeling.forecasting.forecaster import trSize as tr_size_of
         m = min(trSize, len(x)) if trSize > 0 else tr_size_of(len(x))
         xt = np.asarray(x[:m], dtype=float)
         lo, hi = float(np.min(xt)), float(np.max(xt))
@@ -502,11 +502,6 @@ class ParWaveTerm(Term):
         self.freq, self.phase, self.idx = freq, float(phase), idx
 
     @property
-    def f(self) -> Par:
-        """The frequency parameter (the former attribute name)."""
-        return self.freq
-
-    @property
     def ph(self) -> float:
         return self.phase
 
@@ -549,8 +544,6 @@ def pow(t, p):
         return _each(t, lambda x: ParPowerTerm(x, p))
     return _each(t, lambda x: PowerTerm(x, float(p)))
 
-
-pow_ = pow                                                       # the former name
 
 
 def sat(t, k: Par):    return _each(t, lambda x: SatTerm(x, k))
@@ -635,10 +628,6 @@ class NARX_Formula(ARX_Formula):
         value -- the form a proposer is shown, which `NARX_FormulaParser` reads back as a start value."""
         return self._str(LabelMode.SLOT_VALUE)
 
-    @property
-    def proposal_str(self) -> str:
-        return self.proposalStr
-
     # -- parameters -------------------------------------------------------------------------
 
     def params(self) -> List[Par]:
@@ -658,18 +647,10 @@ class NARX_Formula(ARX_Formula):
         return len(self.params())
 
     @property
-    def n_params(self) -> int:
-        return self.nParams
-
-    @property
     def nFree(self) -> int:
         """The number of distinct FREE parameters (the ones a fit searches; the count the DF
         penalty of `NARX_SR_D` and the scorer use)."""
         return sum(1 for p in self.params() if p.free)
-
-    @property
-    def n_free(self) -> int:
-        return self.nFree
 
     def reset(self) -> None:
         """Forgets the fits: every parameter goes back to its start value."""
@@ -778,7 +759,7 @@ class NARX_Formula(ARX_Formula):
     # -- fitting ----------------------------------------------------------------------------
 
     def fitNL_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, tFormT=None, trSize: int = -1,
-                scaled: bool = False, lam: float = 1.0, optimizer: str = "varpro", **opt_kwargs) -> "NARX_SR_D":
+                scaled: bool = False, optimizer=None, hparam: Optional[Dict] = None, **opt_kwargs) -> "NARX_SR_D":
         """
         Fits the `NARX_SR_D` model with one column per term: the free parameters are fitted on the
         training rows by the optimizer, then the coefficients in-sample (`NARX_SR_D.fromTerms`
@@ -796,14 +777,15 @@ class NARX_Formula(ARX_Formula):
             The training rows the transforms and the free parameters are fit on (-1 => `trSize`).
         scaled : bool, default=False
             Whether the regression (and the fit of the parameters) standardizes the term columns.
-        lam : float, default=1.0
-            The ridge penalty of the coefficients.
-        optimizer : {"varpro", "lbfgsb", "joint"}, default="varpro"
-            The optimizer of the nonlinear parameters.
+        optimizer : OptimizerNL or str, optional
+            The optimizer of the nonlinear parameters (None => `narx_sr_d.OPTIMIZER_NL`).
+        hparam : dict, optional
+            The hyper-parameters of the model ("lambda", the ridge penalty, default 0.1; "nneg"; ...).
         """
+        # the one deferred import of the package: `narx_sr_d` builds on this module (a genuine cycle)
         from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
-        mod = NARX_SR_D.fromTerms(self, dataset, hh, tFormT=tFormT if tFormT is not None else self.tFormT,
-                                  trSize=trSize, scaled=scaled, lam=lam, optimizer=optimizer, **opt_kwargs)
+        mod = NARX_SR_D.fromTerms(self, dataset, hh, hparam, tFormT=tFormT if tFormT is not None else self.tFormT,
+                                  trSize=trSize, scaled=scaled, optimizer=optimizer, **opt_kwargs)
         mod.trainNtest()
         return mod
 
@@ -825,16 +807,3 @@ class NARX_Formula(ARX_Formula):
             "            wave(?)               free frequency in cycles per time unit (one sin/cos pair)\n"
             "            the same parameter may be shared by the terms of a lag range, e.g., pow(y~(3,1), ?)")
 
-
-Formula = NARX_Formula                                           # the former name
-
-# -- the former short names (kept for compatibility) ----------------------------------------------
-Shift = ShiftTerm
-Scale = ScaleTerm
-ParPower = ParPowerTerm
-Sat = SatTerm
-Hinge = HingeTerm
-Trans = TransTerm
-Ema = EmaTerm
-Dq = DqTerm
-ParWave = ParWaveTerm

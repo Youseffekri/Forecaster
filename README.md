@@ -18,8 +18,8 @@ cd Forecaster
 pip install -e .            # numpy, pandas, scipy, scikit-learn, statsmodels
 pip install -e .[neural]    # + torch, for the neural models (MHAttn_Regressor)
 pip install -e .[test]      # + pytest
-pytest                      # 178 tests, ~25 s, all offline
-python Examples/Example_Covid19.py            # rw | ar | arima | arx | arx_d | arx_sr | arx_sr_d | formula | narx | mhattn | all
+pytest                      # 192 tests, ~45 s, all offline
+python Examples/Example_Covid.py              # rw | ar | arima | arx | arx_d | arx_sr | arx_sr_d | formula | narx | narx_sr | optimizers | mhattn | all
 python Examples/Example_ILI.py                # rw | ar | arima | arx_d | arx_sr_d | all
 python Examples/Example_ETTh1.py              # rw | ar | arx_d | arx_sr_d | narx | all
 python Examples/Example_GEFCom.py             # rw | ar | arx_d | arx_sr_d | narx | all
@@ -36,19 +36,27 @@ Every model is used the way its ScalaTion counterpart is, and prints the same bl
 
 ```python
 from modeling.forecasting.arx_d import ARX_D
-mod = ARX_D({"p": 6, "q": 6, "spec": 1}, y, hh=6, xe=xe)      # or ARX_D.rescale(...), ARX_D.fromTerms(formula, dataset, hh)
+mod = ARX_D({"p": 6, "px": 6, "spec": 1}, y, hh=6, xe=xe)     # or ARX_D.rescale(...), ARX_D.fromTerms(formula, dataset, hh)
 mod.inSample_Test()        # banner, "b = VectorD(...), fn = Array(cons, yl6, ...)", REPORT, "fitMap QoF =" table over h = 1..hh
 mod.tnT_Test(rc=5)         # train, rolling validation on the testing rows (retrain every rc rows), QoF table on the testing rows
 ftMat = mod.diagnoseAll()  # (hh, 26) QoF matrix: rSq, rSqBar, sst, sse, sde, rse, mse0, rmse, mae, smape, bmae, m, dfr, df, fStat, aic, bic, mape, mase, smapeC, ...
 mod.Yf                     # the forecast matrix in ORIGINAL units: column 0 = y, Yf[t, h] = h-steps ahead forecast of y[t + h - 1]
-mod.parameter, mod.fname, mod.modelName, mod.hparameter          # the slopes b, the column names, "ARX_D_6_6_2", the hyper-parameters
+mod.forecastAt(h)          # column h of the forecast matrix (ScalaTion's forecastAt)
+print(mod.summary())       # the coefficient table (SUMMARY: estimate, std. error, t, p-value, VIF), mod.summary(h) per horizon
+mod.parameter, mod.slopes, mod.intercept, mod.fname, mod.modelName, mod.hparameter   # b, original-unit slopes, ..., "ARX_D_6_6_2", hp
 ```
 
-* Hyper-parameters (`args` dict): `p` (lags of y), `q` (lags of each exogenous variable, ScalaTion's `px`),
-  `spec` (number of trend columns, ScalaTion's convention: **0 implicit constant, 1 linear t/m, 2 + quadratic,
-  3 + cubic**; default 1; the columns are named as `MakeMatrix4TS.trend`: "cons", "lin", "quad"), `cross`
-  (ENDO-EXO cross terms of `ARX_SR*`, ScalaTion's `crx`), `skip` (rows left out of the In-Sample diagnosis,
-  default p), `lambda` / `scaled` (the centered ridge of `method="ridge"`).
+* Hyper-parameters (the `hparam` dict, ScalaTion's keys, completed from `AR.hp` = `modeling.forecasting.forecaster.hp`):
+  `p` (lags of y, default 1), `px` (lags of each exogenous variable, default 1), `spec` (number of trend columns,
+  ScalaTion's convention: **0 implicit constant, 1 linear t/m, 2 + quadratic, 3 + cubic**; default 1; the columns are
+  named as `MakeMatrix4TS.trend`: "cons", "lin", "quad"), `crx` (1 => ENDO-EXO cross terms of `ARX_SR*`), `nneg`
+  (1 => forecasts clipped at 0), `d`, `q`, `P`, `D`, `Q`, `s` (ARIMA); Python-only: `skip` (rows left out of the
+  In-Sample diagnosis, default p) and `lambda` (the centered ridge of `method="ridge"`, default 0.1 as
+  `CenteredRidge.hp`).  `scaled` is a constructor keyword (ScalaTion's).  `mod.hparam` is a `HyperParameter` (a dict
+  that keeps the defaults) and the REPORT prints it as ScalaTion: "HyperParameter(p -> (6,1), ..., nneg -> (1,1))".
+* The regression lives in the bases, as ScalaTion's `reg`: `Forecaster_Reg` (recursive) and `Forecaster_D` (direct)
+  make it (`_make_model`: "sm_ols", "sk_lr", or "ridge" = `CenteredRidge`), fit it (`train`) and expose `parameter`
+  (ScalaTion's b / bb), `slopes`, `intercept`; the model classes add the matrix, the forecasts and the sub-models.
 * Quality of Fit (`modeling/fit.py`, ScalaTion's `Fit`): the 26 measures in `QoF` order with ScalaTion's
   formulas (R²-bar through the DF ratio, AIC/BIC with kParam = dfr + 2, sMAPE-IC), the first `skip` rows
   dropped (`Diagnoser`), the degrees of freedom reset per horizon.  The Python runs reproduce the ScalaTion
@@ -56,22 +64,22 @@ mod.parameter, mod.fname, mod.modelName, mod.hparameter          # the slopes b,
   70.4402; the CEM selection of `aRX_DTest8`; `subsetSearchTest`).
 * Train/test split: `Model.trSize` / `teSize` (te = floor(0.2 m + 1): 92/24 on Covid-19, 1679/420 on GEFCom2014,
   966/242 on ILI, 13935/3485 on ETTh1).
-* Printing helpers (`Util/tools.py`): `banner`, `vector_str` ("VectorD(0.946883,\t...)"), `matrix_str`,
-  `array_str`, `set_str` ("LinkedHashSet(0, 1, 3)"), `report`.
+* Printing helpers (`Util/tools.py`): `banner`, `fmt`, `jdouble` (Java's `Double.toString`), `vector_str`
+  ("VectorD(0.946883,\t...)"), `matrix_str`, `array_str`, `set_str` ("LinkedHashSet(0, 1, 3)").
 * `docs/CONVENTIONS.md` maps every ScalaTion file to its Python file and states the rules.
 
 ## Models (`modeling/forecasting/`)
 
 | Python | ScalaTion | what |
 |---|---|---|
-| `RandomWalk(y, hh)` | RandomWalk.scala | the last-value baseline (no training) |
-| `AR(args, y, hh, method)` | AR.scala | AR(p) by Yule-Walker ("adjusted", "mle") or OLS; `AR_YW` is an alias |
-| `ARIMA(args, y, hh)` | ARMA.scala / ARIMA_diff.scala | ARIMA(p, d, q) backed by statsmodels (exact MLE) under the ScalaTion interface |
-| `ARX`, `ARX_D` | ARX.scala, ARX_D.scala | lags of y and of the exogenous variables; recursive (forge / hide) and direct; methods `sm_ols`, `sk_lr`, `ridge` |
-| `ARX_SR`, `ARX_SR_D` | ARX_SR.scala, ARX_SR_D.scala | + transformations of the lags: `fEndo=[PowForm(), RootForm()]`, `fExo=[[LogForm()], []]` (`Util/transform.py` = `mathstat/Transform.scala`), cross terms |
+| `RandomWalk(hparam, y, hh)` | RandomWalk.scala | the last-value baseline (no training; no hyper-parameters, the REPORT prints "null") |
+| `AR(hparam, y, hh, method)`, `AR.rescale` | AR.scala | AR(p) by Yule-Walker ("adjusted", "mle") or OLS; `AR.hp` the base hyper-parameters; `rescale` standardizes (NormForm) |
+| `ARIMA(hparam, y, hh)` | ARMA.scala / ARIMA_diff.scala | ARIMA(p, d, q) backed by statsmodels (exact MLE) under the ScalaTion interface |
+| `ARX`, `ARX_D` | ARX.scala, ARX_D.scala | lags of y and of the exogenous variables; recursive (forge / hide) and direct; methods `sm_ols`, `sk_lr`, `ridge`; `rescale(..., tFormT=TransformT.MinMax)`, `ARX.trend`, `fromTerms` |
+| `ARX_SR`, `ARX_SR_D` | ARX_SR.scala, ARX_SR_D.scala | + transformations of the lags: `fEndo=[PowForm(), RootForm()]`, `fExo=[[LogForm()], []]` (instances, as ScalaTion's `LSET [Transform]`; `Util/transform.py` = `mathstat/Transform.scala`), cross terms (`crx`) |
 | `ARX_Formula` + `FormulaParser` | ARX_Formula.scala, FormulaParser.scala | the linear formula DSL and grammar: `y ~= y~(3,1) + log1p(icu~1) + y~1 * icu~1 + wave(2) TFORM: Log1p`; `fit(data, hh)` -> `ARX.fromTerms`, `fit_D` -> `ARX_D.fromTerms` |
 | `NARX_Formula` + `NARX_FormulaParser` | nonlinear/NARX_Formula.scala, NARX_FormulaParser.scala | + free parameters `Par` with roles (Shift, Phase, Rate, Power, Freq, Decay, Thresh, Width, Half, Cap): `log(? + icu~1)`, `pow(y~(3,1), ?)`, `hinge(temp~1, ?)`, `trans(y~1, ?, ?)`, `ema(x~1, ?)`, `dq(x~1, ?)`, `wave(?)`; `fitNL_D(data, hh)` |
-| `NARX_SR_D.fromTerms(formula, dataset, hh, lam, scaled, optimizer)` | nonlinear/NARX_SR_D.scala | the direct model of a formula: coefficients by centered ridge per horizon, free parameters by `varpro` (variable projection, default), `lbfgsb` or `joint`; each fitted parameter is a degree of freedom (`nFree`) |
+| `NARX_SR_D` (an `ARX_D`): `apply` / `rescale(hparam, y, hh, xe, fEndo=[TransformT.Root], fExo, tune)`, `fromTerms(formula, dataset, hh, hparam, scaled, optimizer)` | nonlinear/NARX_SR_D.scala | the direct model whose columns carry nonlinear parameters -- of transform TYPES (`TransformT.wlu` start values and bounds, `initializeW`, `tunable`, `getTransforms`, `optimize`) or of a formula's free parameters: coefficients by centered ridge per horizon, the nonlinear parameters by `OptimizerNL.VarPro` (variable projection, the default `OPTIMIZER_NL`), `LBFGS_B` or `Joint` (`fitNL`, `stepCounts`); each fitted parameter is a degree of freedom (`nFree`); reproduces nARX_SR_DTest5 and nARX_SR_DTest8 |
 | `ExoScreen.screen(data, header, resp, k, maxLag)` | ExoScreen.scala | pool / rank (lead cross-correlation) / shortlist of candidate exogenous variables |
 | `MHAttn_Regressor` (optional torch) | -- | multi-head attention for feature selection |
 
@@ -98,8 +106,11 @@ features the same way (`arx.selectFeatures(SelectionTech.Stepwise)`); `FeatureSe
 `PowForm (x+s)^p`, `RootForm`, `RecipForm`, `PowRForm` (sign-safe), `DQuadForm`, `DIQuadForm`, `BoxcoxForm`,
 `LogForm log(a x + ss)`, `Log1pForm`, `ExpForm`, `NExpForm`, `SinForm`, `CosForm` with ScalaTion's default
 parameters (`HP`); `NormForm`, `MinMaxForm`, `CenterForm` fitted on the training slice; `TransformT` names the
-types (`TransformT.Log1p.form(x_train)`) and is what `TFORM: Log1p` in a formula means.  The `rescale` factories
-take sklearn scalers (`MinMaxScaler` to (0, 4) by default; `StandardScaler` turns the non-negativity off, like NormForm).
+types (`TransformT.Log1p.form(x_train)`, `TransformT.Root.form([s, r])`, `TransformT.Root.wlu`) and is what
+`TFORM: Log1p` in a formula means.  The `rescale` factories take a `tFormT` (ScalaTion's): `MinMax` maps the training
+rows to ScalaTion's centered [-2, 2] (column by column; forecasts are not rectified in such a space, `centered`),
+`Norm` standardizes (nneg = 0), `Log1p` keeps zero at zero -- a power or log of a rescaled negative value is not
+defined, so the SR examples use `Log1p` as ScalaTion's tests do (or a sign-safe `PowRForm`).
 
 ## LLM-NARX-SR (`modeling/forecasting/nonlinear/llm_narx_sr/`, ScalaTion's `llm_narx_sr` package)
 
@@ -109,14 +120,14 @@ The structure of a forecasting model is written as a formula over a named-column
 ```python
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
-from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
+from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
 
 data = Datasets.GEF14.load()                                   # daily peak load, temp, tmax
 sc   = FormulaScorer(data, hh=6, hp={"maxLag": 7, "skip": 7})  # the engine: training / validation rows, the score J
 cand = sc.score("y ~= y~(7,1) + hinge(temp~1, ?)")             # parse -> fit -> score (the threshold lands at 65.8 F)
 model, qof = sc.tnt(cand.formula.fresh())                      # rolling validation on the testing rows
 
-m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, hh=6, lam=1.0, scaled=True, optimizer="lbfgsb", maxLag=7)
+m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, 6, {"lambda": 1.0}, scaled=True, optimizer=OptimizerNL.LBFGS_B, maxLag=7)
 m.inSample_Test(); m.tnT_Test()                                # the model alone, another optimizer
 
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLM_NARX_SR
@@ -157,7 +168,7 @@ atom     := x~k | x~(k1,k2)                                       # a lag, a lag
 |---|---|---|---|---|
 | `Datasets.COVID2`, `COVID`, `COVID_ALL` | `covid_19_weekly.csv` | 116 weeks | new deaths | icu, pRate / hosp, icu / the screened pool |
 | `Datasets.ILI` | `ILINetNov25.csv` (CDC ILINet, 2002-10-06 .. 2025-11-23) | 1,208 weeks | ILITOTAL | wili (%WEIGHTED ILI), ot (TOTAL PATIENTS) |
-| `Datasets.ETTH1`, `ETTH1_1Y` | `ETTh1.csv` (Zhou et al. 2021) | 17,420 / 8,760 hours | OT (oil temperature, goes negative: `nneg=False`) | two of hufl, hull, mufl, mull, lufl, lull picked by the screening |
+| `Datasets.ETTH1`, `ETTH1_1Y` | `ETTh1.csv` (Zhou et al. 2021) | 17,420 / 8,760 hours | OT (oil temperature, goes negative: `hparam["nneg"] = 0`) | two of hufl, hull, mufl, mull, lufl, lull picked by the screening |
 | `Datasets.GEF14` | `gefcom2014_load_daily.csv` (Hong et al. 2016; built by `tools/build_gefcom_daily.py`) | 2,099 days | peak load | temp, tmax |
 
 ### Results reproduced
@@ -167,25 +178,31 @@ On GEFCom2014 the lag baseline `y ~= y~(7,1) + temp~(7,1) + tmax~(7,1)` gives a 
 is fitted at 65.8 F by all three optimizers (the cooling point of the V-shaped load-temperature curve: mean peak
 per 10 F band 272, 226, 185, 148, 136, 214, 273).  On Covid-19 the anchors give TnT sMAPE 43.48 (baseline),
 30.72 (tuned-arx, `y ~= y~1 + icu~(3,1) + pRate~(3,1)`), 45.71 (random-walk), as ScalaTion; a shift inside a
-log and a decay in an ema run to their bounds and are rejected.
+log and a decay in an ema run to their bounds and are rejected.  `NARX_SR_D.rescale` reproduces nARX_SR_DTest5
+(Root transforms at their defaults: In-Sample rSq 0.951773, TnT sMAPE 17.8772, 15.8783, 18.9987, 25.8737, 34.0134,
+44.1487 -- the whole REPORT and QoF tables digit for digit) and nARX_SR_DTest8 (Pow / Log fitted by VarPro to
+(10, 1.99494, 0, 1, 0, 1), TnT sMAPE 14.1927, 18.2151, 23.9818, 32.7923, 42.8505, 53.1538); after TnT, Backward
+selection at h = 1 keeps ScalaTion's 6 columns (0, 1, 6, 12, 13, 28) with its trace and the selected model's TnT
+sMAPE 15.9482 .. 50.1970.
 
 ## Repository layout
 
 ```
-modeling/fit.py                      QoF (ScalaTion Fit / FitM)            modeling/regression.py   CenteredRidge
+modeling/fit.py                      QoF, summary, vif (ScalaTion Fit / FitM)   modeling/centered_ridge.py   CenteredRidge
+modeling/hyper_parameter.py          HyperParameter (ScalaTion's)
 modeling/feature_selection.py        SelectionTech, BestStep, FeatureSelection       modeling/subset_search.py   SubsetSearch
 modeling/cem_selector.py             CEM_Selector, Random (MRG31k3p)        modeling/llm_client.py   LLM clients
-modeling/forecasting/                diagnoser, forecaster, forecaster_reg, forecaster_d, random_walk, ar (ar_yw alias), arima,
+modeling/forecasting/                diagnoser, forecaster, forecaster_reg, forecaster_d, random_walk, ar, arima,
                                      arx, arx_d, arx_sr, arx_sr_d, arx_formula, formula_parser, exo_screen
 modeling/forecasting/nonlinear/      narx_formula, narx_formula_parser, narx_sr_d
 modeling/forecasting/nonlinear/llm_narx_sr/   formula_scorer, eda4ts, datasets, term_library, search_arm, search_loop, genetic_proposer,
                                      llm_proposer, explainer, baseline_arm, pipeline_arm, plausibility_checker, significance, llm_narx_sr
 modeling/forecasting/neuralforecasting/  mhattn_regressor
-modeling/optimization/               varpro (VarPro, L-BFGS-B, joint)
-Util/                                build_matrix (MakeMatrix4TS), tools (banner, VectorD/Array printing, report), transform (Transform.scala), data_loader
+modeling/optimization/               varpro (VarPro; the OptimizerNL enum, fitNL and joint live in nonlinear/narx_sr_d.py as in Scala)
+Util/                                make_matrix4ts (MakeMatrix4TS, centered), tools (banner, VectorD/Array printing), transform (Transform.scala), data_loader
 data/                                covid_19_weekly.csv, ILINetNov25.csv, ETTh1.csv, gefcom2014_load_daily.csv
-Examples/                            Example_Covid19, Example_ILI, Example_ETTh1, Example_GEFCom, Example_FeatureSelection, Example_LLM_NARX_SR
-tests/                               178 pytest tests (fit, parsers, formulas, models, feature selection, scorer, datasets, search layer)
+Examples/                            Example_Covid, Example_ILI, Example_ETTh1, Example_GEFCom, Example_FeatureSelection, Example_LLM_NARX_SR
+tests/                               192 pytest tests (fit, base API, parsers, formulas, models, feature selection, scorer, datasets, search layer)
 docs/                                CONVENTIONS.md (the ScalaTion -> Python map and rules), SCALA_SOURCES.md
 ```
 

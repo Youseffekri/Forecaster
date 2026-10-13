@@ -163,7 +163,7 @@ def test_screen_in_one_call_prints_and_feeds_arx_d(capsys):
                                     exclude=EXCLUDE, show=False)
     assert capsys.readouterr().out == ""
     assert names == ["hosp_patients", "positive_rate"] and xe.shape == (116, 2) and y.shape == (116,)
-    mod = ARX_D({"p": 6, "q": 6, "spec": 0}, y, 6, xe)
+    mod = ARX_D({"p": 6, "px": 6, "spec": 0}, y, 6, xe)
     assert mod.modelName == "ARX_D_6_6_2"
     ft = mod.tnT_Test(rc=20)
     assert ft.shape == (6, 26) and np.all(ft[:, 9] < 100)

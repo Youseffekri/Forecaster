@@ -4,8 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer, Candidate
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, Example_Covid
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
+from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets
 
 
 def planted():
@@ -23,11 +23,11 @@ def test_rows_and_blocks():
     """ScalaTion's split (Model.trSize: te = floor(0.2 m + 1) = 61 of 300), a quarter of the training
     rows as three rolling-origin validation blocks."""
     sc = FormulaScorer(planted(), hh=3)
-    assert sc.tr_size == 239 and sc.trSize == 239 and sc.n_val == 60 and sc.fit_size == 179
+    assert sc.trSize == 239 and sc.teSize == 61 and sc.nVal == 60 and sc.fitSize == 179
     assert [b.start for b in sc.blocks] == [179, 199, 219] and sc.blocks[-1].stop == 239
     assert sc.trRng == range(0, 239) and sc.teRng == range(239, 300) and sc.fitRng == range(0, 179) and sc.valRng == range(179, 239)
     sc0 = FormulaScorer(planted(), hh=3, hp={"valFrac": 0.0})
-    assert sc0.n_val == 0 and sc0.fit_size == sc0.tr_size and sc0.blocks == []
+    assert sc0.nVal == 0 and sc0.fitSize == sc0.trSize and sc0.blocks == []
 
 
 def test_fit_cache_and_scala_names():
@@ -42,8 +42,8 @@ def test_fit_cache_and_scala_names():
     assert other.params()[0].value == pytest.approx(f.params()[0].value) and other.key == f.key
     assert FormulaScorer.keyOf(other) == f.key
     c = sc.score(f)
-    assert c.nTerms == 2 and c.nFree == 1 and c.formulaStr == c.formula_str and c.proposalStr.count("?") == 1
-    assert c.qofTrain is c.qof_train and c.qofV == c.qofTrain and c.smapeVal == pytest.approx(c.smape)   # in-sample J: the validation QoF is the fit rows'
+    assert c.nTerms == 2 and c.nFree == 1 and c.formulaStr == repr(c.formula) and c.proposalStr.count("?") == 1
+    assert c.qofVal is not None and c.qofV == c.qofTrain and c.smapeVal == pytest.approx(c.smape)   # in-sample J: the validation QoF is the fit rows'
     assert np.allclose(c.scoreH, FormulaScorer.jOf(c.qofTrain, c.qofV)) and c.score == pytest.approx(sc.scoreOf(c.qofTrain))
     assert c.qofTrain[0]["dfr"] == 3.0, "two slopes + one free parameter = 3 degrees of freedom"
 
@@ -55,7 +55,7 @@ def test_free_parameter_formula_beats_the_fixed_one():
     free = sc.score("y ~= y~1 + log(? + z~1)")
     fixed = sc.score("y ~= y~1 + log1p(z~1)")
     assert not free.failed and not fixed.failed
-    assert free.n_free == 1 and free.formula.params()[0].value == pytest.approx(0.3, abs=0.2)   # a shift inside a log is weakly identified
+    assert free.nFree == 1 and free.formula.params()[0].value == pytest.approx(0.3, abs=0.2)   # a shift inside a log is weakly identified
     assert free.score < fixed.score
     assert free.key == "y ~= log(? + z~1) + y~1"
 
@@ -74,18 +74,18 @@ def test_j_is_fpe_adjusted_validation_smape():
     sc = FormulaScorer(planted(), hh=3, hp={"skip": 2})
     c = sc.score("y ~= y~(2,1) + log1p(z~1)")
     for h in range(3):
-        q, qv = c.qof_train[h], c.qof_v[h]
+        q, qv = c.qofTrain[h], c.qofV[h]
         assert q["dfr"] == 3
-        assert c.score_h[h] == pytest.approx(qv["smape"] * (1 + 2 * (3 + 1) / q["m"]))
-    assert c.score == pytest.approx(float(c.score_h.mean()))
+        assert c.scoreH[h] == pytest.approx(qv["smape"] * (1 + 2 * (3 + 1) / q["m"]))
+    assert c.score == pytest.approx(float(c.scoreH.mean()))
 
 
 def test_covid_baseline_and_tnt():
     """The Covid-19 baseline (18 lag terms) scores and rolls over the testing rows."""
     cfg = Datasets.COVID2
     sc = FormulaScorer(cfg.load(), hh=6)
-    c = sc.score(cfg.baseline_formula_str(6))
-    assert not c.failed and c.n_terms == 18 and 10 < c.score < 60
+    c = sc.score(cfg.baselineFormulaStr(6))
+    assert not c.failed and c.nTerms == 18 and 10 < c.score < 60
     mod, qof = sc.tnt(c.formula.fresh())
     assert len(qof) == 6 and all(math.isfinite(q["smape"]) for q in qof)
     assert mod.X.shape == (116, 18)

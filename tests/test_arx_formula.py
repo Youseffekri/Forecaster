@@ -12,7 +12,7 @@ from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, ProductTerm, TransformedTerm,
                                               WaveTerm, distinct, lagv, log, log1p, pow, powr, sq, wave, wave_pair)
-from modeling.forecasting.formula_parser import FormulaError, FormulaParser, parse_formula, try_parse_formula
+from modeling.forecasting.formula_parser import FormulaError, FormulaParser
 from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Example_Covid
 
 VARS = ["y", "icu", "pRate"]
@@ -34,13 +34,13 @@ def test_lagv_pads_with_the_first_value():
 
 def test_term_labels_lags_and_vars():
     y, icu = FormulaVar("y"), FormulaVar("icu")
-    assert y.label() == "y" and y.lag_(3).label() == "y~3" and y.lag_(3).lag == 3
+    assert y.label() == "y" and y.lagged(3).label() == "y~3" and y.lagged(3).lag == 3
     assert [t.label() for t in y.lags(3, 1)] == ["y~3", "y~2", "y~1"]
-    assert log1p(icu.lag_(1)).label() == "log1p(icu~1)" and isinstance(log1p(icu.lag_(1)), TransformedTerm)
-    assert pow(y.lag_(1), 1.5).label() == "pow(y~1, 1.5)" and powr(y.lag_(2), 0.5).label() == "powr(y~2, 0.5)"
-    pr = y.lag_(1) * icu.lag_(2)
+    assert log1p(icu.lagged(1)).label() == "log1p(icu~1)" and isinstance(log1p(icu.lagged(1)), TransformedTerm)
+    assert pow(y.lagged(1), 1.5).label() == "pow(y~1, 1.5)" and powr(y.lagged(2), 0.5).label() == "powr(y~2, 0.5)"
+    pr = y.lagged(1) * icu.lagged(2)
     assert isinstance(pr, ProductTerm) and pr.label() == "y~1 * icu~2" and pr.lag == 2 and pr.vars == {"y", "icu"}
-    assert [t.label() for t in y.lag_(1) * icu.lags(2, 1)] == ["y~1 * icu~2", "y~1 * icu~1"]
+    assert [t.label() for t in y.lagged(1) * icu.lags(2, 1)] == ["y~1 * icu~2", "y~1 * icu~1"]
     assert [t.label() for t in sq(y.lags(2, 1))] == ["sq(y~2)", "sq(y~1)"]
     w = wave_pair(0.1)
     assert [t.name for t in w] == ["sin(w=0.6283)", "cos(w=0.6283)"] and all(isinstance(t, WaveTerm) for t in w)
@@ -49,20 +49,20 @@ def test_term_labels_lags_and_vars():
     with pytest.raises(ValueError):
         y.lags(1, 3)
     with pytest.raises(ValueError):
-        TransformedTerm(y.lag_(1), "cube")
+        TransformedTerm(y.lagged(1), "cube")
     with pytest.raises(ValueError):
         wave(3, FREQS)
-    assert (y.lag_(1) + icu.lag_(1)) == [y.lag_(1), icu.lag_(1)]          # `+` builds the term list
+    assert (y.lagged(1) + icu.lagged(1)) == [y.lagged(1), icu.lagged(1)]          # `+` builds the term list
 
 
 def test_columns_of_the_terms():
     data = covid()
     y, icu = FormulaVar("y"), FormulaVar("icu")
-    assert np.array_equal(y.lag_(2).column(data), lagv(data["y"], 2))
-    assert np.allclose(log1p(icu.lag_(1)).column(data), np.log1p(lagv(data["icu"], 1)))
-    assert np.allclose(pow(y.lag_(1), 1.5).column(data), lagv(data["y"], 1) ** 1.5)
-    assert np.allclose(powr(y.lag_(1), 0.5).column(data), np.sqrt(lagv(data["y"], 1)))
-    assert np.allclose((y.lag_(1) * icu.lag_(1)).column(data), lagv(data["y"], 1) * lagv(data["icu"], 1))
+    assert np.array_equal(y.lagged(2).column(data), lagv(data["y"], 2))
+    assert np.allclose(log1p(icu.lagged(1)).column(data), np.log1p(lagv(data["icu"], 1)))
+    assert np.allclose(pow(y.lagged(1), 1.5).column(data), lagv(data["y"], 1) ** 1.5)
+    assert np.allclose(powr(y.lagged(1), 0.5).column(data), np.sqrt(lagv(data["y"], 1)))
+    assert np.allclose((y.lagged(1) * icu.lagged(1)).column(data), lagv(data["y"], 1) * lagv(data["icu"], 1))
     s = WaveTerm(2 * math.pi * 0.1).column(data)
     assert s.shape == (116,) and s[0] == 0.0
 
@@ -77,33 +77,33 @@ def test_distinct_drops_duplicate_labels():
 
 def test_dsl_and_parser_give_the_same_formula_str_and_key():
     y, icu, pRate = FormulaVar("y"), FormulaVar("icu"), FormulaVar("pRate")
-    f = ARX_Formula(y, y.lags(3, 1) + [log1p(icu.lag_(1))] + [y.lag_(1) * icu.lag_(1)] + pow(pRate.lags(2, 1), 1.5))
+    f = ARX_Formula(y, y.lags(3, 1) + [log1p(icu.lagged(1))] + [y.lagged(1) * icu.lagged(1)] + pow(pRate.lags(2, 1), 1.5))
     assert f.formulaStr == "y ~= y~3 + y~2 + y~1 + log1p(icu~1) + y~1 * icu~1 + pow(pRate~2, 1.5) + pow(pRate~1, 1.5)"
     g = FormulaParser.parseFormula(f.formulaStr, VARS, 6)
     assert g.formulaStr == f.formulaStr and g.key == f.key
     assert f.key == "y ~= " + " + ".join(sorted(t.label(LabelMode.SLOT) for t in f.preds))
     assert f.labels == f.names() == [t.label() for t in f.preds] and f.nTerms == 7
     assert f.vars == {"y", "icu", "pRate"} and f.maxLag == 3
-    assert f.lagHP() == {"p": 3, "q": 2, "spec": 0, "n_exo": 2}
-    h = ARX_Formula(y, [icu.lag_(2), y.lag_(1)])
-    k = ARX_Formula("y", [y.lag_(1), icu.lag_(2)])
+    assert f.lagHP() == {"p": 3, "px": 2, "spec": 0, "n_exo": 2}
+    h = ARX_Formula(y, [icu.lagged(2), y.lagged(1)])
+    k = ARX_Formula("y", [y.lagged(1), icu.lagged(2)])
     assert h.key == k.key and h.formulaStr != k.formulaStr, "the key is order-free, formulaStr is not"
-    assert repr(h) == h.formulaStr == h.formula_str
+    assert repr(h) == h.formulaStr
 
 
 def test_waves_print_as_wave_k_and_parse_back():
     y = FormulaVar("y")
     f = ARX_Formula(y, y.lags(2, 1) + wave(2, FREQS))
     assert f.formulaStr == "y ~= y~2 + y~1 + wave(2)"
-    g = parse_formula(f.formulaStr, VARS, 6, FREQS)
+    g = FormulaParser.parseFormula(f.formulaStr, VARS, 6, FREQS)
     assert g.nTerms == 6 and g.key == f.key
-    f1 = ARX_Formula(y, [y.lag_(1)] + wave_pair(0.2, 1))                 # the second frequency alone: not wave(k)
+    f1 = ARX_Formula(y, [y.lagged(1)] + wave_pair(0.2, 1))                 # the second frequency alone: not wave(k)
     assert f1.formulaStr == "y ~= y~1 + sin(w=1.2566) + cos(w=1.2566)"
 
 
 def test_tform_prints_parses_and_transforms_the_base_columns():
     y, icu = FormulaVar("y"), FormulaVar("icu")
-    f = ARX_Formula(y, y.lags(2, 1) + [icu.lag_(1)], "Log1p")
+    f = ARX_Formula(y, y.lags(2, 1) + [icu.lagged(1)], "Log1p")
     assert f.tFormT is TransformT.Log1p and f.formulaStr.endswith(" TFORM: Log1p") and f.key.endswith(" TFORM: Log1p")
     g = FormulaParser.parseFormula(f.formulaStr, VARS, 6)
     assert g.tFormT is TransformT.Log1p and g.key == f.key
@@ -121,15 +121,15 @@ def test_prepare_checks_the_dataset():
     y, icu, z = FormulaVar("y"), FormulaVar("icu"), FormulaVar("z")
     data = covid()
     with pytest.raises(ValueError, match="not in dataset"):
-        ARX_Formula(y, [z.lag_(1)]).prepare(data)
+        ARX_Formula(y, [z.lagged(1)]).prepare(data)
     with pytest.raises(ValueError, match="no predictor terms"):
         ARX_Formula(y, []).prepare(data)
     with pytest.raises(ValueError, match="length"):
-        ARX_Formula(y, [icu.lag_(1)]).prepare({"y": data["y"], "icu": data["icu"][:50]})
+        ARX_Formula(y, [icu.lagged(1)]).prepare({"y": data["y"], "icu": data["icu"][:50]})
     with pytest.raises(ValueError, match="lag"):
-        ARX_Formula(y, [y.lag_(200)]).prepare(data)
+        ARX_Formula(y, [y.lagged(200)]).prepare(data)
     with pytest.raises(ValueError, match="not finite"):
-        ARX_Formula(y, [log(icu.lag_(1))]).matrix(data)                  # icu has zeros: log (0)
+        ARX_Formula(y, [log(icu.lagged(1))]).matrix(data)                  # icu has zeros: log (0)
 
 
 def test_grammar_text():
@@ -142,13 +142,13 @@ def test_grammar_text():
 def test_fit_d_and_fit_return_the_scala_named_models(capsys):
     data = covid()
     y, icu, pRate = FormulaVar("y"), FormulaVar("icu"), FormulaVar("pRate")
-    f = ARX_Formula(y, y.lags(3, 1) + icu.lags(2, 1) + [log1p(pRate.lag_(1))])
+    f = ARX_Formula(y, y.lags(3, 1) + icu.lags(2, 1) + [log1p(pRate.lagged(1))])
     mod_D = f.fit_D(data, HH)
     out = capsys.readouterr().out
     assert isinstance(mod_D, ARX_D) and mod_D.modelName == "ARX_D_3_2_2"
     assert "modelName  mn  = ARX_D_3_2_2" in out and "features   fn  = Array(y~3, y~2, y~1, icu~2, icu~1, log1p(pRate~1))" in out
     assert mod_D.fname == f.labels and mod_D.params.shape == (7, HH) and mod_D.X.shape == (116, 6)
-    assert mod_D.args["p"] == 3 and mod_D.args["q"] == 2 and mod_D.args["skip"] == 3 and mod_D.getSkip() == 3
+    assert mod_D.hparam["p"] == 3 and mod_D.hparam["px"] == 2 and mod_D.hparam["skip"] == 3 and mod_D.getSkip() == 3
     yf = mod_D.forecast()
     assert yf.shape == (116, HH) and np.all(yf >= 0)
     ft = mod_D.diagnoseAll()
@@ -172,7 +172,7 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
 def test_tform_log1p_keeps_the_forecasts_of_yf_in_original_units():
     data = covid()
     y, icu = FormulaVar("y"), FormulaVar("icu")
-    f = ARX_Formula(y, y.lags(2, 1) + [icu.lag_(1)], "Log1p")
+    f = ARX_Formula(y, y.lags(2, 1) + [icu.lagged(1)], "Log1p")
     mod = f.fit_D(data, 3)
     assert mod.modelName == "ARX_D_2_1_1"
     assert np.allclose(mod.y, np.log1p(data["y"])), "the model works on the transformed response"
@@ -188,7 +188,7 @@ def test_tform_log1p_keeps_the_forecasts_of_yf_in_original_units():
 def test_tform_log1p_keeps_column_0_of_yf_in_original_units():
     data = covid()
     y, icu = FormulaVar("y"), FormulaVar("icu")
-    f = ARX_Formula(y, y.lags(2, 1) + [icu.lag_(1)], "Log1p")
+    f = ARX_Formula(y, y.lags(2, 1) + [icu.lagged(1)], "Log1p")
     mod = f.fit_D(data, 3)
     assert np.array_equal(mod.Yf[:, 0], data["y"]), "column 0 of Yf is y in original units"
     mod.forecast()
@@ -212,7 +212,7 @@ def test_tform_log1p_keeps_column_0_of_yf_in_original_units():
 def test_free_parameter_forms_are_rejected_by_the_linear_parser(text):
     with pytest.raises(FormulaError, match=r"free parameters \(\?\) need nonlinear.NARX_FormulaParser"):
         FormulaParser.parseFormula(text, VARS, 6, FREQS)
-    f, why = try_parse_formula(text, VARS, 6, FREQS)
+    f, why = FormulaParser.tryParseFormula(text, VARS, 6, FREQS)
     assert f is None and "free parameters (?) need nonlinear.NARX_FormulaParser" in why
 
 
@@ -231,14 +231,14 @@ def test_free_parameter_forms_are_rejected_by_the_linear_parser(text):
 ])
 def test_linear_parser_rejects_carry_the_scala_reasons(bad, reason):
     with pytest.raises(FormulaError) as e:
-        parse_formula(bad, VARS, 6, FREQS)
+        FormulaParser.parseFormula(bad, VARS, 6, FREQS)
     assert reason in str(e.value) and str(e.value).startswith("parse: ")
 
 
 def test_wave_without_frequencies_and_term_cap():
     with pytest.raises(FormulaError, match="no frequencies supplied"):
-        parse_formula("y ~= wave(1)", VARS, 6)
+        FormulaParser.parseFormula("y ~= wave(1)", VARS, 6)
     with pytest.raises(FormulaError, match="exceeds maxTerms"):
         FormulaParser.parseFormula("y ~= y~(6,1) + icu~(6,1)", VARS, 6, maxTerms=10)
-    f = parse_formula("y ~= y~(2,1) * icu~(2,1)", VARS, 6)
+    f = FormulaParser.parseFormula("y ~= y~(2,1) * icu~(2,1)", VARS, 6)
     assert f.labels == ["y~2 * icu~2", "y~2 * icu~1", "y~1 * icu~2", "y~1 * icu~1"], "a lag range distributes over the product"

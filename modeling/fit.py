@@ -5,15 +5,16 @@ The Python counterpart of ScalaTion's `FitM.scala` / `Fit.scala`: the `QoF` enum
 26 measures in ScalaTion's order), the `Fit` mixin that computes them from the actual and the
 predicted responses given the degrees of freedom, and the ScalaTion printing conventions
 (`fitMap` -> "LinkedHashMap(rSq -> 0.910754, ...)", `showFitMap` -> one "label -> VectorD(...)"
-line per measure, `help`).
+line per measure, `help`), and ScalaTion's coefficient table `Fit.summary` (estimates, standard
+errors, t values, p-values and VIFs -- `vif` is ScalaTion's `Predictor.vif`).
 
     rSq, rSqBar, sst, sse, sde, rse, mse0, rmse, mae, smape, bmae,
     m, dfr, df, fStat, aic, bic, mape, mase, smapeC,
     picp, pinc, ace, pinaw, mis, wis            (the last six are -1 unless intervals are diagnosed)
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -25,8 +26,9 @@ from math import log, pi, sqrt
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
+from scipy.stats import f as fisher_dist, t as student_dist
 
-from Util.tools import fmt, fmt_g, vector_str
+from Util.tools import array_str, fmt, jdouble, vector_str
 
 
 class QoF(Enum):
@@ -204,11 +206,6 @@ def showFitMap(ftMat: np.ndarray, ftLab: Sequence[str] = qoF_names) -> str:
     return "".join(lines)
 
 
-def help() -> str:
-    """The help string that describes the QoF measures."""
-    return HELP
-
-
 # ---------------------------------------------------------------------------------------------
 # The `Fit` mixin
 # ---------------------------------------------------------------------------------------------
@@ -254,6 +251,8 @@ class Fit:
         self.qof: np.ndarray = -np.ones(N_QoF)
         self._sig2e = -1.0                                       # variance of the errors (set once, as in ScalaTion)
         self._m = 0
+        self._mse = self._rse = self._rSq = self._rSqBar = self._fStat = float("nan")   # for `summary`
+        self._p_fS = -1.0                                        # p-value of the F statistic
 
     # -- degrees of freedom ---------------------------------------------------------------
 
@@ -365,6 +364,13 @@ class Fit:
         rse = sqrt(mse)                                          # Residual Standard Error
         rSqBar = 1.0 - (1.0 - rSq) * self._r_df                  # adjusted R-squared
         fStat = msr / mse if mse != 0.0 else float("inf")        # F statistic
+        if dfr == 0:
+            p_fS = -0.0
+        else:
+            p_fS = float(1.0 - fisher_dist.cdf(fStat, int(dfr), int(df)))   # p-value of the F statistic
+            if np.isnan(p_fS):
+                p_fS = -0.0
+        self._mse, self._rse, self._rSq, self._rSqBar, self._fStat, self._p_fS = mse, rse, rSq, rSqBar, fStat, p_fS
         if self._sig2e == -1.0:
             self._sig2e = float(np.var(e))
 
@@ -414,6 +420,91 @@ class Fit:
     def help() -> str:
         """The help string that describes the QoF measures."""
         return HELP
+
+    # -- the coefficient table (ScalaTion's `Fit.summary`) ----------------------------------
+
+    def summary(self, x_: np.ndarray, fname: Optional[Sequence[str]] = None, b: Optional[np.ndarray] = None,
+                vifs: Optional[np.ndarray] = None) -> str:
+        """
+        The coefficient table of a fit (ScalaTion's `Fit.summary`): the standard errors come from the
+        diagonal of (x_' x_)^-1 (a QR factorization of x_) times the unbiased MSE of the LAST
+        `diagnose` call, so the table reflects that diagnosis (the last horizon after `diagnoseAll`).
+
+        Parameters
+        ----------
+        x_ : np.ndarray, shape (m, n)
+            The data/input matrix the coefficients belong to (column 0 the intercept, when there is one).
+        fname : sequence of str, optional
+            The feature names (printed first as "fname = Array(...)").
+        b : np.ndarray, shape (n,)
+            The coefficients.
+        vifs : np.ndarray, shape (n - 1,), optional
+            The Variance Inflation Factors of columns 1 .. n-1 (column 0 prints "NA").
+        """
+        x_ = np.asarray(x_, dtype=float)
+        try:
+            _, R = np.linalg.qr(x_)
+            Ri = np.linalg.inv(R)
+            diag = np.sum(Ri * Ri, axis=1)                            # the diagonal of (x' x)^-1 = R^-1 R^-T
+        except np.linalg.LinAlgError:
+            diag = np.full(x_.shape[1], np.nan)
+        with np.errstate(invalid="ignore"):
+            stdErr = np.sqrt(diag * self._mse)
+        return self.showSummary(stdErr, fname, b, vifs)
+
+    def showSummary(self, stdErr: Optional[np.ndarray], fname: Optional[Sequence[str]] = None,
+                    b: Optional[np.ndarray] = None, vifs: Optional[np.ndarray] = None) -> str:
+        """The SUMMARY block of ScalaTion's `Fit.showSummary`."""
+        rule = "-" * 82
+        return ((f"fname = {array_str(fname)}" if fname is not None else "") +
+                f"\nSUMMARY\n    Parameters/Coefficients:\n    Var      Estimate    Std. Error \t t value \t Pr(>|t|) \t VIF\n"
+                f"{rule}\n{self.sumCoeff(np.asarray(b, dtype=float), stdErr, vifs)}\n"
+                f"    Residual standard error: {fmt(self._rse)} on {jdouble(self._df)} degrees of freedom\n"
+                f"    Multiple R-squared:  {fmt(self._rSq)},\tAdjusted R-squared:  {fmt(self._rSqBar)}\n"
+                f"    F-statistic: {jdouble(self._fStat)} on {jdouble(self._dfr)} and {jdouble(self._df)} DF,  "
+                f"p-value: {jdouble(self._p_fS)}\n{rule}\n        ")
+
+    def sumCoeff(self, b: np.ndarray, stdErr: Optional[np.ndarray], vf: Optional[np.ndarray]) -> str:
+        """The coefficient rows of the summary (ScalaTion's `Fit.sumCoeff`): x_j, estimate, standard
+        error, t value, p-value (2 P(T < -|t|), 0 when undefined) and VIF ("NA" for column 0)."""
+        out = []
+        t = p = None
+        if stdErr is not None:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = b / stdErr
+            p = 2.0 * student_dist.cdf(-np.abs(t), self._df) if self._df > 0 else -np.ones(len(b))
+        for j in range(len(b)):
+            if stdErr is None:
+                out.append(f"    x{j}\t {fmt(b[j])}?")
+                continue
+            p_j = 0.0 if np.isnan(p[j]) else p[j]
+            v = "NA" if j == 0 or vf is None else fmt(vf[j - 1])
+            out.append(f"    x{j}\t {fmt(b[j])}\t {fmt(stdErr[j])}\t {fmt(t[j])}\t {fmt(p_j)}\t {v}\n")
+        return "".join(out)
+
+
+def vif(x: np.ndarray, skip: int = 1) -> np.ndarray:
+    """
+    The Variance Inflation Factors of the columns skip .. n-1 of x (ScalaTion's `Predictor.vif`):
+    VIF_j = 1 / (1 - R^2_j), R^2_j that of regressing column j on all the other columns (x keeps its
+    column of ones, so the regression has an intercept).  One column besides the skipped => [1].
+    """
+    x = np.asarray(x, dtype=float)
+    n = x.shape[1]
+    out = np.zeros(n - skip)
+    if len(out) == 1:
+        out[0] = 1.0
+        return out
+    for j in range(skip, n):
+        x_j = x[:, j]
+        x_noj = np.delete(x, j, axis=1)
+        b = np.linalg.lstsq(x_noj, x_j, rcond=None)[0]
+        e = x_j - x_noj @ b
+        sst = float(np.sum((x_j - x_j.mean()) ** 2))
+        rSq_j = 1.0 - float(e @ e) / sst if sst > 0.0 else float("nan")
+        with np.errstate(divide="ignore"):
+            out[j - skip] = 1.0 / (1.0 - rSq_j)
+    return out
 
 
 def diagnose(y: np.ndarray, yp: np.ndarray, dfr: float = 1.0, df: Optional[float] = None,

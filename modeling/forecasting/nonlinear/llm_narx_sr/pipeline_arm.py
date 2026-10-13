@@ -22,8 +22,8 @@ defaults are read from the SCORER's hyper-parameters at run time when not given 
 the global `FormulaScorer.hp` at construction).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -34,7 +34,6 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from modeling.feature_selection import SelectionTech
 from modeling.llm_client import CountingClient, LLMClient
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser

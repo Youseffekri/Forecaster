@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from modeling.forecasting.exo_screen import ExoScreen
-from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, DatasetConfig, ExoMode
+from modeling.forecasting.nonlinear.llm_narx_sr.datasets import Datasets, ExoMode
 from modeling.forecasting.nonlinear.llm_narx_sr.eda4ts import (EDA4TS, acfSpikes, acorr, ccorr, collinearPair, heteroscedastic,
-                                                               ljungBox, topFreqs, top_freqs)
+                                                               ljungBox, topFreqs)
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 
 
@@ -76,7 +76,7 @@ def test_correlogram_helpers():
     assert ccorr(x, yy, 2) > 0.8 > abs(ccorr(x, yy, 1))
     t = np.arange(256)
     s = np.sin(2 * np.pi * t / 12.0) + 0.5 * np.sin(2 * np.pi * t / 50.0)
-    assert np.allclose(1.0 / topFreqs(s, 2), [12.19, 51.2], atol=0.1) and topFreqs is top_freqs
+    assert np.allclose(1.0 / topFreqs(s, 2), [12.19, 51.2], atol=0.1)
 
 
 def test_exo_modes_and_shortlists():
@@ -96,8 +96,6 @@ def test_exo_modes_and_shortlists():
     short = ca.shortlist(FormulaScorer(ca.load(), hh=6))
     assert len(short) == 2 and set(short) <= set(ca.exo)
     assert Datasets.COVID2.shortlist(sc) == ["icu", "pRate"] and Datasets.GEF14.shortlist(sc) == ["temp", "tmax"]
-    assert Datasets.COVID2.baselineFormulaStr(6) == Datasets.COVID2.baseline_formula_str(6)
-    assert Datasets.COVID2.blind_names() == Datasets.COVID2.blindNames
     assert Datasets.get("covid_all") is Datasets.COVID_ALL and Datasets.get("covid_file") is cf
     assert Datasets.COVID2.copy(name="x").name == "x" and Datasets.COVID2.expectedSigns == {"icu": 1, "pRate": 1}
 

@@ -4,28 +4,28 @@ ARX_SR_D Model: Direct Multi-Horizon ARX with Symbolic Regression (SR) Terms
 The DIRECT counterpart of `ARX_SR`: one regression per horizon on the same design matrix --
 trend, the lags of y and of its transformations (`fEndo`), the lags of each exogenous variable
 and of its transformations (`fExo`), and optional ENDO-EXO cross terms -- so no forging of
-forecasts into lags is needed.  With `rescale`, y and the exogenous variables are scaled first
-(scalers fitted on the training rows) and the transformations act on the scaled series.
+forecasts into lags is needed.  With `rescale`, y and the exogenous variables are rescaled first
+(a `TransformT` fitted on the training rows) and the transformations act on the rescaled series.
+The sub-models of feature selection are `ARX_D`'s (`getModel`, `getModel_h`), as in ScalaTion.
 
 The Python counterpart of ScalaTion's `ARX_SR_D` (`ARX_SR_D.apply` / `ARX_SR_D.rescale`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.1
+Date: 2026-10-13
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Type
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
-from sklearn.base import TransformerMixin
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-from Util.build_matrix import build_matrix_Y, fit_scaler
-from Util.transform import PowForm, Transform
+from Util.make_matrix4ts import backfill_matrix
+from Util.transform import PowForm, Transform, TransformT
+from modeling.forecasting.arx import _rescaleData
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr import ARX_SR
 
@@ -37,30 +37,32 @@ class ARX_SR_D(ARX_D):
     Attributes
     ----------
     tForms : dict
-        "tForm_y", "tForm_exo" (scalers or None), "fEndo" (transforms of y), "fExo" (one list per
-        exogenous variable), "tr_size".
+        "tForm_y" (the transform of y or None), "fEndo" (transforms of y), "fExo" (one list per
+        exogenous variable).
     fExo_sz : list of int
         The number of transformations per exogenous variable.
     fname : list of str
-        The column labels (`ARX_SR.form_names`).
+        The column labels (`ARX_SR.formNames`).
 
     See Also
     --------
-    ARX_D : the direct forecasting logic (train per horizon, forecast, rollValidate).
-    ARX_SR : the recursive counterpart and the shared `_build_matrix` / `form_names`.
+    ARX_D : the direct forecasting logic (forecast, getModel, getModel_h).
+    ARX_SR : the recursive counterpart and the shared `buildMatrix` / `formNames`.
     """
 
     def __init__(self,
-                 args: Dict[str, Any],
+                 hparam: Dict[str, Any],
                  y: np.ndarray,
                  hh: int,
                  xe: Optional[np.ndarray] = None,
                  fEndo: Optional[Sequence[Transform]] = None,
                  fExo: Optional[Sequence[Sequence[Transform]]] = None,
                  method: str = "sm_ols",
-                 X: Optional[np.ndarray] = None) -> None:
+                 X: Optional[np.ndarray] = None,
+                 scaled: bool = False) -> None:
         """
-        Initializes the ARX_SR_D forecaster (parameters as in `ARX_SR`).
+        Initializes the ARX_SR_D forecaster (parameters as in `ARX_SR`), building the design matrix
+        (ScalaTion's `ARX_SR_D.apply`) unless a ready matrix X is given.
 
         Raises
         ------
@@ -72,57 +74,50 @@ class ARX_SR_D(ARX_D):
         fExo = [[] for _ in range(n_exo)] if fExo is None else [list(s) for s in fExo]
         if len(fExo) != n_exo:
             raise ValueError(f"Length of fExo {len(fExo)} must = number of exogenous variables {n_exo}")
-        self._tForms = {"tForm_y": None, "tForm_exo": None, "fEndo": fEndo, "fExo": fExo}
+        self._tForms = {"tForm_y": None, "fEndo": fEndo, "fExo": fExo}
         self._fExo_sz = [len(s) for s in fExo]
-        super().__init__(args, y, hh, xe, method, X)
-        self._modelName = f"ARX_SR_D_{self.args['p']}_{self.args['q']}_{self._n_exo}"
+        super().__init__(hparam, y, hh, xe, method, X if X is not None else np.zeros((len(y), 1)), scaled)
+        self._modelName = f"ARX_SR_D_{self.hparam['p']}_{self.hparam['px']}_{self._n_exo}"
+        if X is None:                                                    # ScalaTion's `ARX_SR_D.apply`
+            xe_bfill = backfill_matrix(xe) if n_exo > 0 and self.hparam["px"] > 0 else None
+            self._set_X(self.buildMatrix(xe_bfill, self._y, self.hparam, fEndo, fExo))
+            self._useforge = True
 
     @classmethod
     def rescale(cls,
-                args: Dict[str, Any],
+                hparam: Dict[str, Any],
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
                 fEndo: Optional[Sequence[Transform]] = None,
                 fExo: Optional[Sequence[Sequence[Transform]]] = None,
                 method: str = "sm_ols",
-                tForm: Optional[Type[TransformerMixin]] = None,
-                X: Optional[np.ndarray] = None) -> "ARX_SR_D":
+                tFormT: Union[TransformT, str] = TransformT.MinMax,
+                scaled: bool = False) -> "ARX_SR_D":
         """
-        Alternative constructor that rescales y and the exogenous variables before the
-        transformations (scalers fitted on the training rows); `StandardScaler` turns the
-        non-negativity constraint off.
+        Creates the model on rescaled data (ScalaTion's `ARX_SR_D.rescale`): y and the backfilled
+        exogenous variables are transformed by tFormT fitted on the training rows (MinMax to [-2, 2]
+        by default; Log1p keeps powers and logs defined, as in ScalaTion's tests), then the
+        transformations are applied; a space where y can be negative turns the non-negativity off.
         """
-        mod = cls(args, y, hh, xe, fEndo, fExo, method, np.array([0]))
-        mod._X = X
-        mod._tForms["tr_size"] = mod._tr_size
-        if tForm is not None:
-            mod._tForms["tForm_y"], mod._tForms["tForm_exo"] = tForm(), tForm()
-            if isinstance(mod._tForms["tForm_y"], StandardScaler):
-                mod._nneg = False
-        else:
-            mod._tForms["tForm_y"] = MinMaxScaler(feature_range=mod._lu)
-            mod._tForms["tForm_exo"] = MinMaxScaler(feature_range=mod._lu)
-
-        if mod._X is None:
-            mod._useforge = True
-            mod._set_X(mod._build_matrix(args=mod.args, y=mod._y, xe=mod._xe, tForms=mod._tForms))
-        else:
-            mod._X = fit_scaler(mod._tForms["tForm_exo"], mod._X, mod._tr_size).transform(mod._X)
-            fit_scaler(mod._tForms["tForm_y"], mod._y, mod._tr_size)
-
-        mod._yForm = mod._tForms["tForm_y"]
-        mod._y = mod._tForms["tForm_y"].transform(mod._y.reshape(-1, 1)).flatten()
-        mod._Y = build_matrix_Y(mod._y, hh)
+        hp_, y_scl, xe_scl, tForm_y = _rescaleData(hparam, y, xe, tFormT)
+        mod = cls(hp_, y_scl, hh, xe, fEndo, fExo, method, np.zeros((len(y_scl), 1)), scaled)
+        mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod.hparam, mod._tForms["fEndo"], mod._tForms["fExo"]))
+        mod._useforge = True
+        mod._tForms["tForm_y"] = tForm_y
+        mod._setYForm(tForm_y, y)
         return mod
 
     @staticmethod
-    def _build_matrix(args: Dict[str, Any],
-                      y: np.ndarray,
-                      xe: Optional[np.ndarray] = None,
-                      tForms: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    def buildMatrix(xe_bfill: Optional[np.ndarray], y: np.ndarray, hparam: Dict[str, Any],
+                    fEndo: Sequence[Transform], fExo: Sequence[Sequence[Transform]]) -> np.ndarray:
         """The design matrix of `ARX_SR` (same columns, same order)."""
-        return ARX_SR._build_matrix(args, y, xe, tForms)
+        return ARX_SR.buildMatrix(xe_bfill, y, hparam, fEndo, fExo)
+
+    @staticmethod
+    def formNames(n_exo: int, hparam: Dict[str, Any], n_fEn: int, n_fExArr: Sequence[int]) -> List[str]:
+        """The column labels (ScalaTion's `ARX_SR_D.formNames` = `ARX_SR.formNames`)."""
+        return ARX_SR.formNames(n_exo, hparam, n_fEn, n_fExArr)
 
     @property
     def fname(self) -> List[str]:
@@ -130,28 +125,9 @@ class ARX_SR_D(ARX_D):
         if self._fname is not None:
             return self._fname
         if self._useforge:
-            return ARX_SR.form_names(self.args, self._n_exo, len(self._tForms["fEndo"]), self._fExo_sz)
+            return ARX_SR.formNames(self._n_exo, self.hparam, len(self._tForms["fEndo"]), self._fExo_sz)
         return [f"x{j}" for j in range(self._X.shape[1])]
 
     def __repr__(self) -> str:
-        s = f"{self.modelName}(p={self.args['p']}, q={self.args['q']}, n_exo={self._n_exo}, fEndo={self._tForms['fEndo']}"
-        return s + f"), hh = {self.hh}, skip = {self.args['skip']}, method={self._method}"
-
-    # -- feature selection: the sub-model (ScalaTion's `ARX_SR_D` inherits `ARX_D.getModel`) -----
-
-    def getModel(self, cols: Optional[Sequence[int]] = None) -> "ARX_SR_D":
-        """
-        Builds an `ARX_SR_D` on the columns `cols` of X: the same y, Y, hh, scaling, transforms,
-        hyper-parameters and method, the column labels of the selected terms (ScalaTion's
-        `ARX_SR_D` inherits `ARX_D.getModel`, a direct model on the selected columns; here the
-        sub-model keeps the class and name of its parent).  `getModel_h` is `ARX_D`'s.
-
-        Parameters
-        ----------
-        cols : sequence of int, optional
-            The columns of the design matrix with the selected features (defaults to all).
-        """
-        cols = self.mcols if cols is None else list(cols)
-        sub = ARX_SR_D(self.args, self.getY(), self.hh, None, self._tForms["fEndo"], None, self._method,
-                       self._X[:, cols])
-        return self._subModel(sub, cols)
+        s = f"{self.modelName}(p={self.hparam['p']}, px={self.hparam['px']}, n_exo={self._n_exo}, fEndo={self._tForms['fEndo']}"
+        return s + f"), hh = {self.hh}, skip = {self.hparam['skip']}, method={self._method}"
