@@ -36,7 +36,7 @@ than rejected, as they would make the design matrix singular.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -309,7 +309,7 @@ class FormulaParser:
         return _Syntax(" ".join(formulaStr.strip().split()), fail).formula()
 
     @classmethod
-    def buildLinear(cls, ast, inProduct: bool, vars_: set, maxLag: int, freqs: Optional[Sequence[float]],
+    def buildLinear(cls, ast, inProduct: bool, vars_: Sequence[str], maxLag: int, freqs: Optional[Sequence[float]],
                     fail: Callable[[str], None], recur: Callable) -> List[Term]:
         """
         Builds the terms of an atom of the LINEAR grammar (lagged variables, lag ranges, functions,
@@ -320,7 +320,7 @@ class FormulaParser:
         if isinstance(ast, Ast.Lag):
             nm, hi, lo = ast.name, ast.hi, ast.lo
             if nm not in vars_:
-                fail(f"variable '{nm}' not in dataset {{{','.join(sorted(vars_))}}}")
+                fail(f"variable '{nm}' not in dataset {{{','.join(vars_)}}}")      # the dataset's order, as ScalaTion's keySet
             if lo < 1 or hi > maxLag or hi < lo:
                 if hi == lo:
                     fail(f"lag {hi} outside [1,{maxLag}]")
@@ -351,7 +351,7 @@ class FormulaParser:
         fail("free parameters (?) need nonlinear.NARX_FormulaParser")
 
     @staticmethod
-    def assemble(lhs: str, elements: List[list], tform: Optional[str], vars_: set, maxTerms: int,
+    def assemble(lhs: str, elements: List[list], tform: Optional[str], vars_: Sequence[str], maxTerms: int,
                  build: Callable, fail: Callable[[str], None]) -> Tuple[FormulaVar, List[Term], Optional[TransformT]]:
         """
         Assembles a parsed specification: checks the response and the TFORM, builds the terms of
@@ -410,7 +410,7 @@ class FormulaParser:
         """
         fail = cls.failer(formulaStr)
         lhs, elements, tform = cls.syntax(formulaStr, fail)
-        vs = set(vars_)
+        vs = list(dict.fromkeys(vars_))                                   # the legal names, in the dataset's order
 
         def build(ast, inProduct: bool) -> List[Term]:
             return cls.buildLinear(ast, inProduct, vs, maxLag, freqs, fail, build)

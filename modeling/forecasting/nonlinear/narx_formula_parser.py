@@ -18,7 +18,7 @@ parser apply, plus the ones of the forms above (e.g., powr keeps a fixed exponen
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-13
-Version: 1.5
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -55,7 +55,7 @@ class NARX_FormulaParser(FormulaParser):
         """
         fail = cls.failer(formulaStr)
         lhs, elements, tform = cls.syntax(formulaStr, fail)
-        vs = set(vars_)
+        vs = list(dict.fromkeys(vars_))                                   # the legal names, in the dataset's order
 
         def parOf(role: ParRole, a) -> Par:                       # a parameter position
             if isinstance(a, Ast.Slot):

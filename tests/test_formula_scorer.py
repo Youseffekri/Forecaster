@@ -1,4 +1,4 @@
-"""Tests of the fit-and-score engine (counterparts of formulaScorerTest4/6/7)."""
+"""Tests of the fit-and-score engine (counterparts of formulaScorerTest, formulaScorerTest4/6/7)."""
 import math
 
 import numpy as np
@@ -17,6 +17,20 @@ def planted():
     for t in range(1, n):
         y[t] = 5 + 0.6 * y[t - 1] + 4 * np.log(z[t - 1] + 0.3) + 0.2 * rng.standard_normal()
     return {"y": y, "z": z}
+
+
+def test_exact_linear_series():
+    """formulaScorerTest (the rev4.1 log, Oct 13): y = 10 + 2 t, y ~= y~1, near-OLS ridge, in-sample J; every
+    horizon h is scored on the rows whose targets y(t+h-1) lie in the fit rows (ScalaTion's diagnoseH)."""
+    y = np.array([10.0 + 2.0 * t for t in range(40)])
+    sc = FormulaScorer({"y": y}, 3, hp={"lambda": 1e-9, "valFrac": 0.0})
+    mod = sc.fit("y ~= y~1")
+    c = sc.score("y ~= y~1")
+    assert sc.trRng == range(0, 31) and sc.teRng == range(31, 40) and sc.skip == 6
+    assert np.allclose(c.smapeH, [0.212800, 0.202128, 0.193098], atol=5e-7)
+    assert mod.intercept[0] == pytest.approx(1.717557253184502, abs=1e-9) and mod.slopes[0, 0] == pytest.approx(1.00572519080617, abs=1e-9)
+    assert c.score == pytest.approx(0.23644833224898068, abs=1e-12) and c.nTerms == 1
+    assert [q["m"] for q in c.qofTrain] == [25, 24, 23]                  # 31 - skip - (h - 1) rows per horizon
 
 
 def test_rows_and_blocks():

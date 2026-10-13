@@ -38,18 +38,22 @@ def covid():
 
 
 def test_anchors_match_scalation(covid):
-    """baselineArmTest + the rev3.2 numbers: baseline TnT 43.5, tuned-arx 30.7 (y~1 + icu~(3,1) +
-    pRate~(3,1)), random-walk 45.7; sel-arx keeps a subset scoring no worse; the baseline IS the seed."""
+    """baselineArmTest (the rev4.1 log, Oct 13): baseline score 29.456, in-sample 18.590, validation 18.068,
+    TnT 43.483; tuned-arx 22.298 / 20.953 / 17.636 / 30.711 (y~1 + icu~(3,1) + pRate~(3,1)); sel-arx
+    18.271 / 21.622 / 14.817 / 51.286 (y~1 + icu~5 + icu~3 + pRate~6 + pRate~4 + pRate~1); random-walk
+    41.221 / 33.410 / 39.887 / 45.712; the baseline IS the seed."""
     cfg, sc = covid
     runs = {k: BaselineArm(k, verbose=False).run(cfg, sc, 0) for k in (Method.Baseline, Method.TunedARX, Method.SelARX, Method.RandomWalk)}
     base, tuned, sel, rw = runs[Method.Baseline], runs[Method.TunedARX], runs[Method.SelARX], runs[Method.RandomWalk]
     assert all(not r.failed and r.stream == -1 for r in runs.values()) and all(BaselineArm(k).deterministic for k in runs)
-    assert base.testSmape == pytest.approx(43.48, abs=0.05) and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
-    assert base.best.smape == pytest.approx(20.12, abs=0.05) and base.valSmape == pytest.approx(18.06, abs=0.05)
-    assert tuned.testSmape == pytest.approx(30.72, abs=0.05) and tuned.best.formulaStr == "y ~= y~1 + icu~3 + icu~2 + icu~1 + pRate~3 + pRate~2 + pRate~1"
-    assert tuned.best.score <= base.best.score + 1e-12 and len(tuned.top) == 5 and tuned.nEval > 100
-    assert sel.best.score <= base.best.score + 1e-6 and sel.best.nTerms <= base.best.nTerms and sel.top
-    assert rw.testSmape == pytest.approx(45.71, abs=0.05) and rw.best.formula is None and rw.best.model is not None
+    def nums(r):
+        return [round(v, 3) for v in (r.best.score, r.best.smape, r.valSmape, r.testSmape)]
+    assert nums(base) == [29.456, 18.590, 18.068, 43.483] and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
+    assert nums(tuned) == [22.298, 20.953, 17.636, 30.711] and tuned.best.formulaStr == "y ~= y~1 + icu~3 + icu~2 + icu~1 + pRate~3 + pRate~2 + pRate~1"
+    assert tuned.best.score <= base.best.score + 1e-12 and len(tuned.top) == 5 and tuned.nEval == 126
+    assert nums(sel) == [18.271, 21.622, 14.817, 51.286] and sel.nEval == 1033
+    assert sel.best.formulaStr == "y ~= y~1 + icu~5 + icu~3 + pRate~6 + pRate~4 + pRate~1"
+    assert nums(rw) == [41.221, 33.410, 39.887, 45.712] and rw.best.formula is None and rw.best.model is not None
     assert rw.best.label.startswith("RandomWalk") and rw.exoUsed == [] and all(v > 0 for v in rw.smapeTest)
     seed = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
     assert seed.key == base.best.key and seed.score == base.best.score, "the baseline must be the search seed"
@@ -57,6 +61,22 @@ def test_anchors_match_scalation(covid):
     assert base.name == "baseline" and tuned.method is Method.TunedARX and base.equations == ""
     with pytest.raises(ValueError):
         BaselineArm(Method.Genetic)
+
+
+def test_auto_exo_anchors_match_scalation():
+    """lLM_NARX_SRTest5 (the rev4.1 log, Oct 13): Covid-19 auto exo, the screening's shortlist exMort, cases;
+    the deterministic arms' score, in-sample, validation and TnT sMAPE and their equations."""
+    cfg = Datasets.COVID_ALL
+    sc = FormulaScorer(cfg.load(), hh=6)
+    assert sc.shortlist(cfg) == ["exMort", "cases"]
+    expect = {Method.Baseline: ([40.589, 19.114, 24.868, 61.807], None),
+              Method.TunedARX: ([31.569, 21.951, 26.313, 31.109], "y ~= y~1 + exMort~2 + exMort~1 + cases~2 + cases~1"),
+              Method.SelARX: ([25.447, 26.053, 22.454, 54.515], "y ~= y~1 + exMort~4 + cases~1"),
+              Method.RandomWalk: ([41.221, 33.410, 39.887, 45.712], None)}
+    for k, (nums, eq) in expect.items():
+        r = BaselineArm(k, verbose=False).run(cfg, sc, 0)
+        assert [round(v, 3) for v in (r.best.score, r.best.smape, r.valSmape, r.testSmape)] == nums, k
+        assert eq is None or r.best.formulaStr == eq
 
 
 def test_zero_llm_pipeline_arms(covid):
