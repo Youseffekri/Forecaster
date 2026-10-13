@@ -159,7 +159,7 @@ class CEM_Selector:
     """
     Selects a subset of the columns 0 until n by the Cross-Entropy Method, using the caller's
     evaluator to build and score the model of a column set (ScalaTion's `CEM_Selector`; see
-    `FeatureSelection_Reg.cemSelAll` for the wiring into feature selection).
+    `Forecaster_Reg.cemSelAll` for the wiring into feature selection).
 
     Parameters
     ----------

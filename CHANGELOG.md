@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.1.0 (ForecasterPy_rev1.1) -- 2026-10-13: feature selection inside the forecaster bases, as in ScalaTion
+
+- New `modeling/forecasting/forecaster_reg.py` -- `Forecaster_Reg(FeatureSelection, Forecaster)`, ScalaTion's
+  `Forecaster_Reg`: the regression-based RECURSIVE base (the regression methods "sm_ols" / "sk_lr" / "ridge",
+  `train`, `_predict`, the recursive `forecast` through the subclass's `_forge`) and its feature selection
+  (`forwardSelAll`, `backwardElimAll`, `stepwiseSelAll`, `beamSelAll`, `cemSelAll`, `correctQoF`, `evalCols`,
+  `select0`, `getBest`, `cemProbs`, `importance`, `fs_rng`, the `reportSelection` hooks).  `ARX` (and so `ARX_SR`)
+  extends it: `arx.selectFeatures(SelectionTech.Stepwise)` replaces the former `FeatureSelection_Reg(arx)` adapter;
+  `ARX.getModel(cols)` builds the sub-model (hh = 1, ScalaTion's `ARX.getModel`).  `RandomWalk`, `AR`, `ARIMA`
+  stay on `Forecaster`.
+- `Forecaster_D` now holds its own feature-selection scenarios (ScalaTion's `Forecaster_D`): `selectFeatures`,
+  `selectFeaturesAtH`, `selectFeaturesPerH`, `fitCols`, `getBest`, `cemProbs`, `getModel` (abstract), a default
+  `getModel_h(cols, h, method, args)` (ScalaTion's `ARX_D.getModel_h` recipe), the `reportSelection` hooks, and
+  the companion functions `smapeFPE` / `aggFPE` (module level, also `Forecaster_D.aggFPE`); `getYy` added.
+- `modeling/forecasting/feature_selection_forecaster.py` (ex `feature_selection_d.py`: `FeatureSelection_D`,
+  `FeatureSelection_Reg`, `subModel`, `subModel_h`) is REMOVED; the sub-model helper is `Forecaster._subModel`.
+  `modeling/feature_selection.py`, `subset_search.py`, `cem_selector.py` (ScalaTion's base files) are unchanged.
+- `requirements.txt` lists every library (core, pytest, and torch + matplotlib for the neural models);
+  `pip install -e .[neural]` now pulls matplotlib too; the matplotlib import of `MHAttn_Regressor` is lazy.
+- Printed output, numbers and the 178 tests are unchanged (aRX_DTest8 / subsetSearchTest still reproduced).
+
 ## 2.0.0 (ForecasterPy_rev1.0) -- 2026-10-12: the complete ScalaTion-consistent package
 
 The package now mirrors ScalaTion 2.0's `scalation.modeling.forecasting` file by file (see
@@ -66,7 +87,7 @@ Feature selection
 - `modeling/feature_selection.py` (`SelectionTech`, `BestStep`, `updateQoF`, `qofVector`, `SelectionReport`, `FeatureSelection`),
   `modeling/subset_search.py` (`SubsetSearch`: forward, backward, stepwise, beam, cem, run), `modeling/cem_selector.py`
   (`CEM_Selector` with ScalaTion's hyper-parameters and a port of ScalaTion's MRG31k3p `Random`),
-  `modeling/forecasting/feature_selection_d.py` (`FeatureSelection_D`: `selectFeatures`, `selectFeaturesAtH`,
+  `modeling/forecasting/feature_selection_forecaster.py` (`FeatureSelection_D`: `selectFeatures`, `selectFeaturesAtH`,
   `selectFeaturesPerH`, `reportSelection`, `getBest`, `cemProbs`, `smapeFPE`, `aggFPE`; `FeatureSelection_Reg` for
   recursive forecasters); `getModel(cols)` on ARX_D, ARX_SR_D, NARX_SR_D and `getModel_h(cols, h)`.  The aRX_DTest8
   CEM selection and subsetSearchTest logs are reproduced to the printed digits.

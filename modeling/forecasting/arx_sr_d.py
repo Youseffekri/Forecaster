@@ -151,8 +151,7 @@ class ARX_SR_D(ARX_D):
         cols : sequence of int, optional
             The columns of the design matrix with the selected features (defaults to all).
         """
-        from modeling.forecasting.feature_selection_d import subModel
         cols = self.mcols if cols is None else list(cols)
         sub = ARX_SR_D(self.args, self.getY(), self.hh, None, self._tForms["fEndo"], None, self._method,
                        self._X[:, cols])
-        return subModel(self, sub, cols)
+        return self._subModel(sub, cols)

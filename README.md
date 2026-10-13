@@ -75,10 +75,13 @@ mod.parameter, mod.fname, mod.modelName, mod.hparameter          # the slopes b,
 | `ExoScreen.screen(data, header, resp, k, maxLag)` | ExoScreen.scala | pool / rank (lead cross-correlation) / shortlist of candidate exogenous variables |
 | `MHAttn_Regressor` (optional torch) | -- | multi-head attention for feature selection |
 
-### Feature selection (`modeling/feature_selection.py`, `subset_search.py`, `cem_selector.py`, `forecasting/feature_selection_d.py`)
+### Feature selection (`modeling/feature_selection.py`, `subset_search.py`, `cem_selector.py`; the scenarios inside `Forecaster_Reg` / `Forecaster_D`)
 
 ScalaTion's `FeatureSelection`, `SubsetSearch` and `CEM_Selector` (with a port of ScalaTion's MRG31k3p `Random`
-so a CEM run with the same stream draws the same samples).  Every direct model mixes in `FeatureSelection_D`:
+so a CEM run with the same stream draws the same samples).  As in ScalaTion, the selection methods live in the two
+forecaster bases: `Forecaster_Reg` (the regression-based recursive models `ARX`, `ARX_SR`: `forwardSelAll`,
+`backwardElimAll`, `stepwiseSelAll`, `beamSelAll`, `cemSelAll`, `correctQoF`, `getModel`) and `Forecaster_D` (the direct
+models: the three scenarios below).
 
 ```python
 from modeling.feature_selection import SelectionTech
@@ -87,8 +90,8 @@ colsArr, rSqArr = mod.selectFeatures(SelectionTech.Stepwise, h=1)  # the h = 1 m
 mod.reportSelection(colsArr, rSqArr, inSample=False)               # prints the selection and TnT-tests the selected model (getModel(cols))
 ```
 
-`selectFeaturesAtH`, `selectFeaturesPerH`, `getModel(cols)` / `getModel_h(cols, h)`, `FeatureSelection_Reg(arx)`
-for a recursive ARX, `FeatureSelection.fullset_FS = True` to select on all rows.
+`selectFeaturesAtH`, `selectFeaturesPerH`, `getModel(cols)` / `getModel_h(cols, h)`; a recursive `ARX` selects its own
+features the same way (`arx.selectFeatures(SelectionTech.Stepwise)`); `FeatureSelection.fullset_FS = True` selects on all rows.
 
 ### Transformations (`Util/transform.py`, ScalaTion's `mathstat/Transform.scala`)
 
@@ -172,7 +175,7 @@ log and a decay in an ema run to their bounds and are rejected.
 modeling/fit.py                      QoF (ScalaTion Fit / FitM)            modeling/regression.py   CenteredRidge
 modeling/feature_selection.py        SelectionTech, BestStep, FeatureSelection       modeling/subset_search.py   SubsetSearch
 modeling/cem_selector.py             CEM_Selector, Random (MRG31k3p)        modeling/llm_client.py   LLM clients
-modeling/forecasting/                diagnoser, forecaster, forecaster_d, feature_selection_d, random_walk, ar (ar_yw alias), arima,
+modeling/forecasting/                diagnoser, forecaster, forecaster_reg, forecaster_d, random_walk, ar (ar_yw alias), arima,
                                      arx, arx_d, arx_sr, arx_sr_d, arx_formula, formula_parser, exo_screen
 modeling/forecasting/nonlinear/      narx_formula, narx_formula_parser, narx_sr_d
 modeling/forecasting/nonlinear/llm_narx_sr/   formula_scorer, eda4ts, datasets, term_library, search_arm, search_loop, genetic_proposer,

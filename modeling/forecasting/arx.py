@@ -5,32 +5,31 @@ Implements an ARX (Auto-Regressive model with eXogenous variables) by linear reg
 lags of y (1 to p) and of each exogenous variable (1 to q), with optional trend columns (`spec`)
 forecasting RECURSIVELY: the h-steps ahead forecast feeds the forecasts
 of the earlier steps back into the lag columns (`_forge`), while the exogenous lags that would
-lie in the future are hidden (`_hide`).  The Python counterpart of ScalaTion's `ARX.scala`
-(`ARX.apply` / `ARX.rescale`, `formNames`).
+lie in the future are hidden (`_hide`).  The regression, the recursive forecasting and the
+feature selection come from `Forecaster_Reg` (ScalaTion's `Forecaster_Reg`); `ARX` adds the lag
+matrix, its names, the forge and the sub-model on a column set (`getModel`).  The Python counterpart
+of ScalaTion's `ARX.scala` (`ARX.apply` / `ARX.rescale` / `ARX.fromTerms`, `formNames`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2025-03-05 (rev 2026-10-12)
-Version: 1.1
+Date: 2025-03-05 (rev 2026-10-13)
+Version: 1.2
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Sequence, Type
 
 import numpy as np
-import statsmodels.api as sm
-from sklearn.linear_model import LinearRegression
 from sklearn.base import TransformerMixin
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from Util.build_matrix import (backfill_matrix, build_lagged_matrix, build_matrix_Y, build_trend_matrix,
                                fit_scaler, tr_size_of, trend_names)
-from modeling.forecasting.forecaster import Forecaster
-from modeling.regression import CenteredRidge
+from modeling.forecasting.forecaster_reg import Forecaster_Reg
 
 
-class ARX(Forecaster):
+class ARX(Forecaster_Reg):
     """
     Auto-Regressive model with eXogenous variables (ARX), recursive multi-horizon forecasting.
 
@@ -55,6 +54,7 @@ class ARX(Forecaster):
 
     See Also
     --------
+    Forecaster_Reg : the regression, the recursive forecasting and the feature selection.
     Forecaster : the base forecasting logic (Yf, rollValidate, inSample_Test, tnT_Test).
     """
 
@@ -84,30 +84,16 @@ class ARX(Forecaster):
         X : np.ndarray, shape (m, n), optional
             A ready-made input matrix (built from y and xe when None).
         """
-        super().__init__(args, y, hh)
-        self._X = X
-        self._method = method
         self._xe = xe
         self._n_exo = xe.shape[1] if xe is not None else 0
-        self._useforge = self._X is None
-        self._model = self._make_model()
-        self._modelName = f"ARX_{self.args['p']}_{self.args['q']}_{self._n_exo}"
-
         if not hasattr(self, "_tForms"):
             self._tForms = {"tForm_y": None, "tForm_exo": None}
+        super().__init__(args, y, hh, X, method)
+        self._useforge = self._X is None
+        self._modelName = f"ARX_{self.args['p']}_{self.args['q']}_{self._n_exo}"
 
         if self._X is None:
             self._set_X(self._build_matrix(args=self.args, y=self._y, xe=self._xe, tForms=self._tForms))
-
-    def _make_model(self):
-        """The regression object of `method` (None for statsmodels, fitted per call)."""
-        if self._method == "sk_lr":
-            return LinearRegression()
-        if self._method == "ridge":
-            return CenteredRidge(lam=float(self.args.get("lambda", 1.0)), scaled=bool(self.args.get("scaled", False)))
-        if self._method == "sm_ols":
-            return None
-        raise ValueError(f"method '{self._method}' unknown: sm_ols | sk_lr | ridge")
 
     @classmethod
     def rescale(cls,
@@ -290,65 +276,6 @@ class ARX(Forecaster):
             return self.form_names(self.args, self._n_exo)
         return [f"x{j}" for j in range(self._X.shape[1])]
 
-    def train(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None) -> None:
-        """
-        Trains the regression on (X_, y_) (the full data by default); the parameters are
-        stored with the intercept first.
-        """
-        X_ = self._X if X_ is None else X_
-        y_ = self._y if y_ is None else y_
-
-        if self._method == "sm_ols":
-            self._model_fit = sm.OLS(y_, sm.add_constant(X_, has_constant="add")).fit()
-            self._set_params(np.asarray(self._model_fit.params))
-        elif self._method == "ridge":
-            self._model.fit(X_, y_)
-            self._set_params(self._model.params[:, 0])
-        else:
-            self._model.fit(X_, y_)
-            self._set_params(np.append(self._model.intercept_, self._model.coef_))
-
-    def forecast(self, t_start: int = -1, t_end: int = -1) -> np.ndarray:
-        """
-        Forecasts h = 1..hh steps ahead for the rows [t_start, t_end) recursively and records
-        them in `Yf` (original units).
-
-        Returns
-        -------
-        np.ndarray, shape (t_end - t_start, hh)
-            The forecasts (model units).
-
-        Raises
-        ------
-        ValueError
-            If the model has not been trained, or if hh > 1 and X was not built by `_build_matrix`.
-        """
-        if self._params is None:
-            raise ValueError("The model has not been trained. Call train first.")
-        t_st, t_en = self._adjust_range(t_start, t_end)
-        y_fcast = np.zeros((t_en - t_st, self.hh))
-        X_window = self._X[t_st:t_en].copy()
-        y_fcast[:, 0] = self._predict(X_window)
-
-        if self.hh > 1 and not self._useforge:
-            raise ValueError("Cannot use forge when the input matrix X was not built by _build_matrix.")
-
-        for h in range(2, self.hh + 1):
-            y_fcast[:, h - 1] = self._predict(self._forge(X_window, y_fcast, h))
-
-        self._store(t_st, t_en, y_fcast)
-        return y_fcast
-
-    def _predict(self, X_horizon: np.ndarray) -> np.ndarray:
-        """The one-step predictions of the rows of X_horizon (clipped when nneg)."""
-        if self._method == "sm_ols":
-            yp = self._model_fit.predict(sm.add_constant(X_horizon, has_constant="add"))
-        elif self._method == "ridge":
-            yp = self._model.predict(X_horizon)[:, 0]
-        else:
-            yp = self._model.predict(X_horizon)
-        return self._rectify(yp)
-
     def _forge(self, X_window: np.ndarray, y_fcast: np.ndarray, h: int) -> np.ndarray:
         """
         The input rows for horizon h (ScalaTion's `forge`): the trend columns, the lags of y
@@ -399,3 +326,20 @@ class ARX(Forecaster):
         z_shift = np.column_stack([z_last for _ in range(h - 1)]) if h > 1 else np.zeros((z.shape[0], 0))
         z_ = z[:, h - 1:]
         return np.column_stack((z_, z_shift))
+
+    def getModel(self, cols: Optional[Sequence[int]] = None) -> "ARX":
+        """
+        Builds an `ARX` on the columns `cols` of X (ScalaTion's `ARX.getModel`): the same y, scaling,
+        hyper-parameters and regression method, the feature names of the columns -- e.g., the best
+        model after feature selection, `getModel (getBest ().mod_cols)`.  A sub-model holds the
+        selected columns only, so it has no lag structure to forge: it is built with hh = 1 (the
+        horizon ScalaTion's `testSelected` tests a selected recursive model at).
+
+        Parameters
+        ----------
+        cols : sequence of int, optional
+            The columns of the input matrix with the selected features (defaults to all).
+        """
+        cols = self.mcols if cols is None else list(cols)
+        sub = ARX(self.args, self.getY(), 1, None, self._method, self._X[:, cols])
+        return self._subModel(sub, cols, modelName=f"ARX_{self.args['p']}_{self.args['q']}_{self._n_exo}")

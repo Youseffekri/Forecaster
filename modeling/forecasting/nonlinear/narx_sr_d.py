@@ -385,19 +385,19 @@ class NARX_SR_D(Forecaster_D):
         cols : sequence of int, optional
             The columns of the design matrix with the selected terms (defaults to all).
         """
-        from modeling.forecasting.feature_selection_d import subModel
         cols = self.mcols if cols is None else list(cols)
         fn = self.fname
         sub = NARX_SR_D(self.args, self.getY(), self.hh, self._X[:, cols], formula=None,
                         fname=[fn[j] for j in cols], lam=self.lam, scaled=self.scaled, n_free=self._nFreeOf(cols),
                         nneg=self.nneg, yForm=self.yForm)
         sub.optimizer, sub.steps = self.optimizer, dict(self.steps)
-        return subModel(self, sub, cols)
+        return self._subModel(sub, cols)
 
-    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1):
+    def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1, method: Optional[str] = None,
+                   args: Optional[Dict[str, Any]] = None):
         """
         Builds the single-horizon `ARX` (method "ridge", the same penalty and scaling) at horizon h
-        on the columns `cols` (ScalaTion's inherited `ARX_D.getModel_h`).
+        on the columns `cols` (ScalaTion's inherited `ARX_D.getModel_h`; see `Forecaster_D.getModel_h`).
 
         Parameters
         ----------
@@ -405,7 +405,8 @@ class NARX_SR_D(Forecaster_D):
             The columns of the design matrix with the selected terms (defaults to all).
         h : int, default=1
             The horizon.
+        method, args : optional
+            Overrides of the regression method ("ridge") and hyper-parameters (this model's, with its lambda / scaled).
         """
-        from modeling.forecasting.feature_selection_d import subModel_h
-        cols = self.mcols if cols is None else list(cols)
-        return subModel_h(self, cols, h, "ridge", {**self.args, "lambda": self.lam, "scaled": self.scaled})
+        args = {**self.args, "lambda": self.lam, "scaled": self.scaled} if args is None else args
+        return super().getModel_h(cols, h, "ridge" if method is None else method, args)

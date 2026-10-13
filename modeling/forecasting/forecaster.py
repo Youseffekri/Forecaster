@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -310,6 +310,47 @@ class Forecaster(Diagnoser, ABC):
             The number of rows diagnosed (after any skipped initial rows).
         """
         self.resetDF_k(size, self.nparams)
+
+    def _subModel(self, sub: "Forecaster", cols: Sequence[int], modelName: Optional[str] = None) -> "Forecaster":
+        """
+        Finishes a sub-model built on the columns `cols` of this model's input matrix (the model
+        classes construct `sub` on `X[:, cols]` with the ORIGINAL y, then call this -- their
+        `getModel` / `getModel_h`): this model's response in model units (scaled when it was made by
+        `rescale`), its target matrix, transform of y, non-negativity, training/testing sizes, skip
+        and the feature names of the columns, so the sub-model forecasts in the same units and on
+        the same rows; a sub-model has no lag structure to forge, so its `_useforge` is False.
+
+        Parameters
+        ----------
+        sub : Forecaster
+            The freshly constructed sub-model (X given, so no lag matrix is rebuilt).
+        cols : sequence of int
+            The selected columns.
+        modelName : str, optional
+            The sub-model's name (defaults to this model's).
+
+        Returns
+        -------
+        Forecaster
+            `sub`, finished.
+        """
+        cols = list(cols)
+        sub._y = self._y                                                  # model units
+        if getattr(self, "_Y", None) is not None and hasattr(sub, "_Y"):
+            sub._Y = self._Y                                              # the direct targets (same units)
+        sub._yForm = self._yForm
+        if hasattr(self, "_tForms"):
+            sub._tForms = dict(self._tForms)
+        sub._nneg = self._nneg
+        sub._tr_size, sub._te_size = self._tr_size, self._te_size
+        fn = self.fname
+        sub._fname = [fn[j] if j < len(fn) else f"x{j}" for j in cols]
+        if hasattr(self, "_n_exo"):
+            sub._n_exo = self._n_exo
+        sub._modelName = self.modelName if modelName is None else modelName
+        sub._useforge = False
+        sub.setSkip(self.getSkip())
+        return sub
 
     def __repr__(self) -> str:
         """A string showing the model name, horizon and key hyper-parameters."""

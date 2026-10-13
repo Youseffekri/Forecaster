@@ -11,10 +11,10 @@ The Python package mirrors ScalaTion 2.0 file by file.  Keep these rules when ad
 | `modeling/FeatureSelection.scala`, `SubsetSearch.scala`, `CEM_Selector.scala` | `modeling/feature_selection.py`, `subset_search.py`, `cem_selector.py` |
 | `forecasting/Diagnoser.scala` | `forecasting/diagnoser.py` (`Diagnoser`: `getSkip`, `setSkip`, skip-aware `diagnose`) |
 | `forecasting/Forecaster.scala` (+ `ForecastMatrix.scala`) | `forecasting/forecaster.py` (`Forecaster`, `trSize`, `teSize`, `teRng`) |
-| `forecasting/Forecaster_D.scala` | `forecasting/forecaster_d.py` (`Forecaster_D`) |
+| `forecasting/Forecaster_D.scala` (direct base, with its feature-selection scenarios) | `forecasting/forecaster_d.py` (`Forecaster_D`, `smapeFPE`, `aggFPE`) |
 | `forecasting/AR.scala`, `RandomWalk.scala`, `ARX.scala`, `ARX_D.scala`, `ARX_SR.scala`, `ARX_SR_D.scala` | `ar.py`, `random_walk.py`, `arx.py`, `arx_d.py`, `arx_sr.py`, `arx_sr_d.py` |
 | `forecasting/ARMA.scala`, `ARIMA_diff.scala` (ScalaTion's ARIMA family) | `arima.py` (`ARIMA`, statsmodels-backed under the same interface) |
-| `forecasting/Forecaster_D.scala` (selection scenarios), `Forecaster_Reg.scala` | `forecasting/feature_selection_d.py` (`FeatureSelection_D`, `FeatureSelection_Reg`) |
+| `forecasting/Forecaster_Reg.scala` (regression-based recursive base, with its feature selection) | `forecasting/forecaster_reg.py` (`Forecaster_Reg`; `ARX` and `ARX_SR` extend it) |
 | `forecasting/ARX_Formula.scala`, `FormulaParser.scala`, `ExoScreen.scala` | `arx_formula.py`, `formula_parser.py`, `exo_screen.py` |
 | `forecasting/nonlinear/NARX_Formula.scala`, `NARX_FormulaParser.scala`, `NARX_SR_D.scala` | `nonlinear/narx_formula.py`, `narx_formula_parser.py`, `narx_sr_d.py` |
 | `forecasting/nonlinear/llm_narx_sr/*.scala` (14 files) | `nonlinear/llm_narx_sr/*.py`, same base names in snake_case (`formula_scorer.py`, `eda4ts.py`, `datasets.py`, `term_library.py`, `search_arm.py`, `search_loop.py`, `genetic_proposer.py`, `llm_proposer.py`, `explainer.py`, `baseline_arm.py`, `pipeline_arm.py`, `plausibility_checker.py`, `significance.py`, `llm_narx_sr.py`) |
