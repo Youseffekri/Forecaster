@@ -50,6 +50,17 @@ HP: Dict[str, float] = {
 }
 
 
+def _quiet(fn):
+    """Runs a transform's map with numpy's floating-point warnings off (inf / nan are returned, not reported)."""
+    def wrapped(self, x):
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            return fn(self, x)
+    wrapped.__doc__ = fn.__doc__
+    wrapped.__name__ = fn.__name__
+    wrapped._quiet = True
+    return wrapped
+
+
 class Transform:
     """
     A parameterized transformation of a vector (or of every column of a matrix).
@@ -79,6 +90,15 @@ class Transform:
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return self.f(x)
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        """Wraps every subclass's `f` and `fi` in `np.errstate` (a log of 0 or an exp of a huge forecast
+        yields inf / nan without a numpy warning; the callers check finiteness and report it once)."""
+        super().__init_subclass__(**kwargs)
+        for name in ("f", "fi"):
+            fn = cls.__dict__.get(name)
+            if fn is not None and not getattr(fn, "_quiet", False):
+                setattr(cls, name, _quiet(fn))
 
     # -- the sklearn-like interface, so a Transform can serve as a model's `yForm` ----------------
 
