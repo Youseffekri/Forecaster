@@ -36,7 +36,7 @@ from modeling.forecasting.nonlinear.narx_formula import (DqTerm, EmaTerm, HingeT
                                                         ParWaveTerm, SatTerm, ScaleTerm, ShiftTerm, TransTerm, cap as cap_p,
                                                         decay, dq, ema, freq, half, hinge, pow as pow_p, power, rate, sat,
                                                         shift, thresh, trans, wave as wave_p, width)
-from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import DEFAULT_HP
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Source, Trace
 from modeling.forecasting.nonlinear.llm_narx_sr.search_loop import Proposal, Proposer
 from modeling.forecasting.nonlinear.llm_narx_sr.term_library import fresh_terms, has_free, params_of
@@ -79,7 +79,7 @@ class RandomTerms:
         self.stream = int(stream)
         self.rng = np.random.default_rng(self.stream)
         self.funcs, self.powers = list(funcs), list(powers)
-        self.nonlinear = (int(DEFAULT_HP["nlTerms"]) == 1) if nonlinear is None else bool(nonlinear)
+        self.nonlinear = (int(FormulaScorer.hp["nlTerms"]) == 1) if nonlinear is None else bool(nonlinear)
         self.nFreq = len(self.freqs)
 
         #: The free-parameter forms a draw may produce (each with a new parameter).
@@ -183,7 +183,7 @@ class GeneticProposer(Proposer):
         self.rt = RandomTerms(resp, exo, maxLag, freqs, stream, nonlinear=nonlinear)
         self.resp, self.maxLag = resp, int(maxLag)
         self.maxTerms, self.random, self.pCross = int(maxTerms), bool(random), float(pCross)
-        self.maxFree = int(DEFAULT_HP["maxFree"]) if maxFree is None else int(maxFree)
+        self.maxFree = int(FormulaScorer.hp["maxFree"]) if maxFree is None else int(maxFree)
 
     @property
     def source(self) -> Source:

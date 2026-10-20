@@ -116,9 +116,9 @@ class PlausibilityChecker:
             skip = max(f.maxLag, scorer.skip)
             tr = scorer.trSize
             idx = np.arange(skip, tr)
-            yt, yp = scorer._true_pred(mod, range(0, tr), 1, True)
-            e = yt[skip:] - yp[skip:]
-            notes, clean = eda.residualReport(e, mod.X[idx], mod.fname, yt[skip:])
+            yt = mod.getY()[skip:tr]                                      # original units
+            e = scorer.residuals(mod, range(skip, tr), noSkip=True)       # the h = 1 residuals (the forecast matrix's)
+            notes, clean = eda.residualReport(e, mod.X[idx], mod.fname, yt)
             return PlausibilityReport(f.formulaStr, sc, n, eff, clean, notes)
         except Exception as ex:
             return PlausibilityReport(f.formulaStr, math.nan, 0, {}, math.nan, [f"not checked: {ex}"])

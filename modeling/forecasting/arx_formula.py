@@ -42,7 +42,7 @@ import numpy as np
 from Util.transform import HP as TRANSFORM_HP, TransformT, transform_t
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.forecaster import trSize as tr_size_of
+from modeling.model import Model
 
 
 class LabelMode(Enum):
@@ -634,7 +634,7 @@ class ARX_Formula:
         if self.maxLag >= len(y):
             raise ValueError(f"fromTerms: lag {self.maxLag} >= series length {len(y)}")
 
-        tr_size = trSize if trSize > 0 else tr_size_of(len(y))
+        tr_size = trSize if trSize > 0 else Model.trSize(len(y))
         if tr_size > len(y):
             raise ValueError(f"fromTerms: trSize {tr_size} > series length {len(y)}")
         if self.tFormT is None:

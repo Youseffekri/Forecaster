@@ -168,8 +168,8 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
     f = ARX_Formula(y, y.lags(3, 1) + icu.lags(2, 1) + [log1p(pRate.lagged(1))])
     mod_D = f.fit_D(data, HH)
     out = capsys.readouterr().out
-    assert isinstance(mod_D, ARX_D) and mod_D.modelName == "ARX_D_3_2_2"
-    assert "modelName  mn  = ARX_D_3_2_2" in out and "features   fn  = Array(y~3, y~2, y~1, icu~2, icu~1, log1p(pRate~1))" in out
+    assert isinstance(mod_D, ARX_D) and mod_D.modelName == "ARX_D_3_2_2_L0.1_A0.5"   # rev2.3: the elastic net by default
+    assert "modelName  mn  = ARX_D_3_2_2_L0.1_A0.5" in out and "features   fn  = Array(y~3, y~2, y~1, icu~2, icu~1, log1p(pRate~1))" in out
     assert mod_D.fname == f.names and mod_D.params.shape == (7, HH) and mod_D.X.shape == (116, 6)
     hp = mod_D.hparameter
     assert hp["p"] == 3 and hp["px"] == 2 and hp["skip"] == 3 and mod_D.getSkip() == 3
@@ -180,7 +180,7 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
 
     mod = f.fit(data, 1)
     out = capsys.readouterr().out
-    assert isinstance(mod, ARX) and mod.modelName == "ARX_3_2_2" and "modelName  mn  = ARX_3_2_2" in out
+    assert isinstance(mod, ARX) and mod.modelName == "ARX_3_2_2_L0.1_A0.5" and "modelName  mn  = ARX_3_2_2_L0.1_A0.5" in out
     assert mod.params.shape == (7,) and mod.forecast().shape == (116, 1)
     mod_D1 = f.fit_D(data, 1)
     assert np.allclose(mod.forecast()[:, 0], mod_D1.forecast()[:, 0], atol=1e-6), "with hh = 1 the direct model is the recursive one"
@@ -190,7 +190,7 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
 
     g = ARX_Formula(y, y.lags(2, 1) + icu.lags(2, 1))                    # the standard layout forges fine
     mod2 = g.fit(data, 3)
-    assert mod2.modelName == "ARX_2_2_1" and mod2.forecast().shape == (116, 3)
+    assert mod2.modelName == "ARX_2_2_1_L0.1_A0.5" and mod2.forecast().shape == (116, 3)
 
 
 def test_tform_log1p_keeps_the_forecasts_of_yf_in_original_units():
@@ -198,7 +198,7 @@ def test_tform_log1p_keeps_the_forecasts_of_yf_in_original_units():
     y, icu = FormulaVar("y"), FormulaVar("icu")
     f = ARX_Formula(y, y.lags(2, 1) + [icu.lagged(1)], "Log1p")
     mod = f.fit_D(data, 3)
-    assert mod.modelName == "ARX_D_2_1_1"
+    assert mod.modelName == "ARX_D_2_1_1_L0.1_A0.5"
     assert np.allclose(mod.y, np.log1p(data["y"])), "the model works on the transformed response"
     assert isinstance(mod.yForm, Log1pForm)
     yf = mod.forecast()

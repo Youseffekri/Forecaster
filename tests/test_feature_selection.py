@@ -13,7 +13,8 @@ from modeling.forecasting.args import Args
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
-from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.forecasting.forecaster_d import Forecaster_D
 from modeling.forecasting.forecaster_reg import Forecaster_Reg
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
@@ -335,7 +336,7 @@ def test_get_model_and_get_model_h_shapes():
     m4 = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pRate~1", data, 3, Args(lam=1.0))
     sub = m4.getModel([1, 3, 4])                                       # the inherited ARX_D.getModel (no nFree)
     assert type(sub) is ARX_D and sub.X.shape[1] == 3 and sub.fname == [m4.fname[j] for j in (1, 3, 4)]
-    assert sub.modelName == "ARX_D_3_1_2_L1.0" and isinstance(m4, ARX_D)                  # _L{lambda}: the ridge penalty, one decimal
+    assert sub.modelName == "ARX_D_3_1_2_L1.0_A0.5" and isinstance(m4, ARX_D)             # _L{lambda}_A{l1_ratio} (rev2.3: the elastic net)
     assert isinstance(m4.getModel_h([1, 3], 1), ARX)
     colsArr, _ = m4.selectFeatures(SelectionTech.Backward, first=0)   # no intercept column in a fromTerms matrix
     assert len(colsArr[0]) >= 1

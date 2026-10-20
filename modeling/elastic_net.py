@@ -12,14 +12,16 @@ so `lam` is on the scale of `CenteredRidge`'s penalty: l1_ratio = 0 is the ridge
 exactly zero while the L2 part keeps correlated lags together (the grouping effect of Zou & Hastie,
 2005) -- a continuous feature selection, the baseline every hard selection should be measured
 against.  Fitted by scikit-learn's coordinate descent (one independent fit per response column, as
-the direct models need).  `effDF` is the number of nonzero coefficients plus the intercept (the
-unbiased estimate of the lasso's degrees of freedom, Zou, Hastie & Tibshirani, 2007); the sandwich
-standard errors have no closed form for the L1 part, so `stdErr` is not offered and the SUMMARY falls
-back to the OLS formula on the fitted columns.
+the direct models need); at l1_ratio = 0 by the ridge's own solver (`ridge_solve`: the exact solution,
+so l1_ratio = 0 IS the ridge at the same lambda -- coordinate descent stops short of it on collinear
+columns), as ScalaTion's `ElasticNetRegression` (rev5.4).  `effDF` is the number of nonzero
+coefficients plus the intercept (the unbiased estimate of the lasso's degrees of freedom, Zou, Hastie
+& Tibshirani, 2007); `stdErr` is the sandwich covariance over the active set (`regularized.stdErr`,
+the L1 part as its local quadratic), NaN for a dropped coefficient.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-20
-Version: 1.1
+Version: 1.3
 License: MIT License
 Note: AI assisted code
 """
@@ -33,8 +35,10 @@ import numpy as np
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import ElasticNet as SkElasticNet
 
+from modeling import regularized
 from modeling.centered_ridge import CenteredRidge
 from modeling.hyper_parameter import Knob
+from modeling.optimization.varpro import ridge_solve
 
 __all__ = ["ElasticNet"]
 
@@ -56,8 +60,10 @@ class ElasticNet:
         with raw columns of very different scales the penalty falls on the small-scale ones).
     maxIter : int, default=10000
         The coordinate-descent iterations.
-    tol : float, default=1e-4
-        Its tolerance (scikit-learn's default, relative to the response's scale).
+    tol : float, default=1e-6
+        Its tolerance on the dual gap (relative to the response's scale): ScalaTion's `solve` stops at a
+        coefficient change of 1e-6, and at this tolerance the two agree to five digits (at scikit-learn's
+        default 1e-4 the coefficients differ in the fourth digit).
     """
 
     #: The knobs a tuner turns (`Forecaster.tune`): the penalty lambda and the share l1_ratio
@@ -65,7 +71,7 @@ class ElasticNet:
     tunable = (Knob.LAMBDA, Knob.L1_RATIO)
 
     def __init__(self, lam: Optional[float] = None, l1_ratio: float = 0.5, scaled: bool = False,
-                 maxIter: int = 10000, tol: float = 1e-4) -> None:
+                 maxIter: int = 10000, tol: float = 1e-6) -> None:
         self.lam = float(CenteredRidge.hp["lambda"] if lam is None else lam)
         if not 0.0 <= l1_ratio <= 1.0:
             raise ValueError(f"ElasticNet: l1_ratio = {l1_ratio} must lie in [0, 1]")
@@ -94,16 +100,20 @@ class ElasticNet:
         Xc = X - xm
         sd = CenteredRidge.xSig(Xc) if self.scaled else np.ones(X.shape[1])
         Xs, Yc = Xc / sd, Y2 - ym
-        alpha = max(self.lam / m, 1e-12)                                 # scikit-learn's alpha (0 is refused)
-        net = SkElasticNet(alpha=alpha, l1_ratio=self.l1_ratio, fit_intercept=False,
-                           max_iter=self.maxIter, tol=self.tol)
-        with warnings.catch_warnings():                                  # a near-OLS lasso (tiny alpha) converges slowly;
-            warnings.simplefilter("ignore", ConvergenceWarning)         # the coefficients are still at the tolerance's scale
-            net.fit(Xs, Yc)
-        coef = np.atleast_2d(net.coef_)                                 # (ny, n)
-        self.parameter = coef.T                                          # (n, ny) in the fitted space
+        if self.l1_ratio == 0.0:                                        # the ridge exactly (its own solver)
+            self.parameter = ridge_solve(Xs, Yc, self.lam)
+        else:
+            alpha = max(self.lam / m, 1e-12)                             # scikit-learn's alpha (0 is refused)
+            net = SkElasticNet(alpha=alpha, l1_ratio=self.l1_ratio, fit_intercept=False,
+                               max_iter=self.maxIter, tol=self.tol)
+            with warnings.catch_warnings():                              # a near-OLS lasso (tiny alpha) converges slowly;
+                warnings.simplefilter("ignore", ConvergenceWarning)     # the coefficients are still at the tolerance's scale
+                net.fit(Xs, Yc)
+            self.parameter = np.atleast_2d(net.coef_).T + 0.0            # (n, ny) in the fitted space (no -0.0)
         self.slopes = self.parameter / sd[:, None]
         self.intercept = ym - xm @ self.slopes
+        self._m, self._xm, self._sd, self._Xs = m, xm, sd, Xs             # the training window (`stdErr`)
+        self._sse = np.sum((Yc - Xs @ self.parameter) ** 2, axis=0)     # the residual sum of squares per response
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -126,6 +136,17 @@ class ElasticNet:
     def effDF(self) -> float:
         """The effective number of parameters: the nonzero coefficients plus the intercept."""
         return 1.0 + self.nnz
+
+    def stdErr(self, k: int = 0) -> np.ndarray:
+        """
+        The standard errors of the intercept and the original-unit slopes of response k, (n + 1,):
+        `regularized.stdErr` on the last training window at this net's lambda and l1_ratio (the
+        sandwich covariance over the active set); NaN for a coefficient the L1 penalty set to zero.
+        """
+        if self.parameter is None:
+            raise ValueError("ElasticNet.stdErr: fit first")
+        return regularized.stdErr(self._Xs, self.parameter[:, k], float(self._sse[k]), self.lam, self.l1_ratio,
+                                  self._xm, self._sd)
 
     def __repr__(self) -> str:
         return f"ElasticNet(lam={self.lam:g}, l1_ratio={self.l1_ratio:g}, scaled={self.scaled})"

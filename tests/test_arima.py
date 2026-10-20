@@ -10,7 +10,7 @@ from modeling.fit import QoF
 from modeling.forecasting.ar import AR
 from modeling.forecasting.arima import ARIMA
 from modeling.forecasting.args import Args
-from modeling.forecasting.forecaster import teRng, trSize
+from modeling.model import Model
 from modeling.forecasting.datasets import Example_Covid
 
 HH = 3
@@ -54,7 +54,7 @@ def test_row_t_equals_apply_forecast_from_the_information_up_to_t_minus_1(args, 
     statsmodels' own res.apply (y[:t]).forecast (hh)."""
     y = covid_y()
     mod = ARIMA(y, HH, args, trend=trend)
-    mod.train(y[:trSize(len(y))])
+    mod.train(y[:Model.trSize(len(y))])
     yf = mod.forecast()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -96,10 +96,10 @@ def test_in_sample_report_and_tnt_rolling(capsys):
     out = capsys.readouterr().out
     assert "| TnT Test: ARIMA_1_1_1 |" in out and "rollValidate: Evaluate ARIMA_1_1_1's QoF" in out
     assert ft.shape == (HH, 26)
-    te = teRng(len(y))
+    te = Model.teRng(len(y))
     assert ft[0, QoF.m.ordinal] == len(te) and ft[HH - 1, QoF.m.ordinal] == len(te) - HH + 1
     assert np.all(mod.Yf[te.start:, 1] > 0) and ft[0, QoF.smape.ordinal] < 30
-    assert mod.res.nobs == len(y) - te.start + 0 or mod.res.nobs == trSize(len(y))   # the last window is tr_size rows
+    assert mod.res.nobs == len(y) - te.start + 0 or mod.res.nobs == Model.trSize(len(y))   # the last window is tr_size rows
 
 
 def test_roll_validate_retrains_every_rc_rows_on_the_sliding_window():
@@ -108,8 +108,8 @@ def test_roll_validate_retrains_every_rc_rows_on_the_sliding_window():
     mod.train()
     b_full = mod.parameter.copy()
     yf = mod.rollValidate(rc=RC)
-    te = teRng(len(y))
+    te = Model.teRng(len(y))
     assert yf.shape == (len(te), HH)
-    assert mod.res.nobs == trSize(len(y)), "the last retraining used a window of tr_size rows"
+    assert mod.res.nobs == Model.trSize(len(y)), "the last retraining used a window of tr_size rows"
     assert not np.allclose(mod.parameter, b_full), "the window's parameters differ from the full fit's"
     assert np.all(mod.Yf[:te.start, 1:HH + 1] == 0), "rollValidate resets Yf and forecasts the testing rows only"

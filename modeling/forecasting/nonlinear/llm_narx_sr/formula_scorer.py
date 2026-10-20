@@ -30,9 +30,9 @@ REPORT or plots; `LLM_NARX_SR.showBest` does that for the winners.
 
 The Python counterpart of ScalaTion's `llm_narx_sr/FormulaScorer.scala` (rev5.3).  Differences:
 the QoF "matrices" are lists of one dict per horizon keyed by ScalaTion's QoF names (`QOF_KEYS`
-are the ones the tables show); the hyper-parameters are a dict (`DEFAULT_HP`, ScalaTion's
+are the ones the tables show); the hyper-parameters are ONE dict (`FormulaScorer.hp`, ScalaTion's
 `FormulaScorer.hp`) copied into every scorer (`scorer.hp`), so a harness sets them on
-`DEFAULT_HP` BEFORE building a scorer; every formula (linear or not) is built by
+`FormulaScorer.hp` BEFORE building a scorer; every formula (linear or not) is built by
 `NARX_SR_D.fromTerms` (a formula without free parameters is the plain direct ridge model on
 its terms, which is what `ARX_D.fromTerms` gives in ScalaTion); the fit cache hands a formula
 the fitted values of the cached model of its structure (ScalaTion returns the cached model
@@ -58,43 +58,17 @@ import numpy as np
 from Util.correlogram import acorr
 from Util.tools import vector_str
 from modeling.feature_selection import BestStep, Cols
-from modeling.fit import Fit, MAXI, QoF, fitMapDict, qoF_names, showFitMap, vif
+from modeling.fit import MAXI, QoF, qoF_names, showFitMap, vif
 from modeling.forecasting.datasets import DatasetConfig
 from modeling.forecasting.eda4ts import topFreqs
-from modeling.forecasting.forecaster import Args, Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.args import Args
+from modeling.model import Model
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula as Formula, Par, ParRole
 from modeling.forecasting.formula_parser import FormulaError
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
 
-
-#: The search hyper-parameters (ScalaTion's `FormulaScorer.hp`, aliased as `LLM_NARX_SR.hp`): the
-#: one map every arm and the harness read.  A scorer copies it at construction, so set an entry
-#: here before building the scorer (e.g., `DEFAULT_HP["maxLag"] = 7` for a daily series).
-DEFAULT_HP: Dict[str, Any] = {
-    "hh": 6,              # maximum forecasting horizon (h = 1..hh)
-    "maxLag": 6,          # maximum lag for proposals, libraries and the parser
-    "lambda": 1.0,        # ridge penalty carried by every model
-    "perRound": 5,        # proposals requested per round
-    "maxRounds": 20,      # maximum rounds per loop
-    "patience": 5,        # stagnant rounds before a loop stops
-    "topK": 5,            # candidates fed back each round
-    "nFreqs": 2,          # periodogram frequencies offered to wave(k)
-    "exoK": 2,            # exogenous variables kept by the screening (ExoMode.Auto)
-    "maxCols": 12,        # largest column set the grammar CEM samples
-    "minTerms": 3,        # smallest proposal a trimmer touches
-    "nlTerms": 1,         # 1 => proposers and grammar libraries use the free-parameter forms
-    "maxFree": 2,         # free nonlinear parameters allowed per candidate (-1 => no cap)
-    "boundTol": 0.01,     # a fitted parameter within this fraction of its box of a bound is rejected
-    "maxVIF": 10.0,       # a free-parameter column with a larger VIF is rejected (0 => off)
-    "fitLib": 1,          # 1 => library terms with free parameters are fitted one by one before selection
-    "refitTop": 5,        # CEM: the best sets of this many rounds are refitted with their free parameters
-    "cemSample": 300,     # CEM: column sets per round on a library (-1 => CEM_Selector's default)
-    "cemIter": 15,        # CEM: maximum rounds on a library
-    "maxFits": 0,         # model fits a loop may make per run (0 => no budget)
-    "optimizer": None,    # the optimizer of the nonlinear parameters (an `OptimizerNL` or its name); None => `OPTIMIZER_NL`
-    "nneg": True,         # forecasts clipped at zero (count data); set False for series that go negative
-}
 
 QOF_KEYS = ("rSq", "rSqBar", "mse0", "mae", "smape", "m", "dfr")        # ScalaTion's QoF names (the tables)
 
@@ -148,11 +122,6 @@ class Candidate:
     model: Optional[Forecaster] = None
     hp: Optional[Dict[str, float]] = None
     nParams: Optional[np.ndarray] = None
-
-    @property
-    def lam(self) -> Optional[float]:
-        """The penalty lambda of the fit (from `hp`); None when the fit has no knobs."""
-        return None if self.hp is None or "lambda" not in self.hp else float(self.hp["lambda"])
 
     # -- ScalaTion's names ------------------------------------------------------------------
 
@@ -226,8 +195,8 @@ class Candidate:
 
     def __repr__(self) -> str:
         s = f"Candidate({self.formulaStr}, score={self.score:.4f}" if not self.failed else f"Candidate({self.formulaStr}, FAILED"
-        lam = "" if self.lam is None else f", lam={self.lam:g}"
-        return s + f", nTerms={self.nTerms}, nFree={self.nFree}{lam}{self.why})"
+        knobs = "" if not self.hp else ", " + ", ".join(f"{k}={v:g}" for k, v in self.hp.items())
+        return s + f", nTerms={self.nTerms}, nFree={self.nFree}{knobs}{self.why})"
 
 
 def qof_table(qof: Sequence[Dict[str, float]], title: str = "") -> str:
@@ -255,7 +224,7 @@ class FormulaScorer:
     hh : int, optional
         The maximum horizon (defaults to hp["hh"]).
     hp : dict, optional
-        Overrides of `DEFAULT_HP` (the copy a scorer carries is `scorer.hp`); the map is a
+        Overrides of `FormulaScorer.hp` (the copy a scorer carries is `scorer.hp`); the map is a
         constructor argument, so two scorers cannot interfere.
     scaled : bool, default=True
         Whether a formula's regression standardizes its term columns, so the ridge penalty is unit-free.
@@ -288,18 +257,44 @@ class FormulaScorer:
         The number of model fits made so far (the search budget in fits).
     """
 
-    #: ScalaTion's `FormulaScorer.hp`: the module-level map a harness edits before building a scorer.
-    hp = DEFAULT_HP
+    #: The search hyper-parameters (ScalaTion's `FormulaScorer.hp`, aliased as `LLM_NARX_SR.hp`): the ONE
+    #: map every arm and the harness read.  A scorer copies it at construction (`scorer.hp`, with the
+    #: constructor's overrides), so set an entry here BEFORE building the scorer (e.g.,
+    #: `FormulaScorer.hp["maxLag"] = 7` for a daily series).
+    hp: Dict[str, Any] = {
+        "hh": 6,              # maximum forecasting horizon (h = 1..hh)
+        "maxLag": 6,          # maximum lag for proposals, libraries and the parser
+        "lambda": 1.0,        # penalty carried by every model (the knob `Model.tuning` turns per candidate; l1_ratio: args' default)
+        "perRound": 5,        # proposals requested per round
+        "maxRounds": 20,      # maximum rounds per loop
+        "patience": 5,        # stagnant rounds before a loop stops
+        "topK": 5,            # candidates fed back each round
+        "nFreqs": 2,          # periodogram frequencies offered to wave(k)
+        "exoK": 2,            # exogenous variables kept by the screening (ExoMode.Auto)
+        "maxCols": 12,        # largest column set the grammar CEM samples
+        "minTerms": 3,        # smallest proposal a trimmer touches
+        "nlTerms": 1,         # 1 => proposers and grammar libraries use the free-parameter forms
+        "maxFree": 2,         # free nonlinear parameters allowed per candidate (-1 => no cap)
+        "boundTol": 0.01,     # a fitted parameter within this fraction of its box of a bound is rejected
+        "maxVIF": 10.0,       # a free-parameter column with a larger VIF is rejected (0 => off)
+        "fitLib": 1,          # 1 => library terms with free parameters are fitted one by one before selection
+        "refitTop": 5,        # CEM: the best sets of this many rounds are refitted with their free parameters
+        "cemSample": 300,     # CEM: column sets per round on a library (-1 => CEM_Selector's default)
+        "cemIter": 15,        # CEM: maximum rounds on a library
+        "maxFits": 0,         # model fits a loop may make per run (0 => no budget)
+        "optimizer": None,    # the optimizer of the nonlinear parameters (an `OptimizerNL` or its name); None => `OPTIMIZER_NL`
+        "nneg": True,         # forecasts clipped at zero (count data); set False for series that go negative
+    }
     CACHE_SZ = 64                                                      # fitted models kept (oldest evicted)
 
     def __init__(self, data: Dict[str, np.ndarray], hh: Optional[int] = None,
                  hp: Optional[Dict[str, Any]] = None, scaled: bool = True,
                  freqs: Optional[Sequence[float]] = None, validating: Optional[bool] = None) -> None:
-        self.hp = dict(DEFAULT_HP)
+        self.hp = dict(FormulaScorer.hp)
         if hp:
-            unknown = sorted(set(hp) - set(DEFAULT_HP))
+            unknown = sorted(set(hp) - set(FormulaScorer.hp))
             if unknown:                                                  # a stale setting (valFrac, valFolds, rc, skip, hSel) is an error
-                raise ValueError(f"FormulaScorer: unknown hp {unknown}; the settings are {sorted(DEFAULT_HP)} "
+                raise ValueError(f"FormulaScorer: unknown hp {unknown}; the settings are {sorted(FormulaScorer.hp)} "
                                  "(the split and the switch are Model's, the retraining cycle Forecaster.RC, the skip hp['maxLag'])")
             self.hp.update(hp)
         self.data = {k: np.asarray(v, dtype=float) for k, v in data.items()}
@@ -410,7 +405,7 @@ class FormulaScorer:
         `Forecaster.tune` over the regression's knobs on the validation rows, then the copy at the
         knobs found (`withHP`); the model itself otherwise.  The tuner's evaluations (one rolling pass
         per grid point) count toward the budget."""
-        if not self.tuning or not mod.penalized:
+        if not self.tuning or not mod.knobs:
             return mod
         if Model.validating:
             hp2 = mod.tune()[0]
@@ -450,6 +445,7 @@ class FormulaScorer:
             mod.train(mod.y[rows.start:rows.stop], X[rows.start:rows.stop])
         else:
             mod.train(mod.y[rows.start:rows.stop], None)
+        mod.forecastAll()                                                # the forecast matrix for EVERY row (`qofOn` reads it)
         mod.setSkip(self.skip)
         self.evaluations += 1
         return mod
@@ -508,7 +504,7 @@ class FormulaScorer:
             why = self.rejection(f, mod)
             if why is not None:
                 return self.failed(f, f.nTerms, reason=why)
-            q = self.qofFit(mod)
+            q = self.qofIn(mod, self.fitRng)                               # in-sample: the FS rows of the fit rows
             qv = self.qofValidation(self.build(self.fresh(f), self.fitSize, hp=self._knobsOf(mod))) if self.validating else None   # a copy at the fit's knobs
             return Candidate(f, self.scoreOf(q if qv is None else qv, nParams=mod.effDF), q, f.nTerms, qofVal=qv, hp=self._knobsOf(mod),
                              nParams=mod.effDF)
@@ -524,7 +520,7 @@ class FormulaScorer:
         """
         try:
             self.train(mod, self.fitRng)
-            q = self.qofFit(mod)
+            q = self.qofIn(mod, self.fitRng)                               # in-sample: the FS rows of the fit rows
             qv = None
             if self.validating:
                 qv = self.qofValidation(mod)                                # rolls the model itself ...
@@ -591,7 +587,7 @@ class FormulaScorer:
         (a fresh copy rolled, `qofValidation`) when validating, the fit rows otherwise (exceptions
         propagate)."""
         mod = self.fit(f)
-        q = self.qofValidation(self.build(self.fresh(f), self.fitSize, hp=self._knobsOf(mod))) if self.validating else self.qofFit(mod)
+        q = self.qofValidation(self.build(self.fresh(f), self.fitSize, hp=self._knobsOf(mod))) if self.validating else self.qofIn(mod, self.fitRng)
         return np.array([qh["smape"] for qh in q])
 
     @staticmethod
@@ -601,7 +597,7 @@ class FormulaScorer:
         knobs = getattr(mod, "knobs", ())
         if not knobs:
             return None
-        h = mod.hpAll
+        h = mod.hparameter
         return {k.name: float(h[k.name]) for k in knobs}
 
     def notes(self, cand: Candidate, k: Optional[int] = None) -> str:
@@ -618,8 +614,7 @@ class FormulaScorer:
             # deferred: `explainer` imports this module (through `llm_proposer`), a genuine cycle
             from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
             mod = self.fit(cand.formula)
-            yt, yp = self._true_pred(mod, self.fitRng, 1, False)
-            e = yt - yp                                                   # h = 1 residuals on the fit rows
+            e = self.residuals(mod, self.fitRng)                          # h = 1 residuals on the fit rows
             acf = "[" + ", ".join(f"{acorr(e, l):.2f}" for l in range(1, k + 1)) + "]"
             imp = Explainer.importance(mod, cand.formula, self.fitSize)
             tot = sum(abs(i.effect) for i in imp)
@@ -656,7 +651,7 @@ class FormulaScorer:
         every `rc` rows, original units, no skip) as a QoF list per horizon; one fit is counted.  The
         fit rows' QoF when the scorer is not validating."""
         if not self.validating:
-            return self.qofFit(mod)
+            return self.qofIn(mod, self.fitRng)
         qof = mod.rollTest(self.valRng, self.rc, "Validation", verbose=False)
         self.evaluations += 1
         return self._qofList(qof, mod)
@@ -671,7 +666,8 @@ class FormulaScorer:
             out.append(q)
         return out
 
-    # -- QoF -----------------------------------------------------------------------------------
+    # -- QoF (rev2.3: the scorer's own alignment -- `diagnoseH`, `qofByH`, `qofTrain`, `qofFit` -- is gone; the
+    #    base's `qofOn` on the FS rows of a block is the in-sample table, as in ScalaTion) ----------------------
 
     @staticmethod
     def _dof(mod: Forecaster) -> int:
@@ -683,68 +679,17 @@ class FormulaScorer:
         except (ValueError, AttributeError):
             return 0
 
-    @staticmethod
-    def _diagnose(y_true: np.ndarray, y_pred: np.ndarray, dfr: int, size: int) -> Dict[str, float]:
-        """The QoF dict of a prediction with the DF reset to `size` rows (ScalaTion's `mod_resetDF`
-        then `diagnose`), keyed by the QoF names."""
-        fit = Fit(float(dfr), 1.0)
-        fit.resetDF_k(int(size), int(dfr))
-        q = fitMapDict(fit.diagnose(np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)))
-        q["dfr"] = float(dfr)
-        return q
+    def qofIn(self, mod: Forecaster, rows: range) -> List[Dict[str, float]]:
+        """The in-sample QoF per horizon of a model trained on a block of leading rows (the fit rows, or
+        the training rows): the base's `qofOn` on the block's FS rows (`fs_rng`; the first `skip` rows
+        dropped), as a QoF list."""
+        return self._qofList(mod.qofOn(self.fs_rng(rows)), mod)
 
-    @staticmethod
-    def _predict(mod: Forecaster, idx: np.ndarray) -> np.ndarray:
-        """The forecasts (len(idx), hh) of the given rows in model units (`predict_rows`, or the
-        forecast matrix of a model without it)."""
-        if hasattr(mod, "predict_rows"):
-            return mod.predict_rows(idx)
-        return np.asarray(mod.forecast(int(idx[0]), int(idx[-1]) + 1), dtype=float)
-
-    def _true_pred(self, mod: Forecaster, rows: range, h: int, no_skip: bool):
-        """
-        The actual values and the column-h forecasts of the rows whose horizon-h targets lie inside
-        `rows` (ScalaTion's `diagnoseH`: y(t1+h-1 until t2) against yf(t1 until t2-h+1, h)), the
-        first `skip` rows dropped unless `no_skip`; (None, None) when no row is left.
-        """
-        start = rows.start if no_skip else rows.start + self.skip
-        stop = rows.stop - h + 1                                         # the target y(t+h-1) stays in the range
-        if stop <= start:
-            return None, None
-        idx = np.arange(start, stop)
-        y_true = mod.y[idx + h - 1]
-        y_pred = self._predict(mod, idx)[:, h - 1]
-        if mod.yForm is not None:
-            y_true = mod.yForm.inverse_transform(y_true.reshape(-1, 1)).ravel()
-            y_pred = mod.yForm.inverse_transform(y_pred.reshape(-1, 1)).ravel()
-        return y_true, y_pred
-
-    def diagnoseH(self, mod: Forecaster, rows: range, h: int, noSkip: bool = False) -> Dict[str, float]:
-        """
-        Diagnoses ONE horizon of a model on a row range IN-SAMPLE: yf(t, h) is paired with
-        y(t + h - 1) for the rows whose target lies in the range (t1 <= t <= t2 - h, so
-        m_h = m_1 - (h - 1)), the first `skip` rows dropped unless `noSkip`, a response transform
-        inverted, the DF reset to the rows diagnosed; returns the QoF dict of that horizon.  (The
-        out-of-sample passes are `rollTest`'s: `qofValidation`, `tntModel`.)
-        """
-        y_true, y_pred = self._true_pred(mod, rows, h, noSkip)
-        if y_true is None:
-            raise ValueError(f"diagnoseH: no rows for horizon {h} in {rows}")
-        return self._diagnose(y_true, y_pred, self._dof(mod), len(y_true))
-
-    def qofByH(self, mod: Forecaster, rng: range, noSkip: bool = False) -> List[Dict[str, float]]:
-        """The QoF per horizon (a list of hh dicts) of a model over the given rows."""
-        return [self.diagnoseH(mod, rng, h, noSkip) for h in range(1, self.hh + 1)]
-
-    def qofTrain(self, mod: Forecaster) -> List[Dict[str, float]]:
-        """The in-sample QoF of a model trained on the training rows: `qofByH` on their FS rows (the first
-        `skip` rows dropped)."""
-        return self.qofByH(mod, self.fs_rng(self.trRng))
-
-    def qofFit(self, mod: Forecaster) -> List[Dict[str, float]]:
-        """The in-sample QoF of a model trained on the fit rows: `qofByH` on their FS rows (the first
-        `skip` rows dropped)."""
-        return self.qofByH(mod, self.fs_rng(self.fitRng))
+    def residuals(self, mod: Forecaster, rows: range, noSkip: bool = False) -> np.ndarray:
+        """The h = 1 residuals y - yf(., 1) of a trained model over a block of rows (original units), the
+        first `skip` rows dropped unless `noSkip`."""
+        start = rows.start if noSkip else rows.start + self.skip
+        return mod.getY()[start:rows.stop] - mod.Yf[start:rows.stop, 1]
 
     @staticmethod
     def keyOf(f: Formula) -> str:
@@ -794,7 +739,7 @@ class FormulaScorer:
             if self.validating:                                          # a fresh sub-model at those knobs is rolled
                 fresh = lib.getModel(cols)
                 qv = self.qofValidation(fresh.withHP(self._knobsOf(sub)) if self.tuning else fresh)
-            q = self.qofFit(sub)
+            q = self.qofIn(sub, self.fitRng)
             s0 = self.scoreOf(q if qv is None else qv, nFree, sub.effDF)
             s = s0 * (1.0 + (nFree - self.maxFree)) if (0 <= self.maxFree < nFree and math.isfinite(s0)) else s0
             if not math.isfinite(s):
@@ -865,7 +810,7 @@ class FormulaScorer:
     def report(self, cand: Candidate, tnt: bool = True) -> str:
         """A text report of a candidate: formula, score, in-sample (and, when validating, validation)
         sMAPE, J per horizon, and (optionally) the rolling TnT sMAPE on the testing rows."""
-        lam = "" if cand.lam is None else f", lambda = {cand.lam:.1f}"
+        lam = "" if not cand.hp or "lambda" not in cand.hp else f", lambda = {cand.hp['lambda']:.1f}"
         lines = [f"formula:    {cand.formulaStr}", f"key:        {cand.key}",
                  f"score J:    {cand.score:.4f}   (nTerms = {cand.nTerms}, nFree = {cand.nFree}{lam}){cand.why}"]
         if not cand.failed:

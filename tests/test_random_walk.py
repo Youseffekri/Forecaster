@@ -5,7 +5,7 @@ import pytest
 
 from modeling.fit import QoF
 from modeling.forecasting.args import Args
-from modeling.forecasting.forecaster import teRng, trSize
+from modeling.model import Model
 from modeling.forecasting.random_walk import RandomWalk
 from modeling.forecasting.datasets import Example_Covid
 
@@ -73,11 +73,11 @@ def test_tnt_h1_forecasts_equal_y_shifted_and_reproduce_the_scala_smape():
     y = covid_y()
     mod = RandomWalk(y, 6)
     ft = mod.tnT_Test(rc=20)
-    te = teRng(len(y))
+    te = Model.teRng(len(y))
     assert np.array_equal(mod.Yf[te.start:, 1], y[te.start - 1:-1])
     assert ft.shape == (6, 26)
     assert np.allclose(ft[:, QoF.smape.ordinal], [18.1532, 27.2211, 40.3519, 52.3739, 62.5276, 73.6424], atol=1e-4)
-    assert ft[0, QoF.m.ordinal] == len(y) - trSize(len(y))              # no rows skipped in TnT
+    assert ft[0, QoF.m.ordinal] == len(y) - Model.trSize(len(y))              # no rows skipped in TnT
     assert mod.getSkip() == 1                                          # the skip is restored after the test (rev1.7)
 
 

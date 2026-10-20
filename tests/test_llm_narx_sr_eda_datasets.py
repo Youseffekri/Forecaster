@@ -12,7 +12,7 @@ from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.datasets import Datasets, ExoMode
 from modeling.forecasting.eda4ts import EDA4TS, topFreqs
 from modeling.forecasting.exo_screen import ExoScreen
-from modeling.forecasting.forecaster import trSize
+from modeling.model import Model
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_proposer import LLMProposer
 from modeling.forecasting.stationarity_kpss import Stationarity_KPSS
@@ -49,7 +49,7 @@ def test_residual_report_fails_a_wrong_model():
     """eDA4TSTest (rev4.1): y ~= y~1 as ARX_D (p = 1, px = 0, spec = 0) trained on the training rows;
     its h = 1 residuals miss z~2 and the cycle, so at least one residual test fails."""
     y, z = planted()
-    tr = trSize(len(y))
+    tr = Model.trSize(len(y))
     eda = EDA4TS(y, {"z": z}, 256, maxLag=6)
     mod = ARX_D(y, 1, None, Args(p=1, px=0, spec=0))
     mod.train(mod.Y[:tr], mod.X[:tr])
@@ -115,7 +115,7 @@ def test_exo_modes_and_shortlists():
     assert len(data) == len(cf.exo) + 1 and len(data["y"]) == 116
     sc = FormulaScorer(data, hh=6)
     assert sc.shortlist(cf) == ["hosp_patients", "positive_rate"], "the shortlist of exoScreenTest2"
-    assert cf.shortlist(data, trSize(116), 2, 6) == sc.shortlist(cf)          # the generic one, as datasetsTest calls it
+    assert cf.shortlist(data, Model.trSize(116), 2, 6) == sc.shortlist(cf)          # the generic one, as datasetsTest calls it
     assert len(cf.blindNames) == 9 and cf.blindNames["y"] == "y"
     ca = Datasets.COVID_ALL
     short = FormulaScorer(ca.load(), hh=6).shortlist(ca)

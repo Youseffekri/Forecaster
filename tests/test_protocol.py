@@ -11,7 +11,8 @@ from modeling.fit import QoF, mae_n
 from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.datasets import Datasets, Example_Covid
-from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.protocol import ERROR_COLUMNS, Protocol
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Method

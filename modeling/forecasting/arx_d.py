@@ -35,10 +35,11 @@ class ARX_D(Forecaster_D):
 
     Attributes
     ----------
-    method : {"sm_ols", "sk_lr", "ridge"}, default="sm_ols"
-        The regression per horizon (args.method): statsmodels OLS, scikit-learn LinearRegression, or
-        the centered ridge of ScalaTion's `CenteredRidgeMV` (penalty args.lam, default 0.1;
-        args.scaled).
+    method : {"enet", "ridge", "sm_ols", "sk_lr"}, default="enet"
+        The regression per horizon (args.method): the centered elastic net of ScalaTion's
+        `CenteredElasticNetMV` (penalty args.lam, default 0.1, share args.l1_ratio, default 0.5;
+        args.scaled) -- the default of every regression-based forecaster, as ScalaTion's `REGRESSION`
+        import --, the centered ridge, statsmodels OLS or scikit-learn LinearRegression.
     xe : np.ndarray, shape (m, n_exo), optional
         The exogenous variables aligned with `y`.
     n_exo : int
@@ -56,8 +57,7 @@ class ARX_D(Forecaster_D):
     ARX : the recursive counterpart and the shared `buildMatrix` / `formNames`.
     """
 
-    METHOD = "sm_ols"
-    ARGS = ("p", "px", "spec", "method", "lam", "scaled") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "method", "lam", "l1_ratio", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,

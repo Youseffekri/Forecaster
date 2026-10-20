@@ -87,7 +87,7 @@ class ARX_SR(ARX):
     ARX : the recursive forecasting logic (train, forecast, _predict, hide).
     """
 
-    ARGS = ("p", "px", "spec", "crx", "method", "lam", "scaled") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "crx", "method", "lam", "l1_ratio", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,

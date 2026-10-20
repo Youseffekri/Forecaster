@@ -166,31 +166,33 @@ def test_transform_types_parameters_and_bounds():
 
 
 def test_rescale_default_parameters_reproduce_nARX_SR_DTest5(capsys):
-    """tune = False: Root transforms at (0, 0.5), MinMax to [1, 5], lambda = 6 -- the Scala log's numbers
-    (In-Sample rSq 0.951773, sMAPE 10.3656 ..) and REPORT layout; the TnT sMAPE is rev2.1's (22.8084 ..: the
-    boundary rule -- a direct model trains only on the rows whose hh targets lie before the forecast origin;
-    the Scala rev5.1 log's 17.8772 .. trained on five more rows with targets inside the block; ScalaTion
-    rev5.2 applies the same rule)."""
+    """tune = False: Root transforms at (0, 0.5), MinMax to [1, 5], lambda = 6, l1_ratio 0.5 (rev2.3: the elastic net,
+    ScalaTion rev5.4's REGRESSION import) -- the Scala rev5.4 log's numbers (In-Sample rSq 0.948873, sMAPE 11.0590 ..,
+    TnT sMAPE 14.2521 ..; the ridge of rev2.2: 0.951773, 10.3656 .., 22.8084 ..) and REPORT layout, to the tolerance
+    of the two coordinate descents (ScalaTion stops at a coefficient change of 1e-6: five digits)."""
     y, xe = covid_xe()
     R = TransformT.Root
     mod = NARX_SR_D.rescale(y, 6, xe, HP5.copy(tune=False), [R], [[R], [R]])
-    assert isinstance(mod, ARX_D) and mod.modelName == "NARX_SR_D(6, 4, 2)_L6.0" and mod.nFree == 0   # _L{lambda} (rev1.8)
+    assert isinstance(mod, ARX_D) and mod.modelName == "NARX_SR_D(6, 4, 2)_L6.0_A0.5" and mod.nFree == 0   # _L{lambda}_A{l1_ratio}
     assert mod.parameter_nl.tolist() == [0.0, 0.5, 0.0, 0.5, 0.0, 0.5] and not mod._nneg   # MinMax: no rectification
     assert mod.fname[:8] == ["cons", "yl6", "yl5", "yl4", "yl3", "yl2", "yl1", "f0(yl6)"] and len(mod.fname) == 29
     _, qof = mod.inSample_Test()
     out = capsys.readouterr().out
-    assert "b = VectorD(-0.131082,\t-0.0369535,\t0.0124104," in out
+    b = [l for l in out.splitlines() if l.startswith("b = VectorD(")][0]
+    assert b.startswith("b = VectorD(0.00000,\t0.00000,\t0.00000,\t0.00000,\t0.00000,\t0.041") and "0.6338" in b and "0.1288" in b   # Scala: 0.0412977, 0.633801, 0.128878
     assert ("hparameter hp  = HyperParameter(p -> (6,1), d -> (1,1), q -> (1,1), P -> (1,1), D -> (1,1), Q -> (1,1), "
-            "s -> (7,7), px -> (4,1), spec -> (1,1), crx -> (0,0), nneg -> (1,1))") in out
-    assert qof[QoF.rSq.ordinal] == pytest.approx(0.951773, abs=1e-6) and qof[QoF.dfr.ordinal] == 29
+            "s -> (7,7), px -> (4,1), spec -> (1,1), crx -> (0,0), nneg -> (1,1), lambda -> (6.0,0.1), l1_ratio -> (0.5,0.5))") in out
+    assert qof[QoF.rSq.ordinal] == pytest.approx(0.948873, abs=1e-6) and qof[QoF.smape.ordinal] == pytest.approx(11.0590, abs=1e-4)
+    assert qof[QoF.dfr.ordinal] == 29
     ftMat = mod.tnT_Test(rc=2)
-    assert np.allclose(ftMat[:, QoF.smape.ordinal], [22.8084, 20.2147, 21.8292, 28.8506, 39.2112, 51.5552], atol=1e-4)
+    assert np.allclose(ftMat[:, QoF.smape.ordinal], [14.2521, 18.0444, 19.6300, 29.2134, 33.3086, 42.4646], atol=2e-4)
 
 
 def test_rescale_varpro_reproduces_nARX_SR_DTest8():
-    """Pow of y, Log of each exogenous variable, lambda = 6, fitted by VarPro: the Scala log's parameters
-    (10, 1.99494, 0, 1, 0, 1) and the TnT sMAPE under the boundary rule (rev2.1: 15.4539 ..; the rev5.1 log's
-    14.1927 .. trained on rows with targets inside the block); the fitted parameters take degrees of freedom."""
+    """Pow of y, Log of each exogenous variable, lambda = 6, fitted by VarPro (its ridge): the Scala log's parameters
+    (10, 1.99494, 0, 1, 0, 1) and the TnT sMAPE under the boundary rule, rev2.3: of the elastic net the fixed
+    parameters are then regressed by (14.6280 ..; the ridge of rev2.1-2.2: 15.4539 ..; the rev5.1 log's 14.1927 ..
+    trained on rows with targets inside the block); the fitted parameters take degrees of freedom."""
     y, xe = covid_xe()
     mod = NARX_SR_D.rescale(y, 6, xe, HP5.copy(optimizer=OptimizerNL.VarPro), [TransformT.Pow],
                             [[TransformT.Log], [TransformT.Log]])
@@ -198,7 +200,7 @@ def test_rescale_varpro_reproduces_nARX_SR_DTest8():
     assert mod.nFree == 4 and mod.optimizer is OptimizerNL.VarPro and mod.stepCounts["nfev"] > 0
     ftMat = mod.tnT_Test(rc=2)
     assert ftMat[0, QoF.dfr.ordinal] == 29 + 4
-    assert np.allclose(ftMat[:, QoF.smape.ordinal], [15.4539, 20.2352, 26.1583, 36.9827, 48.5648, 58.1280], atol=1e-4)
+    assert np.allclose(ftMat[:, QoF.smape.ordinal], [14.6280, 18.7424, 26.0326, 34.0615, 44.6258, 49.9095], atol=2e-4)
 
 
 def test_apply_on_raw_data_and_feature_selection_submodel():
@@ -208,12 +210,17 @@ def test_apply_on_raw_data_and_feature_selection_submodel():
     mod = NARX_SR_D.apply(y, 3, xe, Args(p=3, px=2, spec=1, lam=1.0, tune=False), [TransformT.Root])
     assert mod.yForm is None and mod._nneg and mod.fname[-1] == "g1,0(xe1l1)"
     sub = mod.getModel([0, 1, 4])
-    assert type(sub) is ARX_D and sub.modelName == "ARX_D_3_2_2_L1.0" and sub.X.shape[1] == 3
+    assert type(sub) is ARX_D and sub.modelName == "ARX_D_3_2_2_L1.0_A0.5" and sub.X.shape[1] == 3
 
 
 def test_backward_selection_after_tnt_reproduces_nARX_SR_DTest5():
-    """Root transforms fitted by VarPro, TnT, then Backward at h = 1 (nARX_SR_DTest5): the Scala log's columns and
-    trace -- the sub-models keep their own default skip (a new model's); the parent's skip is restored after `tnT_Test`."""
+    """Root transforms fitted by VarPro, TnT, then Backward at h = 1 (nARX_SR_DTest5): the trace's R^2, sMAPE and
+    sMAPE-IC columns are the Scala rev5.4 log's where the paths coincide (the first three and the last steps); the
+    paths part at the first removal, where one coefficient sits at the soft threshold -- a small nonzero in ScalaTion's
+    coordinate descent, an exact zero in scikit-learn's -- so the FPE charge differs by one and ScalaTion takes the
+    second-best removal: it selects {0, 5, 6, 20, 24}, Python {0, 6, 16, 24}.  The R^2-bar column charges the
+    columns on both sides, ScalaTion's the nonzero coefficients (the regression's own `resetDF`).  The sub-models keep
+    their own default skip (a new model's); the parent's skip is restored after `tnT_Test`."""
     y, xe = covid_xe()
     R = TransformT.Root
     mod = NARX_SR_D.rescale(y, 6, xe, HP5, [R], [[R], [R]])
@@ -221,7 +228,7 @@ def test_backward_selection_after_tnt_reproduces_nARX_SR_DTest5():
     mod.tnT_Test(rc=2)
     assert mod.getSkip() == 6                                          # restored (rev1.7; ScalaTion rev4.1 left it at 0)
     colsArr, rSqArr = mod.selectFeatures(SelectionTech.Backward, "none", h=1)
-    assert colsArr[0] == [0, 6, 8, 12, 13, 28]                         # rev1.11: the ridge's effective parameters charged
-    assert np.allclose(rSqArr[0][0], [-1.38036, -2.26967, 50.5695, 52.2695], atol=1e-4)    # sMAPE-IC = FPE form (rev1.7)
-    assert np.allclose(rSqArr[0][-1], [96.4862, 95.3013, 11.2286, 13.4114], atol=1e-4)    # (rev1.7-1.10: [0, 1, 6, 12, 13, 28],
-    #                                                                                        52.9216 / 19.0624; Scala rev4.1: 50.6393, 11.9495)
+    assert colsArr[0] == [0, 6, 16, 24]                                # rev2.3 (the ridge of rev1.11-2.2: [0, 6, 8, 12, 13, 28])
+    assert np.allclose(rSqArr[0][0][[0, 2, 3]], [-0.846013, 50.7210, 51.9005], atol=1e-4)   # Scala: the 0-th variable row
+    assert np.allclose(rSqArr[0][-1][[0, 2, 3]], [96.1581, 9.67118, 11.6954], atol=1e-4)    # Scala: the full model
+    assert np.allclose(rSqArr[0][26], [96.2897, 95.1514, 9.4531, 11.2118], atol=1e-4)       # Scala: 96.2897, 96.0493, 9.45311, 11.2118

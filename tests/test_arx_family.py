@@ -129,7 +129,7 @@ def test_arx_sr_d_equals_narx_sr_d_on_the_equivalent_formula():
     yf_sr = sr.forecast()
     data = {"y": y, "icu": backfill_matrix(xe)[:, 0], "pRate": backfill_matrix(xe)[:, 1]}
     f = "y ~= y~(3,1) + pow(y~(3,1), 1.5) + icu~(2,1) + log1p(icu~(2,1)) + pRate~(2,1)"
-    nx = NARX_SR_D.fromTerms(f, data, 6, Args(skip=3, lam=0.0))
+    nx = NARX_SR_D.fromTerms(f, data, 6, Args(skip=3, method="sm_ols"))   # rev2.3: the elastic net by default -- OLS here
     nx.train()
     yf_nx = nx.forecast()
     assert np.allclose(yf_sr, yf_nx, atol=1e-6)

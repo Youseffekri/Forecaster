@@ -55,7 +55,7 @@ import numpy as np
 import pandas as pd
 
 from modeling.forecasting.exo_screen import ExoScreen
-from modeling.forecasting.forecaster import trSize
+from modeling.model import Model
 
 #: The data directory: <repo>/data (override with the FORECASTER_DATA environment variable).
 DATA_DIR = Path(os.environ.get("FORECASTER_DATA", Path(__file__).resolve().parents[2] / "data"))
@@ -420,7 +420,7 @@ class Datasets:
         """
         all_, header = loadH(fileName, skipCol)
         data = all_ if rng is None else all_[rng.start:rng.stop]
-        p = ExoScreen.pool(data, header, resp, trSize(len(data)), exclude)
+        p = ExoScreen.pool(data, header, resp, Model.trSize(len(data)), exclude)
         for nm, why in p.dropped:
             print(f"Datasets.fromFile: {nm} dropped -- {why}")
         mp = {"y": p.y, **p.xe}

@@ -29,7 +29,9 @@ import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix, makeMatrix4L, makeMatrix4T, makeMatrix4Y, trend_names
 from Util.transform import TransformT
-from modeling.forecasting.forecaster import Args, Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.args import Args
+from modeling.model import Model
 from modeling.forecasting.forecaster_reg import Forecaster_Reg
 
 
@@ -107,7 +109,7 @@ class ARX(Forecaster_Reg):
     Forecaster : the base forecasting logic (Yf, rollValidate, inSample_Test, tnT_Test).
     """
 
-    ARGS = ("p", "px", "spec", "method", "lam", "scaled") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "method", "lam", "l1_ratio", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,

@@ -36,11 +36,13 @@ from typing import Any, List, Optional, Sequence, Tuple
 import numpy as np
 import statsmodels.api as sm
 
-from Util.tools import array_str, banner, set_str, vector_str
+from Util.tools import array_str, banner, matrix_str, set_str, vector_str
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import BestStep, Cols, FeatureSelection, given_qk, updateQoF
 from modeling.fit import MAXI, Fit, QoF, diagnose as diagnose_, showFitMap, vif
-from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.args import REGRESSION_METHODS
+from modeling.model import Model
 from modeling.subset_search import SubsetSearch
 
 
@@ -66,7 +68,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         `FeatureSelection.fullset_FS`), cut off at the first undefined (NaN) response.
     """
 
-    METHOD = "sm_ols"
+    METHOD = "enet"                                                     # ScalaTion rev5.4: the elastic net is the REGRESSION import
     METHODS = REGRESSION_METHODS
 
     def __init__(self, y: np.ndarray, hh: int, args: Any = None, X: Optional[np.ndarray] = None,
@@ -115,7 +117,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         if self._method == "sm_ols":
             self._model_fit = sm.OLS(y_, sm.add_constant(X_, has_constant="add")).fit()
             self._set_params(np.asarray(self._model_fit.params))
-        elif self.penalized:                                              # CenteredRidge / ElasticNet
+        elif self.knobs:                                                  # CenteredRidge / ElasticNet
             self._model.fit(X_, y_)
             self._set_params(self._model.params[:, 0])
             self._b = self._model.parameter[:, 0]                         # ScalaTion's b = reg.parameter
@@ -147,7 +149,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
         b1 = self.params if b_ is None else b_                         # intercept +: slopes (original units)
         v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
-        se = self._model.stdErr(0) if b_ is None and self._ridgeSE() else None   # a ridge: the sandwich covariance
+        se = self._model.stdErr(0) if b_ is None and self._penalizedSE() else None   # penalized: the sandwich covariance
         return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1, se)
 
     def _cvData(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -161,7 +163,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         """The one-step predictions of the given input rows (clipped at zero when nneg)."""
         if self._method == "sm_ols":
             yp = self._model_fit.predict(sm.add_constant(X_rows, has_constant="add"))
-        elif self.penalized:
+        elif self.knobs:
             yp = self._model.predict(X_rows)[:, 0]
         else:
             yp = self._model.predict(X_rows)
@@ -336,7 +338,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         try:
             if Model.validating:
                 mod_j = self.getModel(cols)
-                if Model.tuning and mod_j.penalized:                          # the set at its own best knobs, by h = 1
+                if Model.tuning and mod_j.knobs:                              # the set at its own best knobs, by h = 1
                     mod_j = mod_j.withHP(mod_j.tune(hs=[1])[0])
                 qof_j = mod_j.rollTest(self.val_rng, verbose=False)[0]        # h = 1: the sub-model's own horizon
                 step = BestStep(-1, qof_j, mod_j, cols, qk, float(qof_j[qk]))
@@ -773,7 +775,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
                 mod.forecastAll()                                         # forecast over all horizons
                 qofIn = mod.diagnoseAll()                                 # QoF for all horizons
                 if showYf:
-                    print(f"Forecast Matrix yf = {mod.Yf}")
+                    print(f"Forecast Matrix yf = {matrix_str(mod.slant())}")
 
         if tnt:
             banner(f"{mod.modelName}: TnT Test (rolling validation, rc = {rc}) of the selected model on "
@@ -796,5 +798,5 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
                 mod.rollValidate(rc)                                      # TnT with Rolling Validation
                 qofTnT = mod.diagnoseAll(tRng=range(mod.tr_size, len(mod.y)))   # the testing rows only
                 if showYf:
-                    print(f"Forecast Matrix yf = {mod.Yf}")
+                    print(f"Forecast Matrix yf = {matrix_str(mod.slant())}")
         return qofIn, qofTnT
