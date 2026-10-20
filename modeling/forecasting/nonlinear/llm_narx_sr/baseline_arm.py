@@ -21,8 +21,8 @@ the comparison.
 The Python counterpart of ScalaTion's `llm_narx_sr/BaselineArm.scala`.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-15
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -88,7 +88,7 @@ class BaselineArm(SearchArm):
             px = 0 if not exo else maxLag
             cand = self.arx(scorer, cfg, maxLag, px, exo)
             return self.record(scorer, cfg, -1, cand).copy(nEval=scorer.evaluations - eval0, exoUsed=list(exo) if px > 0 else [])
-        if self.kind is Method.TunedARX:
+        if self.kind is Method.TunedARX:                                  # the nested lag structures, the same J as every arm
             cands = [(self.arx(scorer, cfg, p, px, exo), px)
                      for p in range(1, maxLag + 1) for px in range(0, (maxLag if exo else 0) + 1)]
             best, pxBest = min(cands, key=lambda cp: cp[0].score)

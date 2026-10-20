@@ -13,8 +13,8 @@ errors, t values, p-values and VIFs -- `vif` is ScalaTion's `Predictor.vif`).
     picp, pinc, ace, pinaw, mis, wis            (the last six are -1 unless intervals are diagnosed)
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -294,7 +294,9 @@ class Fit:
         Resets the degrees of freedom from the number of slope parameters k (ScalaTion's
         `Forecaster.resetDF_k`): dfr = k (never counting the intercept) and df = size - k - 1 with an
         intercept, size - k otherwise, so that dfr + df is m - 1 with an intercept and m without.
-        An error DF <= 0 is reported and clamped to 1 (the DF-based measures are then unreliable).
+        An error DF <= 0 is reported ONCE per model and clamped to 1 (the DF-based measures are then
+        unreliable; a rolling test diagnoses a 19-row block with 19 slopes at every horizon of every
+        pass, which printed hundreds of identical lines before rev2.2; sMAPE is unaffected).
 
         Parameters
         ----------
@@ -304,8 +306,9 @@ class Fit:
             The number of slope parameters (excluding any intercept).
         """
         df0 = size - k - (1 if self._hasIntercept else 0)
-        if df0 <= 0:
-            print(f"resetDF_k: error DF = {df0} <= 0 (size = {size}, k = {k}): clamped to 1, DF-based QoF unreliable")
+        if df0 <= 0 and not getattr(self, "_dfWarned", False):
+            print(f"resetDF_k: error DF = {df0} <= 0 (size = {size}, k = {k}): clamped to 1, DF-based QoF unreliable (said once per model)")
+            self._dfWarned = True
         self.resetDF(float(k), float(max(1, df0)))
 
     # -- diagnosis ------------------------------------------------------------------------
@@ -424,11 +427,14 @@ class Fit:
     # -- the coefficient table (ScalaTion's `Fit.summary`) ----------------------------------
 
     def summary(self, x_: np.ndarray, fname: Optional[Sequence[str]] = None, b: Optional[np.ndarray] = None,
-                vifs: Optional[np.ndarray] = None) -> str:
+                vifs: Optional[np.ndarray] = None, stdErr: Optional[np.ndarray] = None) -> str:
         """
         The coefficient table of a fit (ScalaTion's `Fit.summary`): the standard errors come from the
         diagonal of (x_' x_)^-1 (a QR factorization of x_) times the unbiased MSE of the LAST
-        `diagnose` call, so the table reflects that diagnosis (the last horizon after `diagnoseAll`).
+        `diagnose` call, so the table reflects that diagnosis (the last horizon after `diagnoseAll`)
+        -- the least-squares formula, which is NaN or wild on collinear columns and wrong for a ridge
+        -- unless `stdErr` is given (a ridge: `CenteredRidge.stdErr`, the sandwich covariance with the
+        effective residual degrees of freedom).
 
         Parameters
         ----------
@@ -440,17 +446,20 @@ class Fit:
             The coefficients.
         vifs : np.ndarray, shape (n - 1,), optional
             The Variance Inflation Factors of columns 1 .. n-1 (column 0 prints "NA").
+        stdErr : np.ndarray, shape (n,), optional
+            The standard errors to print (the regression's own); None => the least-squares formula.
         """
         x_ = np.asarray(x_, dtype=float)
-        try:
-            _, R = np.linalg.qr(x_)
-            Ri = np.linalg.inv(R)
-            diag = np.sum(Ri * Ri, axis=1)                            # the diagonal of (x' x)^-1 = R^-1 R^-T
-        except np.linalg.LinAlgError:
-            diag = np.full(x_.shape[1], np.nan)
-        with np.errstate(invalid="ignore"):
-            stdErr = np.sqrt(diag * self._mse)
-        return self.showSummary(stdErr, fname, b, vifs)
+        if stdErr is None:
+            try:
+                _, R = np.linalg.qr(x_)
+                Ri = np.linalg.inv(R)
+                diag = np.sum(Ri * Ri, axis=1)                        # the diagonal of (x' x)^-1 = R^-1 R^-T
+            except np.linalg.LinAlgError:
+                diag = np.full(x_.shape[1], np.nan)
+            with np.errstate(invalid="ignore"):
+                stdErr = np.sqrt(diag * self._mse)
+        return self.showSummary(np.asarray(stdErr, dtype=float), fname, b, vifs)
 
     def showSummary(self, stdErr: Optional[np.ndarray], fname: Optional[Sequence[str]] = None,
                     b: Optional[np.ndarray] = None, vifs: Optional[np.ndarray] = None) -> str:

@@ -18,8 +18,8 @@ Run from the repository root:  python Examples/Example_ILI.py [rw|ar|arima|arx_d
 (no argument: the quick default -- RandomWalk and ARX_D TnT).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-16
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -56,10 +56,11 @@ def load_ili():
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing (example_ILITest3) and TnT with rolling validation (example_ILITest4)."""
-    banner(f"In-ST Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(y, hh).inSample_Test()
-    banner(f"TnT Forecasts: RandomWalk on ILI Dataset ({RESPONSE})")
-    RandomWalk(y, hh).tnT_Test(RC)
+    mod = RandomWalk(y, hh)
+    banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset ({RESPONSE})")
+    mod.inSample_Test()
+    banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset ({RESPONSE})")
+    mod.tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
@@ -88,7 +89,6 @@ def aRX_D_test(y, xe, hh=HH, args=None):
     mod = ARX_D(y, hh, xe, args)
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_D(y, hh, xe, args)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 
@@ -100,14 +100,12 @@ def aRX_SR_D_test(y, xe, hh=HH, args=None):
     if args is None:
         args = Args(p=10, px=10, spec=1, crx=True)
         args.method, args.lam = "ridge", 1.0                             # RidgeRegression.hp("lambda") = 1.0
-        args.tFormT = TransformT.Log1p
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[PowForm()] for _ in range(xe.shape[1])]                     # (xe_j + 0)^1.5
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo, TransformT.Log1p)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"In-ST Forecasts: {mod.modelName} on ILI Dataset")
     mod.inSample_Test()
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
     banner(f"TnT Forecasts: {mod.modelName} on ILI Dataset")
     mod.tnT_Test(RC)
 

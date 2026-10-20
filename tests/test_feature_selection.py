@@ -13,9 +13,9 @@ from modeling.forecasting.args import Args
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_sr_d import ARX_SR_D
-from modeling.forecasting.forecaster_d import aggFPE, smapeFPE
+from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster_d import Forecaster_D
 from modeling.forecasting.forecaster_reg import Forecaster_Reg
-from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
 from modeling.forecasting.datasets import Example_Covid
 from modeling.subset_search import SubsetSearch
@@ -63,8 +63,9 @@ def test_subset_search_finds_the_planted_set_with_the_scala_counts():
     assert set(ps.cols) == planted and len(ps.steps) == 3 and ps.nEval == 29
     pm = SubsetSearch.beam(n, ev, bk=3)
     assert set(pm.cols) == planted and len(pm.steps) == 6 and pm.nEval == 123
+    rank = [1.0 if j in planted else 0.0 for j in range(n)]               # the Ranked technique needs a ranking
     for tech in SelectionTech:
-        assert set(SubsetSearch.run(tech, n, ev).cols) == planted
+        assert set(SubsetSearch.run(tech, n, ev, rank=rank).cols) == planted
 
 
 def test_subset_search_cem_reproduces_the_scala_log():
@@ -155,13 +156,21 @@ def test_best_step_direction_and_qof_vector():
     assert np.allclose(qofVector(fit, np.vstack([fit, fit])), [90.0, 85.0, 8.0, 90.0])
 
 
-def test_agg_fpe_is_the_mean_fpe_form_smape():
+def test_score_of_is_the_mean_fpe_form_smape_in_sample_and_the_plain_mean_otherwise():
     qof = np.zeros((2, N_QoF))
     qof[:, QoF.smape.ordinal] = [10.0, 20.0]
     qof[:, QoF.dfr.ordinal] = [4.0, 4.0]
     qof[:, QoF.m.ordinal] = [100.0, 50.0]
-    assert np.allclose(smapeFPE(qof), [10.0 * 1.1, 20.0 * 1.2])
-    assert aggFPE(qof)[QoF.smapeC.ordinal] == pytest.approx((11.0 + 24.0) / 2) and aggFPE(qof)[QoF.smape.ordinal] == 15.0
+    assert Forecaster.scoreOf(qof, inSample=True) == pytest.approx((10.0 * 1.1 + 20.0 * 1.2) / 2)   # (1 + 2 (k+1) / n_h)
+    assert Forecaster.scoreOf(qof, inSample=True, extra=1) == pytest.approx((10.0 * 1.12 + 20.0 * 1.24) / 2)
+    assert Forecaster.scoreOf(qof, inSample=False) == 15.0                                         # no penalty
+    assert Forecaster.scoreOf(qof[:1], inSample=False) == 10.0
+    assert Model.validating is False
+    j = Forecaster_D.jointQoF(qof)
+    assert j[QoF.smapeC.ordinal] == pytest.approx((11.0 + 24.0) / 2) and j[QoF.smape.ordinal] == 15.0
+    with Model.withValidation():
+        assert Forecaster_D.jointQoF(qof)[QoF.smapeC.ordinal] == 15.0
+    assert Model.validating is False
 
 
 # -- the selection of the direct models ---------------------------------------------------------------
@@ -175,9 +184,12 @@ def test_forward_selection_adds_the_best_column_first():
     assert colsArr[0][0] == 0 and colsArr[0][1] == min(scores, key=scores.get)
     assert len(colsArr[0]) == n and len(rSqArr[0]) == n and all(len(r) == 4 for r in rSqArr[0])
     colsArr, _ = mod.selectFeatures(SelectionTech.Forward)             # all horizons jointly: J = mean FPE-form sMAPE
-    joint = {j: aggFPE(mod.fitCols([0, j])[1])[QK] for j in range(1, n)}
+    def jointScore(cols):                                               # J of a set: the fit's effective parameters charged
+        sub, qof = mod.fitCols(cols)
+        return Forecaster_D.jointQoF(qof, sub.effDF)[QK]
+    joint = {j: jointScore([0, j]) for j in range(1, n)}
     assert colsArr[0][1] == min(joint, key=joint.get)
-    assert mod.getBest().qof[QK] == min(aggFPE(mod.fitCols(colsArr[0][:k])[1])[QK] for k in range(1, n + 1))
+    assert mod.getBest().qof[QK] == min(jointScore(colsArr[0][:k]) for k in range(1, n + 1))
 
 
 def test_backward_elimination_removes_the_worst_column_first():
@@ -192,10 +204,68 @@ def test_backward_elimination_removes_the_worst_column_first():
     assert len(rSqArr[0]) == len(path.steps) + 1                         # the trace plus the intercept-only row
 
 
+def test_ranked_elimination_drops_in_rank_order_with_n_evaluations():
+    n, planted = 8, {0, 1, 3, 6}
+    ev = eval_for(planted)
+    static = np.array([9.0, 8.0, 0.5, 7.0, 0.1, np.nan, 6.0, 0.3])        # NaN ranks least
+    pr = SubsetSearch.ranked(n, ev, static)
+    assert set(pr.cols) == planted and len(pr.steps) == n and pr.nEval == n   # one evaluation per step
+    assert [s.col for s in pr.steps[1:]] == [5, 4, 7, 2, 6, 3, 1]          # the removal order = increasing rank
+    calls = []
+
+    def rfe(cols):                                                       # a callable is re-ranked at every step
+        calls.append(list(cols))
+        return np.array([float(j in planted) for j in range(n)])
+
+    pc = SubsetSearch.ranked(n, ev, rfe, fixed=[], minCols=2)
+    assert set(pc.cols) == planted and len(calls) == n - 2 and calls[0] == list(range(n))
+    assert len(pc.steps[-1].mod_cols) == 2                                 # down to minCols
+    pu = SubsetSearch.ranked(n, ev, static, units=lambda j: {4, 7} if j in (4, 7) else {j}, minCols=6)
+    assert [s.col for s in pu.steps[1:]] == [5, 2] and pu.nEval == 3      # the pair {4, 7} would cross the floor: skipped
+    with pytest.raises(ValueError):
+        SubsetSearch.run(SelectionTech.Ranked, n, ev)                      # no ranking given
+
+
+def test_ranked_elimination_on_a_forecaster_matches_backward_in_shape():
+    mod = small_arx_d()
+    n = mod.X.shape[1]
+    fs = mod.getModel_h(h=1)
+    ci = fs.coefImportance(fs.mcols)
+    assert ci.shape == (n,) and np.isfinite(ci).all() and np.all(ci >= 0)
+    pi = fs.permImportance(fs.mcols, nRep=2)
+    assert pi.shape == (n,) and np.isfinite(pi).all()
+    part = fs.coefImportance([0, 2, 4])
+    assert np.isnan(part[1]) and np.isfinite(part[[0, 2, 4]]).all()        # NaN outside the set
+    colsArr, rSqArr = fs.rankedElimAll(None, 1, "none")                    # RFE with the standardized coefficients
+    cb, rb = fs.backwardElimAll(1, "none")
+    assert colsArr[0][0] == 0 and sorted(colsArr[0]) == sorted(cb[0]) and len(rSqArr[0]) == len(rb[0])
+    assert fs.getBest().qof is not None and 0 in fs.getBest().mod_cols
+    colsS, _ = fs.rankedElimAll(np.arange(n, dtype=float), 1, "none")      # a static ranking: drop x_1 first
+    assert colsS[0][-1] == 1
+    colsJ, rSqJ = mod.selectFeatures(SelectionTech.Ranked)                 # all horizons jointly, the joint ranker
+    assert 0 in colsJ[0] and len(rSqJ[0]) >= 1 and mod.getBest().qof is not None
+    colsH, _ = mod.selectFeatures(SelectionTech.Ranked, h=1, rank=fs.permImportance)
+    assert 0 in colsH[0]
+    ti, vi = fs.tImportance(fs.mcols), fs.vifImportance(fs.mcols)          # the rankers by name: "t" and "vif"
+    assert ti.shape == (n,) and np.isfinite(ti[1:]).all() and np.all(ti[1:] >= 0)
+    assert vi.shape == (n,) and np.all(vi[1:] <= -1.0)                      # minus the VIFs (>= 1)
+    assert fs.ranker("t") == fs.tImportance and fs.ranker("VIF") == fs.vifImportance and fs.ranker(None) is None
+    with pytest.raises(ValueError, match="not one of"):
+        fs.ranker("gini")
+    tj, vj = mod.tImportance(mod.mcols), mod.vifImportance(mod.mcols)      # the joint versions (mean |t| over the horizons)
+    vH = mod.getModel_h(h=mod.hh).vifImportance(fs.mcols)                  # the last horizon's FS rows are the joint FS rows
+    assert tj.shape == (n,) and np.isfinite(tj[1:]).all() and np.allclose(vj[1:], vH[1:])
+    colsT, _ = mod.selectFeatures(SelectionTech.Ranked, rank="t")
+    colsV, _ = mod.selectFeatures(SelectionTech.Ranked, rank="vif")
+    assert 0 in colsT[0] and 0 in colsV[0] and mod.getBest().qof is not None
+    colsTH, _ = mod.selectFeatures(SelectionTech.Ranked, h=1, rank="t")   # the single-horizon model resolves the name too
+    assert 0 in colsTH[0]
+
+
 def test_cem_selection_scores_no_worse_than_the_full_set():
     mod = small_arx_d()
     colsArr, rSqArr = mod.selectFeatures(SelectionTech.CEM)
-    full = aggFPE(mod.fitCols(mod.mcols)[1])[QK]
+    full = Forecaster_D.jointQoF(mod.fitCols(mod.mcols)[1])[QK]
     assert mod.getBest().qof[QK] <= full and set(colsArr[0]) <= set(mod.mcols) and 0 in colsArr[0]
     assert mod.cemProbs is not None and len(mod.cemProbs) == mod.X.shape[1] and mod.cemProbs[0] == 1.0
     assert len(rSqArr[0]) >= 1 and all(len(r) == 4 for r in rSqArr[0])
@@ -215,9 +285,9 @@ def test_select_features_prints_the_banners_and_returns_cols_and_trace(capsys):
     models, qofIn, qofTnT = mod.reportSelection(colsArr, rSqArr, inSample=False)
     out = capsys.readouterr().out
     k = len(colsArr[0])
-    assert f"| ARX_D_3_2_2: selected: k = {k} of n = 8, cols = LinkedHashSet(" in out
+    assert f"| ARX_D_3_2_2_L1.0: selected: k = {k} of n = 8, cols = LinkedHashSet(" in out     # the ridge model names carry _L{lambda}
     assert "trace per step: 100 R^2, 100 R^2 bar, sMAPE, 100 R^2 cv (or sMAPE-IC)" in out
-    assert "| ARX_D_3_2_2: TnT Test (rolling validation) of the selected model on Array(cons, " in out
+    assert "| ARX_D_3_2_2_L1.0: TnT Test (rolling validation) of the selected model on Array(cons, " in out
     assert "b = VectorD(" in out and ", fn = Array(cons, " in out and "fitMap QoF = " in out
     assert qofIn is None and qofTnT.shape == (mod.hh, N_QoF) and models[0].X.shape[1] == k
     colsArr, rSqArr = mod.selectFeatures(SelectionTech.Backward)       # all horizons jointly
@@ -245,7 +315,7 @@ def test_get_model_and_get_model_h_shapes():
     y, xe = covid()
     cols = [0, 2, 5]
     for mod in (small_arx_d("ridge"), small_arx_d("sm_ols"),
-                ARX_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="ridge", tFormT=TransformT.Log1p))):
+                ARX_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="ridge"), TransformT.Log1p)):
         sub = mod.getModel(cols)
         assert isinstance(sub, ARX_D) and sub.X.shape[1] == len(cols) and sub.fname == [mod.fname[j] for j in cols]
         assert sub.modelName == mod.modelName and sub.hh == mod.hh and sub.yForm is mod.yForm and not sub._useforge
@@ -257,7 +327,7 @@ def test_get_model_and_get_model_h_shapes():
         sub.train()
         sub.forecast()
         assert np.all(np.isfinite(sub.Yf[:, 1:-1]))
-    m3 = ARX_SR_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="sm_ols", tFormT=TransformT.Log1p), [PowForm()], [[], []])
+    m3 = ARX_SR_D.rescale(y, 3, xe, Args(p=3, px=2, spec=1, method="sm_ols"), [PowForm()], [[], []], TransformT.Log1p)
     sub = m3.getModel(cols)                                            # ScalaTion: the inherited ARX_D.getModel
     assert type(sub) is ARX_D and sub.X.shape[1] == 3 and sub.fname == [m3.fname[j] for j in cols]
     assert sub.modelName == "ARX_D_3_2_2" and sub.yForm is m3.yForm
@@ -265,7 +335,7 @@ def test_get_model_and_get_model_h_shapes():
     m4 = NARX_SR_D.fromTerms("y ~= y~(3,1) + log(? + icu~1) + pRate~1", data, 3, Args(lam=1.0))
     sub = m4.getModel([1, 3, 4])                                       # the inherited ARX_D.getModel (no nFree)
     assert type(sub) is ARX_D and sub.X.shape[1] == 3 and sub.fname == [m4.fname[j] for j in (1, 3, 4)]
-    assert sub.modelName == "ARX_D_3_1_2" and isinstance(m4, ARX_D)
+    assert sub.modelName == "ARX_D_3_1_2_L1.0" and isinstance(m4, ARX_D)                  # _L{lambda}: the ridge penalty, one decimal
     assert isinstance(m4.getModel_h([1, 3], 1), ARX)
     colsArr, _ = m4.selectFeatures(SelectionTech.Backward, first=0)   # no intercept column in a fromTerms matrix
     assert len(colsArr[0]) >= 1
@@ -293,13 +363,16 @@ def test_forecaster_reg_selection_on_a_recursive_arx():
 
 
 def test_arx_d_test8_log_is_reproduced():
-    """CEM at h = 1 on ARX_D_6_6_2 (Log1p, lambda = 1): 990 sets, the log's columns and score."""
+    """CEM at h = 1 on ARX_D_6_6_2 (Log1p, lambda = 1), scored in-sample by the FPE-form sMAPE
+    (`Forecaster.scoreOf`) charging the ridge's EFFECTIVE parameters (rev1.11: 1 + tr H_lambda, 7.4 for
+    the 10 columns kept; rev1.7-1.10 charged every column and kept 4 at 10.5218; ScalaTion rev4.1's
+    aRX_DTest8 scored by the additive smapeC and kept 12 columns at 8.901)."""
     y, xe = covid()
-    mod = ARX_D.rescale(y, 6, xe, Args(p=6, px=6, spec=1, lam=1.0, method="ridge", tFormT=TransformT.Log1p))
+    mod = ARX_D.rescale(y, 6, xe, Args(p=6, px=6, spec=1, lam=1.0, method="ridge"), TransformT.Log1p)
     colsArr, rSqArr = mod.selectFeatures(SelectionTech.CEM, h=1)
-    assert colsArr[0] == [0, 1, 3, 5, 6, 7, 9, 11, 12, 13, 17, 18]
-    assert mod.getBest().qof[QK] == pytest.approx(8.901091449490549, rel=1e-9)
-    assert len(rSqArr[0]) == 11 and np.allclose(rSqArr[0][-1], [92.5975, 91.7351, 8.57551, 8.90109], rtol=1e-5)
-    assert np.allclose(mod.cemProbs[:4], [1.0, 0.874167, 0.05, 0.95], atol=1e-6)
+    assert colsArr[0] == [0, 3, 6, 7, 10, 11, 12, 13, 17, 18]
+    assert mod.getBest().qof[QK] == pytest.approx(10.317381405782426, rel=1e-9)
+    assert len(rSqArr[0]) == 10 and np.allclose(rSqArr[0][-1], [93.69671, 93.0964, 8.79804, 10.31738], rtol=1e-5)
+    assert np.allclose(mod.cemProbs[:4], [1.0, 0.360242, 0.05, 0.95], atol=1e-6)
     sub = mod.getBest().mod
-    assert isinstance(sub, ARX_D) and sub.X.shape[1] == 12
+    assert isinstance(sub, ARX_D) and sub.X.shape[1] == 10 and 7.0 < float(sub.effDF[0]) < 8.0

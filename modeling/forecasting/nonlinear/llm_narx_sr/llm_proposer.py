@@ -24,8 +24,8 @@ The Python counterpart of ScalaTion's `llm_narx_sr/LLMProposer.scala` (the promp
 verbatim).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-17
+Version: 1.1
 License: MIT License
 Note: AI assisted code
 """
@@ -146,7 +146,8 @@ class LLMProposer(Proposer):
                 f"  {rn} ~= {rn}~1 + {rn}~2 + {x1}~1\n"
                 f"  {rn} ~= {rn}~(3,1) + log1p({x1}~2) + sq({x2}~1)\n"
                 f"  {rn} ~= {rn}~1 + pow({x1}~1, 1.5) + {rn}~1 * {x1}~1{waveEx}{nlEx}\n"
-                "Allowed terms: VAR~k, VAR~(max,min) (all lags from max down to min), log1p(term), log(term), sq(term),\n"
+                "Allowed terms: VAR~k, VAR~(max,min) (all lags from max down to min), avg(VAR~(max,min)) (the mean of\n"
+                "those lags as ONE term), log1p(term), log(term), sq(term),\n"
                 "exp(term), pow(term, p) and powr(term, p) with 0.2 <= p <= 3.0, a product of exactly two single\n"
                 f"lagged variables written like {rn}~1 * {x1}~2 (never a range, a function or wave inside a product).{waveRl}{nlRl}\n"
                 "Use the variable names exactly as given; never write VAR or term literally.\n"

@@ -9,10 +9,12 @@ ScalaTion's `Forecaster_Reg.scala`: the regression (`train`, `_predict`; methods
 recursive forecasting (`forecast` through the subclass's `forge`), the coefficient table
 (`summary`), the sub-model on a column set (`getModel`) and the
 FEATURE SELECTION of ScalaTion's `Forecaster_Reg`: `forwardSelAll`, `backwardElimAll`,
-`stepwiseSelAll`, `beamSelAll`, `cemSelAll` (through `SubsetSearch` / `CEM_Selector`), `correctQoF`
-(every candidate set scored on the FS rows in ORIGINAL space with the skip rows dropped),
-`select0`, `getBest`, `cemProbs`, `importance` and the two hooks of `reportSelection`
-(`selectedModel`, `testSelected`).  `RandomWalk`, `AR` and `ARIMA` have no input matrix and
+`stepwiseSelAll`, `beamSelAll`, `cemSelAll`, `rankedElimAll` (through `SubsetSearch` /
+`CEM_Selector`), the two RANKERS of `rankedElimAll` (`coefImportance`, `permImportance`; any other
+importance per column -- an attention score, say -- is passed as an array), `correctQoF` (every
+candidate set scored on the FS rows in ORIGINAL space with the skip rows dropped), `select0`,
+`getBest`, `cemProbs`, `importance` and the two hooks of `reportSelection` (`selectedModel`,
+`testSelected`).  `RandomWalk`, `AR` and `ARIMA` have no input matrix and
 extend `Forecaster` directly, as in ScalaTion.
 
 Differences from the Scala: the `mod` of a `BestStep` is the sub-FORECASTER on the columns (not the
@@ -21,8 +23,8 @@ h > 1 need the full lag structure, so `getModel` builds it with hh = 1 (ScalaTio
 tests a selected recursive model at h = 1 as well).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-19
+Version: 2.1
 License: MIT License
 Note: AI assisted code
 """
@@ -37,8 +39,8 @@ import statsmodels.api as sm
 from Util.tools import array_str, banner, set_str, vector_str
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import BestStep, Cols, FeatureSelection, given_qk, updateQoF
-from modeling.fit import Fit, diagnose as diagnose_, showFitMap, vif
-from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster
+from modeling.fit import MAXI, Fit, QoF, diagnose as diagnose_, showFitMap, vif
+from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, Model
 from modeling.subset_search import SubsetSearch
 
 
@@ -113,7 +115,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         if self._method == "sm_ols":
             self._model_fit = sm.OLS(y_, sm.add_constant(X_, has_constant="add")).fit()
             self._set_params(np.asarray(self._model_fit.params))
-        elif self._method == "ridge":
+        elif self.penalized:                                              # CenteredRidge / ElasticNet
             self._model.fit(X_, y_)
             self._set_params(self._model.params[:, 0])
             self._b = self._model.parameter[:, 0]                         # ScalaTion's b = reg.parameter
@@ -145,13 +147,21 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
         b1 = self.params if b_ is None else b_                         # intercept +: slopes (original units)
         v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
-        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1)
+        se = self._model.stdErr(0) if b_ is None and self._ridgeSE() else None   # a ridge: the sandwich covariance
+        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1, se)
+
+    def _cvData(self) -> Tuple[np.ndarray, np.ndarray]:
+        """The embedded rows of the h = 1 regression on the chooser's rows (`cvScore`): y as a column
+        (the last `lead` rows left out: the boundary rule of `_trainWindow`)."""
+        n = Model.fitSize(self.mSeries, self._te_ratio) if Model.validating else self._tr_size
+        y_, X_ = self._trainWindow(0, n)
+        return y_.reshape(-1, 1), X_
 
     def _predict(self, X_rows: np.ndarray) -> np.ndarray:
         """The one-step predictions of the given input rows (clipped at zero when nneg)."""
         if self._method == "sm_ols":
             yp = self._model_fit.predict(sm.add_constant(X_rows, has_constant="add"))
-        elif self._method == "ridge":
+        elif self.penalized:
             yp = self._model.predict(X_rows)[:, 0]
         else:
             yp = self._model.predict(X_rows)
@@ -216,13 +226,26 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
 
     @property
     def fs_rng(self) -> range:
-        """The rows feature selection fits on (training rows, or all rows when `fullset_FS`), cut off
-        at the first undefined (NaN) response."""
-        m = len(self._y)
-        t_rng = range(0, m) if FeatureSelection.fullset_FS else range(0, self._tr_size)
+        """The rows feature selection fits a candidate on (ScalaTion's `fs_rng`): the fit rows
+        `Model.fitRng` under `Model.validating`, else the training rows (or all rows when
+        `fullset_FS`), cut `lead` rows early (the single-horizon model at horizon h of a direct model:
+        the rows whose target lies before the end -- the boundary rule of `_trainWindow`) and at the
+        first undefined (NaN) response."""
+        if Model.validating:                                              # the ends in series terms, cut by lead:
+            stop = Model.fitSize(self.mSeries, self._te_ratio) - self._lead   # the rows whose target lies before the end
+        elif FeatureSelection.fullset_FS:
+            stop = len(self._y)                                           # every row with a target
+        else:
+            stop = self._tr_size - self._lead
         nan = np.where(np.isnan(np.asarray(self._y, dtype=float)))[0]
-        end = int(nan[0]) if len(nan) else -1
-        return t_rng if end < 0 else range(t_rng.start, min(t_rng.stop, end))
+        if len(nan):
+            stop = min(stop, int(nan[0]))
+        return range(0, stop)
+
+    @property
+    def val_rng(self) -> range:
+        """The validation rows a candidate is scored on under `Model.validating` (`Model.valRng`)."""
+        return Model.valRng(self.mSeries, self._te_ratio)
 
     def getModel(self, cols: Optional[Sequence[int]] = None) -> "Forecaster_Reg":
         """
@@ -297,19 +320,42 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
 
     def evalCols(self, cols: Sequence[int], qk: Optional[int] = None) -> BestStep:
         """
-        Evaluates one column set the way every selection step does: builds and runs the sub-model
-        on the FS rows (`buildNrun`) and corrects its QoF (`correctQoF`: skip rows dropped, original
-        space).  The evaluator of every technique; a set whose fit fails returns a step with qof
-        None, so the search skips it.
+        Evaluates one column set the way every selection step does (ScalaTion's `evalCols`), under
+        the switch `Model.validating`: ON => the sub-model is trained on the fit rows and
+        rolled over the validation rows (`rollTest`, refit every `RC` rows, original units, no
+        skip), its QoF there scored by `Forecaster.scoreOf (inSample = False)` -- and, under
+        `Model.tuning`, at its own best knobs (`tune`, by h = 1), so the best step carries
+        the knobs that made its score (its model name shows them); OFF => built and
+        run on the FS rows (`buildNrun`), its QoF corrected (`correctQoF`: skip rows dropped,
+        original space) and scored by `scoreOf (inSample = True)`.  Either way the score lands in
+        the sMAPE-IC slot (qk = smapeC), the ONE number every technique compares.  A set whose fit
+        fails returns a step with qof None, so the search skips it.
         """
         qk = given_qk(qk)
         cols = list(cols)
         try:
-            mod_j, qof_j = self.buildNrun(cols)
+            if Model.validating:
+                mod_j = self.getModel(cols)
+                if Model.tuning and mod_j.penalized:                          # the set at its own best knobs, by h = 1
+                    mod_j = mod_j.withHP(mod_j.tune(hs=[1])[0])
+                qof_j = mod_j.rollTest(self.val_rng, verbose=False)[0]        # h = 1: the sub-model's own horizon
+                step = BestStep(-1, qof_j, mod_j, cols, qk, float(qof_j[qk]))
+            else:
+                mod_j, qof_j = self.buildNrun(cols)
+                step = self.correctQoF(self.getSkip(), BestStep(-1, qof_j, mod_j, cols, qk, float(qof_j[qk])), qk)
         except Exception as e:
             print(f"evalCols: cols = {set_str(cols)} failed: {e}")
             return BestStep(-1, None, None, cols, qk)
-        return self.correctQoF(self.getSkip(), BestStep(-1, qof_j, mod_j, cols, qk, float(qof_j[qk])), qk)
+        return self._scored(step, qk)
+
+    @staticmethod
+    def _scored(step: BestStep, qk: int) -> BestStep:
+        """The step with the selection score (`Forecaster.scoreOf`: FPE-form in-sample, plain on the
+        validation rows) in its sMAPE-IC slot."""
+        qof = np.array(step.qof, dtype=float)
+        nParams = step.mod.effDF if step.mod is not None else None        # a penalized fit: its effective count
+        qof[QoF.smapeC.ordinal] = Forecaster.scoreOf(qof, inSample=not Model.validating, nParams=nParams)
+        return BestStep(step.col, qof, step.mod, step.mod_cols, qk, float(qof[qk]))
 
     def cname(self, j: int) -> str:
         """The name of column j for the banners and traces: fname[j], or x_j when the model names fewer columns."""
@@ -325,9 +371,12 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
     def select0(self, qk: Optional[int] = None) -> BestStep:
         """
         Evaluates the model with only column 0 (e.g., the intercept-only model; ScalaTion's
-        `Predictor.select0`): trained on the FS rows, tested on all the rows.
+        `Predictor.select0`): under `Model.validating` as `evalCols` scores every set; else trained
+        on the FS rows and tested on all the rows.
         """
         qk = given_qk(qk)
+        if Model.validating:
+            return self.evalCols([0], qk)
         fs = self.fs_rng
         mod_0 = self.getModel([0])
         mod_0.train(mod_0.y[fs.start:fs.stop], mod_0.X[fs.start:fs.stop])
@@ -385,7 +434,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         path = SubsetSearch.backward(self._X.shape[1], lambda c: self.evalCols(c, qk), list(range(first)),
                                      minCols=2, qk=qk)
         self._record(path, rSq, cross, qk)
-        updateQoF(rSq, cross, self.correctQoF(self.getSkip(), self.select0(qk), qk))   # the 0-th variable row
+        updateQoF(rSq, cross, self._scored(self.correctQoF(self.getSkip(), self.select0(qk), qk), qk))   # the 0-th variable row
         rem = [step.col for step in path.steps[1:]]                       # the columns removed, in order
         cols = self.mcols if not path.steps else path.steps[-1].mod_cols
         rem.append(max(cols))                                             # remove last non-zero column
@@ -446,7 +495,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         qk = given_qk(qk)
         self.resetBest()
         rSq: List[np.ndarray] = []                                        # QoF: R^2, R^2 Bar, sMAPE, R^2 cv
-        updateQoF(rSq, cross, self.correctQoF(self.getSkip(), self.select0(qk), qk))   # the 0-th variable row
+        updateQoF(rSq, cross, self._scored(self.correctQoF(self.getSkip(), self.select0(qk), qk), qk))   # the 0-th variable row
         banner(f"beamSelAll: (qk = {qk}, l = 0) INITIAL variable (0, {self.cname(0)}) => cols = {set_str([0])}")
         path = SubsetSearch.beam(self._X.shape[1], lambda c: self.evalCols(c, qk), [0], bk=bk, qk=qk)
         self._record(path, rSq, cross, qk)
@@ -506,6 +555,163 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         """The inclusion probability per column left by the last `cemSelAll` run (None if none ran)."""
         return self._lastProbs
 
+    # -- R A N K E R S  (the importance per column that drives `rankedElimAll`) ------------------
+
+    def coefImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        The STANDARDIZED COEFFICIENTS of the sub-model on `cols`, |b_j| sd(x_j), as an importance per
+        column of X (NaN for the columns not in the set): the sub-model is fit on the FS rows
+        (`buildNrun`) and its slopes are in original units, so the product is unit-free and
+        comparable across columns.  Re-fit at every step of `rankedElimAll`, this is the ranker of
+        recursive feature elimination (Guyon et al. 2002) with a linear model.
+
+        Parameters
+        ----------
+        cols : sequence of int
+            The current column set.
+        """
+        cols = list(cols)
+        fs = self.fs_rng
+        imp = np.full(self._X.shape[1], np.nan)
+        mod_j, _ = self.buildNrun(cols)
+        p = np.asarray(mod_j.params, dtype=float)
+        p = p[:, 0] if p.ndim == 2 else p
+        b = p[1:] if mod_j._hasIntercept else p                           # the slopes, in original units
+        sd = np.std(mod_j.X[fs.start:fs.stop], axis=0)
+        imp[cols] = np.abs(b) * sd
+        return imp
+
+    def tImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        The t-STATISTICS of the sub-model on `cols`, |b_j| / se_j, as an importance per column of X
+        (NaN for the columns not in the set): the sub-model is fit on the FS rows (`buildNrun`), the
+        standard errors are the regression's own (`stdErrOf`: a ridge's sandwich covariance, the
+        least-squares formula otherwise).  As the ranker of `rankedElimAll` this is backward
+        elimination by p-value: the least significant column leaves first, J says where to stop.
+        """
+        cols = list(cols)
+        fs = self.fs_rng
+        imp = np.full(self._X.shape[1], np.nan)
+        mod_j, _ = self.buildNrun(cols)
+        p = np.asarray(mod_j.params, dtype=float)
+        p = p[:, 0] if p.ndim == 2 else p
+        X_fs = mod_j.X[fs.start:fs.stop]
+        resid = mod_j.y[fs.start:fs.stop] - mod_j.forecast(fs.start, fs.stop)[:, 0]
+        se = mod_j.stdErrOf(X_fs, resid)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            imp[cols] = np.abs(p[1:] / se[1:]) if mod_j._hasIntercept else np.abs(p / se[1:])
+        return imp
+
+    def vifImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        MINUS the VARIANCE INFLATION FACTORS of the columns `cols` on the FS rows (given an intercept),
+        as an importance per column of X (NaN for the columns not in the set): as the ranker of
+        `rankedElimAll` the most collinear column leaves first (the VIF is a property of X alone, so
+        no fit is needed; the column `first` columns are kept are included in the regressors).
+        """
+        cols = list(cols)
+        fs = self.fs_rng
+        imp = np.full(self._X.shape[1], np.nan)
+        x1 = np.column_stack((np.ones(fs.stop - fs.start), self._X[fs.start:fs.stop][:, cols]))
+        imp[cols] = -vif(x1)
+        return imp
+
+    def permImportance(self, cols: Sequence[int], nRep: int = 5, stream: int = 0,
+                       qk: Optional[int] = None) -> np.ndarray:
+        """
+        The PERMUTATION IMPORTANCE of the sub-model on `cols` as an importance per column of X (NaN
+        for the columns not in the set): the sub-model is fit on the FS rows once; then, for each
+        of its columns, the column is shuffled over the FS rows (`nRep` times, restored after) and
+        the importance is the mean loss of the criterion qk, in qk's direction (a larger loss = a
+        more important column), scored as `correctQoF` scores every selection step (skip rows
+        dropped, original space).  No re-fit per column, so it costs one fit and nRep x |cols|
+        forecasts; as a ranker of `rankedElimAll` it is re-run at every step.
+
+        Parameters
+        ----------
+        cols : sequence of int
+            The current column set.
+        nRep : int, default=5
+            The number of shuffles per column (their losses are averaged).
+        stream : int, default=0
+            The random number stream of the shuffles.
+        qk : int, optional
+            The index of the QoF measure whose loss is measured.
+        """
+        qk = given_qk(qk)
+        cols = list(cols)
+        fs, skp = self.fs_rng, self.getSkip()
+        imp = np.full(self._X.shape[1], np.nan)
+        mod_j, _ = self.buildNrun(cols)
+        k, m_full = mod_j.nparams, len(mod_j.y)
+
+        def score() -> float:                                             # the criterion on the FS rows, original space
+            mod_j.forecast(fs.start, fs.stop)
+            yo = mod_j.getY()[fs.start:fs.stop]
+            ypo = mod_j.Yf[fs.start:fs.stop, 1]
+            return float(diagnose_(yo[skp:], ypo[skp:], dfr=k, df=max(1, m_full - k - 1))[qk])
+
+        base = score()
+        sign = 1.0 if qk in MAXI else -1.0                                # loss = base - shuffled (maximized), shuffled - base (minimized)
+        rng = np.random.default_rng(stream)
+        X_j = mod_j.X                                                     # the sub-model's own copy of the columns
+        for i, j in enumerate(cols):
+            keep = X_j[fs.start:fs.stop, i].copy()
+            loss = 0.0
+            for _ in range(nRep):
+                X_j[fs.start:fs.stop, i] = rng.permutation(keep)
+                loss += sign * (base - score())
+            X_j[fs.start:fs.stop, i] = keep                               # restore the column
+            imp[j] = loss / nRep
+        return imp
+
+    def rankedElimAll(self, rank: Any = None, first: int = 1, cross: str = "none", minCols: int = 2,
+                      qk: Optional[int] = None) -> Tuple[List[Cols], List[List[np.ndarray]]]:
+        """
+        RANKED ELIMINATION (recursive feature elimination): removes the LOWEST-RANKED variable at
+        each step, where the ranking -- not the criterion -- decides which variable leaves and the
+        criterion only where to stop; returns, as `backwardElimAll` does, the variables in reverse
+        order of elimination and the QoF measures for all steps, from the smallest model up
+        (`SubsetSearch.ranked`: the full path down to `minCols` columns, the best set along it is
+        `getBest ()`).  One evaluation per step (n in all) against the n(n+1)/2 of `backwardElimAll`.
+
+        Parameters
+        ----------
+        rank : str, callable or array, optional
+            The importance per column: a name ("coef" the standardized coefficients, the default;
+            "t" the t-statistics, i.e. elimination by p-value; "vif" minus the variance inflation
+            factors; "perm" the permutation importance -- `ranker`) or a callable of the current
+            column set, re-evaluated after every removal (true RFE), or an array of length n, ONE
+            ranking of the full matrix used at every step (a fixed order, e.g., an attention or a
+            gradient x input score computed on the FS rows and averaged over seeds).
+        first : int, default=1
+            The first variable to consider for elimination (the leading `first` columns are kept).
+        cross : str, default="none"
+            Indicator to include the cross-validation/validation QoF measure.
+        minCols : int, default=2
+            The smallest set kept.
+        qk : int, optional
+            The index of the QoF measure to compare on.
+        """
+        qk = given_qk(qk)
+        self.resetBest()
+        rank = self.coefImportance if rank is None else self.ranker(rank)
+        rSq: List[np.ndarray] = []                                        # R^2, R^2 Bar, sMAPE, sMAPEC
+        path = SubsetSearch.ranked(self._X.shape[1], lambda c: self.evalCols(c, qk), rank, list(range(first)),
+                                   minCols=minCols, qk=qk)
+        self._record(path, rSq, cross, qk)
+        updateQoF(rSq, cross, self._scored(self.correctQoF(self.getSkip(), self.select0(qk), qk), qk))   # the 0-th variable row
+        for l, step in enumerate(path.steps):
+            if l > 0:
+                banner(f"rankedElimAll: (l = {l}) DROP variable ({step.col}, {self.cname(step.col)}) => "
+                       f"cols = {set_str(step.mod_cols)} @ {float(step.qof[qk])}")
+        rem = [step.col for step in path.steps[1:]]                       # the columns removed, in order
+        cols = self.mcols if not path.steps else path.steps[-1].mod_cols
+        rem.append(max(cols))                                             # remove last non-zero column
+        rem.append(0)                                                     # remove column 0
+        print(f"rankedElimAll: {path.nEval} column sets evaluated => best cols = {set_str(path.cols)}")
+        return [list(reversed(rem))], [list(reversed(rSq))]               # reverse the order results
+
     @staticmethod
     def importance(cols: Sequence[int], rSq: np.ndarray) -> List[Tuple[int, float]]:
         """
@@ -530,8 +736,16 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
     # -- R E P O R T I N G   T H E   S E L E C T I O N  (the hooks of `reportSelection`) --------
 
     def selectedModel(self, cols: Cols, h: int) -> "Forecaster_Reg":
-        """The forecaster on a selected column set (the hook of `reportSelection`): `getModel`; h is ignored."""
-        return self.getModel(cols)
+        """
+        The forecaster on a selected column set (the hook of `reportSelection`): `getModel` of this
+        model with its transforms refitted on the training rows (`refitTransform`) when they were
+        fitted on the fit rows while choosing (`Model.validating`), at the ridge penalty the best
+        step found for these columns under `Model.tuning`; h is ignored.
+        """
+        base = self.refitTransform() if Model.validating else self
+        mod = base.getModel(cols)
+        hp2 = self.bestHP(cols)                                           # a refit model has no best step of its own
+        return mod if hp2 is None else mod.withHP(hp2)
 
     def testSelected(self, mod: "Forecaster_Reg", inSample: bool, tnt: bool, rc: int,
                      showYf: bool) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -549,7 +763,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
         note = " (h = 1 only: a sub-model's forge needs the full lag structure)" if h1 else ""
 
         if inSample:
-            banner(f"{self.modelName}: In-Sample Test of the selected model on {array_str(mod.fname)}{note}")
+            banner(f"{mod.modelName}: In-Sample Test of the selected model on {array_str(mod.fname)}{note}")
             _, qof = mod.trainNtest()                                     # train on all the rows, test on all the rows
             if h1:
                 qofIn = np.atleast_2d(qof)                                # QoF at h = 1
@@ -562,7 +776,7 @@ class Forecaster_Reg(FeatureSelection, Forecaster):
                     print(f"Forecast Matrix yf = {mod.Yf}")
 
         if tnt:
-            banner(f"{self.modelName}: TnT Test (rolling validation, rc = {rc}) of the selected model on "
+            banner(f"{mod.modelName}: TnT Test (rolling validation, rc = {rc}) of the selected model on "
                    f"{array_str(mod.fname)}{note}")
             mod.trainNtest()                                              # initial training updated by the rolling validation
             mod.setSkip()                                                 # diagnose: don't skip any rows

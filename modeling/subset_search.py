@@ -2,16 +2,24 @@
 SubsetSearch Module: Subset Search Algorithms for Feature Selection, written once
 
 The Python counterpart of ScalaTion's `modeling/SubsetSearch.scala`.  The greedy feature-selection
-techniques (`Forward`, `Backward`, `Stepwise`, `Beam`) as pure algorithms over an EVALUATOR, in the
-way `CEM_Selector` is written: the algorithm decides which column sets to try, the host (a
-regression, a forecaster at one horizon or jointly over horizons, a formula term library) supplies
-`eval: cols -> BestStep`, which builds, trains and scores one column set and returns a `BestStep`
-whose qof holds the criterion qk (qof None => the fit failed and the set is skipped).  Nothing here
-prints, builds a model or knows about rows, spaces or horizons -- all of that is the evaluator's,
-so the contract "every QoF compared is on the original scale, on the selection rows" is met in ONE
-place per host.  `run` dispatches on `SelectionTech`; `cem` wraps `CEM_Selector`.  Every search
-returns a `Path`: the best-so-far after each step (the trace hosts turn into their key-metrics
-table), the best step found and the number of sets evaluated.
+techniques (`Forward`, `Backward`, `Stepwise`, `Beam`) and the rank-driven one (`Ranked`) as pure
+algorithms over an EVALUATOR, in the way `CEM_Selector` is written: the algorithm decides which
+column sets to try, the host (a regression, a forecaster at one horizon or jointly over horizons,
+a formula term library) supplies `eval: cols -> BestStep`, which builds, trains and scores one
+column set and returns a `BestStep` whose qof holds the criterion qk (qof None => the fit failed
+and the set is skipped).  Nothing here prints, builds a model or knows about rows, spaces or
+horizons -- all of that is the evaluator's, so the contract "every QoF compared is on the original
+scale, on the selection rows" is met in ONE place per host.  `run` dispatches on `SelectionTech`;
+`cem` wraps `CEM_Selector`.  Every search returns a `Path`: the best-so-far after each step (the
+trace hosts turn into their key-metrics table), the best step found and the number of sets
+evaluated.
+
+`ranked` (recursive feature elimination) takes a second host callback, `rank: cols -> importance per
+column` (or one fixed importance vector): the ranker decides which column leaves at each step and
+the evaluator only where to stop, n evaluations instead of n(n+1)/2.  The hosts' rankers are the
+standardized coefficients and the permutation importance of the sub-model on the selection rows
+(`Forecaster_Reg.coefImportance`, `permImportance`); any other importance (an attention score, a
+gradient x input score, a CEM inclusion probability) is passed the same way.
 
 Conventions (shared by all techniques):
     fixed   columns in every set (e.g., the intercept column 0; empty for a `fromTerms` matrix
@@ -20,8 +28,8 @@ Conventions (shared by all techniques):
     ties    the first candidate found wins (as in `Predictor.forwardSel`)
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-15
+Version: 1.1
 License: MIT License
 Note: AI assisted code
 """
@@ -31,7 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import combinations
 from math import isnan
-from typing import Callable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 
@@ -45,6 +53,11 @@ Evaluator = Callable[[Cols], Optional[BestStep]]
 #: The grouping of columns into units: column j -> the set of columns that move with it.
 Units = Callable[[int], Set[int]]
 
+#: The ranker of a column set (`ranked`): the current columns -> an importance per column, a length-n
+#: vector of which only the entries of the columns in the set are read (higher = more important;
+#: NaN = least).  A static ranking (one vector for every set) is passed as an array instead.
+Ranker = Callable[[Cols], np.ndarray]
+
 
 def _singleton(j: int) -> Set[int]:
     return {j}
@@ -53,7 +66,8 @@ def _singleton(j: int) -> Set[int]:
 class SubsetSearch:
     """
     The subset search algorithms behind the feature-selection techniques (ScalaTion's
-    `SubsetSearch` object): `forward`, `backward`, `stepwise`, `beam`, `cem` and the dispatcher `run`.
+    `SubsetSearch` object): `forward`, `backward`, `ranked`, `stepwise`, `beam`, `cem` and the
+    dispatcher `run`.
     """
 
     #: The move set of the beam search: (columns added, columns removed) per move.
@@ -243,6 +257,64 @@ class SubsetSearch:
                 steps.append(cand)
                 best = cls.pick(best, cand, qk)
                 go = len(cols) > floor
+        return cls.Path(steps, best, nEval)
+
+    @classmethod
+    def ranked(cls, n: int, eval: Evaluator, rank: Union[Ranker, Sequence[float], np.ndarray],
+               fixed: Optional[Sequence[int]] = None, units: Units = _singleton, minCols: int = 1,
+               qk: Optional[int] = None) -> "SubsetSearch.Path":
+        """
+        RANKED ELIMINATION (recursive feature elimination, Guyon et al. 2002): starts from every
+        column and at each step removes the unit of LOWEST RANK among the remaining columns -- the
+        ranker decides which column leaves, the criterion only where to stop -- down to `minCols`
+        columns (never below the fixed ones), and returns the best set seen along the path.  The
+        first step of the trace is the full set.  One evaluation per step, n in all, against the
+        n(n+1)/2 of `backward`: the ranker, not the evaluator, does the elimination work, so the
+        path is only as good as the ranking (a ranking must be computed on the selection rows,
+        never on the testing rows, and averaged over seeds when it is stochastic).
+
+        Parameters
+        ----------
+        n, eval, fixed, units, qk
+            As in `forward`.
+        rank : callable or array
+            The importance per column (length n; higher = more important, NaN = least): an array
+            is ONE ranking of the full set (a fixed order, e.g., an attention ranking of the full
+            library); a callable of the current column set is re-evaluated after every removal
+            (true RFE, e.g., the standardized coefficients of the sub-model re-fit on the remaining
+            columns).  A unit ranks as its best member.
+        minCols : int, default=1
+            The smallest set kept.
+        """
+        qk = given_qk(qk)
+        fixed = [0] if fixed is None else list(fixed)
+        floor = max(minCols, len(fixed))
+        if callable(rank):
+            score = rank
+        else:
+            fixed_r = np.asarray(rank, dtype=float)
+            if fixed_r.shape != (n,):
+                raise ValueError(f"SubsetSearch.ranked: rank must have one entry per column ({n}), got {fixed_r.shape}")
+            score = lambda _cols: fixed_r                                  # noqa: E731  -- one ranking for every set
+        steps: List[BestStep] = []
+        nEval = 1
+        cols = list(range(n))
+        best = cls._step(eval, -1, cols, qk)
+        if best.qof is not None:
+            steps.append(best)
+        free = cls._freeUnits(n, fixed, units)
+        while len(cols) > floor:
+            r = np.nan_to_num(np.asarray(score(cols), dtype=float), nan=-np.inf)
+            left = [u for u in free if all(j in cols for j in u) and len(cols) - len(u) >= floor]
+            if not left:
+                break                                                       # only fixed columns remain (or a unit would cross the floor)
+            drop = min(left, key=lambda u: (max(r[j] for j in u), min(u)))  # lowest rank; ties: the lowest column
+            cols = cls._minus(cols, drop)
+            nEval += 1
+            s = cls._step(eval, min(drop), cols, qk)
+            if s.qof is not None:
+                steps.append(s)
+                best = cls.pick(best, s, qk)
         return cls.Path(steps, best, nEval)
 
     @classmethod
@@ -461,6 +533,7 @@ class SubsetSearch:
     def run(cls, tech: SelectionTech, n: int, eval: Evaluator, fixed: Optional[Sequence[int]] = None,
             units: Units = _singleton, swap: bool = True, bk: int = 3,
             prior: Optional[Sequence[float]] = None, stream: int = 0,
+            rank: Optional[Union[Ranker, Sequence[float], np.ndarray]] = None,
             qk: Optional[int] = None) -> "SubsetSearch.Path":
         """
         Runs the search of a selection technique (the dispatcher hosts call).
@@ -479,6 +552,8 @@ class SubsetSearch:
             The prior inclusion probabilities (CEM).
         stream : int, default=0
             The random number stream (CEM).
+        rank : callable or array, optional
+            The importance per column (Ranked; see `ranked`).
         """
         qk = given_qk(qk)
         if tech is SelectionTech.Forward:
@@ -491,4 +566,8 @@ class SubsetSearch:
             return cls.beam(n, eval, fixed, units, bk, qk=qk)
         if tech is SelectionTech.CEM:
             return cls.cem(n, eval, fixed, prior, stream=stream, qk=qk)
+        if tech is SelectionTech.Ranked:
+            if rank is None:
+                raise ValueError("SubsetSearch.run: the Ranked technique needs a rank (an importance per column)")
+            return cls.ranked(n, eval, rank, fixed, units, qk=qk)
         raise ValueError(f"SubsetSearch.run: unknown technique {tech}")

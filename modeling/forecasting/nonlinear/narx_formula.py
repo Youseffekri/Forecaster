@@ -22,8 +22,8 @@ as ?w), `fresh` (own copies of the parameters), `resolve`, `redundant` (the para
 linear fit already covers) and `fitNL_D` (the `NARX_SR_D` model with the parameters fitted).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 2.0
 License: MIT License
 Note: AI assisted code
 """
@@ -37,9 +37,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Un
 
 import numpy as np
 
+from Util.transform import TransformT
 from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, PowerTerm, ProductTerm, Term,
                                               TransformedTerm, _each, fmt, wave as wave_k)
-
 from modeling.forecasting.forecaster import trSize as tr_size_of
 
 if TYPE_CHECKING:
@@ -758,12 +758,13 @@ class NARX_Formula(ARX_Formula):
 
     # -- fitting ----------------------------------------------------------------------------
 
-    def fitNL_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1,
-                **opt_kwargs) -> "NARX_SR_D":
+    def fitNL_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None,
+                tFormT: Optional[TransformT] = None, trSize: int = -1, **opt_kwargs) -> "NARX_SR_D":
         """
-        Fits the `NARX_SR_D` model with one column per term: the free parameters are fitted on the
-        training rows by the optimizer, then the coefficients in-sample (`NARX_SR_D.fromTerms`
-        followed by `trainNtest`), as `ARX_Formula.fit_D` does for `ARX_D`.
+        Fits the `NARX_SR_D` model with one column per term (ScalaTion's `NARX_Formula.fitNL_D (hh,
+        tFormT, trSize, scaled)`): the free parameters are fitted on the training rows by the
+        optimizer, then the coefficients in-sample (`NARX_SR_D.fromTerms` followed by `trainNtest`),
+        as `ARX_Formula.fit_D` does for `ARX_D`.
 
         Parameters
         ----------
@@ -772,18 +773,21 @@ class NARX_Formula(ARX_Formula):
         hh : int, default=1
             The maximum forecasting horizon.
         args : Args or dict, optional
-            The settings of the model: tFormT (the transform type of every base column; None => the
-            formula's), scaled (the regression and the fit of the parameters standardize the term
-            columns), optimizer (None => `narx_sr_d.OPTIMIZER_NL`), lam (the ridge penalty, default
-            0.1), tune, nneg, skip, te_ratio (see `NARX_SR_D.fromTerms`).
+            The settings of the model: scaled (the regression and the fit of the parameters
+            standardize the term columns), optimizer (None => `narx_sr_d.OPTIMIZER_NL`), lam (the
+            ridge penalty, default 0.1), tune, nneg, skip, te_ratio (see `NARX_SR_D.fromTerms`).
+        tFormT : TransformT, optional
+            The transform type of every base column (ScalaTion's `fitNL_D (..., tFormT)`); None =>
+            the formula's own (its "TFORM:" clause).
         trSize : int, default=-1
-            The training rows the transforms and the free parameters are fit on (-1 => `trSize`).
+            The training rows the transforms and the free parameters are fit on (-1 => the training
+            rows, or the fit rows while choosing).
         **opt_kwargs
             Passed to the optimizer.
         """
         # the one deferred import of the package: `narx_sr_d` builds on this module (a genuine cycle)
         from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
-        mod = NARX_SR_D.fromTerms(self, dataset, hh, args, trSize, **opt_kwargs)
+        mod = NARX_SR_D.fromTerms(self, dataset, hh, args, tFormT, trSize, **opt_kwargs)
         mod.trainNtest()
         return mod
 

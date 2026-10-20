@@ -58,8 +58,8 @@ from Util.tools import banner, matrix_str, vector_str
 from modeling.feature_selection import SelectionTech
 from modeling.llm_client import CachedClient, LocalClient, OpenAIClient
 from modeling.forecasting.forecaster import Forecaster
-from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.datasets import DatasetConfig, Datasets
+from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import (DEFAULT_HP, Candidate, FormulaScorer, qof_table_full,
                                                                       qof_vector)
@@ -97,7 +97,8 @@ class LLM_NARX_SR:
     runners, the report and the ARX_D-style display of the winners (ScalaTion's `LLM_NARX_SR` object)."""
 
     #: The search hyper-parameters (the same dict as `FormulaScorer`'s `DEFAULT_HP`, so
-    #: `LLM_NARX_SR.hp["rc"] = 5` reaches every scorer built afterwards).
+    #: `LLM_NARX_SR.hp["maxLag"] = 7` reaches every scorer built afterwards; the split and the switch are
+    #: `Model`'s, the retraining cycle `Forecaster.RC`).
     hp: Dict = DEFAULT_HP
 
     STREAMS = [0, 1, 2, 3, 4, 5, 6, 7]                                   # random streams / LLM run tags
@@ -196,13 +197,20 @@ class LLM_NARX_SR:
 
     # -- runners -------------------------------------------------------------------------------
 
+    #: The harness scores the search on the VALIDATION rows (`Model.validating` for its scorers): the
+    #: selection score of the arms is defined on rows never fitted; set False for a series with no
+    #: rows to spare (the in-sample FPE-form J).
+    VALIDATING = True
+
     @classmethod
-    def scorerOf(cls, dataset: Dict[str, np.ndarray], hp: Optional[Dict] = None) -> FormulaScorer:
-        """The scorer of a dataset (ScalaTion's split, the hp settings, with optional overrides)."""
+    def scorerOf(cls, dataset: Dict[str, np.ndarray], hp: Optional[Dict] = None,
+                 validating: Optional[bool] = None) -> FormulaScorer:
+        """The scorer of a dataset (`Model`'s split, the hp settings with optional overrides, the
+        switch `validating`: None => `VALIDATING`)."""
         h = dict(cls.hp)
         if hp:
             h.update(hp)
-        return FormulaScorer(dataset, int(h["hh"]), hp=h)
+        return FormulaScorer(dataset, int(h["hh"]), hp=h, validating=cls.VALIDATING if validating is None else validating)
 
     @classmethod
     def runGrid(cls, title: str, cfg: DatasetConfig, arms: Sequence[SearchArm], dataset: Optional[Dict[str, np.ndarray]] = None,
@@ -239,7 +247,8 @@ class LLM_NARX_SR:
         scorer = cls.scorerOf(dataset, hp)
         runs: List[ExpRun] = []
         banner(f"{title}: {cfg.name}, exogenous mode {cfg.exoMode}, using {', '.join(scorer.shortlist(cfg))} of {', '.join(cfg.exo)}")
-        print(f"training rows {scorer.trRng} = fit rows {scorer.fitRng} + validation rows {scorer.valRng}; testing rows {scorer.teRng}")
+        print(f"split fit / validation / test = {scorer.splitStr} (validating = {scorer.validating}, rc = {scorer.rc}): "
+              f"training rows {scorer.trRng} = fit rows {scorer.fitRng} + validation rows {scorer.valRng}; testing rows {scorer.teRng}")
         file = cls.csvFile(title) if csv else None
         for arm in arms:
             for s in ([-1] if arm.deterministic else streams):
@@ -280,18 +289,20 @@ class LLM_NARX_SR:
     @staticmethod
     def appendCSV(file: Path, r: ExpRun, header: bool) -> None:
         """Appends one run as a CSV row (the header first when `header`): the row label, the stream,
-        the in-sample, validation and TnT sMAPE (per horizon and mean), the terms, free parameters,
+        the validation share and the retraining cycle of the run's scorer, the in-sample, validation
+        and TnT sMAPE (per horizon and mean), the terms, free parameters,
         budget columns, the exogenous variables, the error (if any) and the equation.  Never raises."""
         try:
             hh = len(r.smapeTrain)
             q = lambda s: '"' + ("" if s is None else str(s).replace("\n", " ").replace('"', "'")) + '"'
             with open(file, "a", encoding="utf-8") as w:
                 if header:
-                    w.write(",".join(["method", "stream"] + [f"train_h{h}" for h in range(1, hh + 1)] + ["train_mean", "val_mean"] +
-                                     [f"tnt_h{h}" for h in range(1, hh + 1)] + ["tnt_mean", "terms", "nfree", "proposed", "valid",
+                    w.write(",".join(["method", "stream", "val_ratio", "rc"] + [f"train_h{h}" for h in range(1, hh + 1)] +
+                                     ["train_mean", "val_mean"] + [f"tnt_h{h}" for h in range(1, hh + 1)] +
+                                     ["tnt_mean", "terms", "nfree", "proposed", "valid",
                                      "failed", "fits", "llm", "ktok", "cost", "exo", "error", "equation"]) + "\n")
-                row = ([r.name, str(r.stream)] + [str(v) for v in r.smapeTrain] + [str(r.best.smape), str(r.valSmape)] +
-                       [str(v) for v in r.smapeTest] +
+                row = ([r.name, str(r.stream), str(r.valRatio), str(r.rc)] + [str(v) for v in r.smapeTrain] +
+                       [str(r.best.smape), str(r.valSmape)] + [str(v) for v in r.smapeTest] +
                        [str(v) for v in (r.testSmape, r.best.nTerms, r.best.nFree, r.nProposed, r.nValid, r.nFailed, r.nEval,
                                          r.llmCalls, r.tokens / 1000.0, r.cost)] +
                        [q(" ".join(r.exoUsed)), q(r.error), q(r.best.formulaStr + r.best.why)])
@@ -333,15 +344,15 @@ class LLM_NARX_SR:
     def toModel(cand: Candidate, scorer: FormulaScorer) -> Forecaster:
         """A candidate as a trained model (forecasts filled, skip set): the base model it holds, or
         its formula fitted by the scorer on ALL the training rows."""
-        return scorer.train(cand.model) if cand.model is not None else scorer.fitFull(cand.formula.fresh())
+        return scorer.train(cand.model) if cand.model is not None else scorer.fitFull(cand.formula, cand.hp)   # a fresh copy at its knobs
 
     @classmethod
     def showBest(cls, run: ExpRun, scorer: FormulaScorer, explainer: Optional[Explainer] = None) -> None:
         """
         Shows a run's best model the way the base shows a model: the REPORT block (name,
         hyper-parameters, features, parameters, h = 1 QoF), the coefficient tables per horizon, the
-        in-sample fitMap on the training rows, then the base's own `rollValidate` and `diagnoseAll` on
-        the testing rows (which prints the TnT fitMap); in between, the term-importance table
+        in-sample fitMap on the training rows, then the base's own `tnT_Test` on the testing rows
+        (which prints the TnT fitMap); in between, the term-importance table
         (`Explainer.importance`) and, with an explainer, the LLM's checked explanation.
         """
         banner(f"{run.name} (stream {run.stream}): {run.best.formulaStr}")
@@ -374,10 +385,8 @@ class LLM_NARX_SR:
                 print(f"ERROR @ LLM_NARX_SR.showBest: no explanation -- {e!r}")
         banner(f"In-Sample fitMap QoF on the training rows {scorer.trRng} (skip = {scorer.skip})")
         print(qof_table_full(q))
-        banner(f"TnT: rollValidate (rc = {scorer.rc}) + diagnoseAll on the testing rows {scorer.teRng}")
-        mod.setSkip(0)                                                    # diagnose: don't skip any rows
-        mod.rollValidate(scorer.rc)                                       # TnT with rolling validation
-        mod.diagnoseAll(tRng=scorer.teRng)                                # only diagnose on the testing set
+        banner(f"TnT: tnT_Test (rc = {scorer.rc}) on the testing rows {scorer.teRng}")
+        mod.tnT_Test(scorer.rc)                                           # rollTest over the testing rows, QoF table printed
         if run.conv:
             print("convergence (best score per round): " + vector_str([c.bestScore for c in run.conv]))
 
@@ -415,7 +424,7 @@ class LLM_NARX_SR:
         for c in front:
             te = ""
             if tnt:
-                q = scorer.tnt(cls.toModel(c, scorer)) if c.model is not None else scorer.tnt(c.formula.fresh())[1]
+                q = scorer.tnt(cls.toModel(c, scorer)) if c.model is not None else scorer.tnt(c.formula, c.hp)[1]
                 te = f"{np.mean([x['smape'] for x in q]):10.3f} "
             print(f"{c.nTerms:5d} {c.smape:11.3f} {c.smapeVal:9.3f} {c.score:8.3f} {te}{'*' if c.key == run.best.key else ' '} "
                   f"{c.formulaStr.replace(chr(10), ' ')}")
@@ -548,11 +557,10 @@ class LLM_NARX_SR:
                 llm = (candidate[0], candidate[1])
             else:
                 print(f"LLM client: {candidate[2]} does NOT answer -- {why} -- running the zero-LLM arms only")
-        saved = {k: cls.hp[k] for k in ("maxLag", "skip", "maxFits")}
+        saved = {k: cls.hp[k] for k in ("maxLag", "maxFits")}
         try:
             if cfg is Datasets.GEF14:
-                cls.hp["maxLag"] = 7                                      # a daily series: lags 1..7
-                cls.hp["skip"] = 7
+                cls.hp["maxLag"] = 7                                      # a daily series: lags 1..7 (and the skip)
             cls.hp["maxFits"] = maxFits
             prices = llm[1] if llm is not None else (0.0, 0.0)
             explainer = Explainer(llm[0](), cfg) if llm is not None else None

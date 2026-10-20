@@ -11,11 +11,13 @@ matrix, its names, the forge and the sub-model on a column set (`getModel`).  Th
 of ScalaTion's `ARX.scala`: the constructor `ARX (y, hh, xe, args)` builds the matrix as `ARX.apply`
 does (a ready matrix X may be given instead), and `rescale`, `trend`, `fromTerms`, `buildMatrix`,
 `formNames` are the companion object's factories and helpers; the settings (p, px, spec, method,
-lam, scaled, tFormT, ...) come from the `Args`.
+lam, scaled, ...) come from the `Args`; the transform type of a rescaling, `tFormT`, is an argument of
+`rescale` / `fromTerms`, as in ScalaTion, and `rescale` fits it on the rows `Model` gives (the training
+rows; the fit rows while choosing under `Model.validating`), as ScalaTion's fits on `Model.trSize`.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-19
+Version: 2.1
 License: MIT License
 """
 
@@ -27,20 +29,33 @@ import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix, makeMatrix4L, makeMatrix4T, makeMatrix4Y, trend_names
 from Util.transform import TransformT
-from modeling.forecasting.forecaster import Args, Forecaster, trSize as trSizeOf
+from modeling.forecasting.forecaster import Args, Forecaster, Model
 from modeling.forecasting.forecaster_reg import Forecaster_Reg
 
 
-def _rescaleData(args: Args, y: np.ndarray, xe: Optional[np.ndarray]):
+def _checkTFormT(args: Args, tFormT: TransformT) -> None:
+    """A flaw when args.tFormT (the RUN setting `run (args)` passes to `rescale`) is set to another type than
+    the `tFormT` given: a model never reads it, so a script that still sets it would silently rescale by MinMax."""
+    if args.tFormT is not None and args.tFormT is not tFormT:
+        raise ValueError(f"rescale: tFormT is an argument of rescale (ScalaTion's signature), not a setting of the model: "
+                         f"pass tFormT = {args.tFormT} to rescale (args.tFormT is the run setting of run (args))")
+
+
+def _rescaleData(args: Args, y: np.ndarray, xe: Optional[np.ndarray], tFormT: Optional[TransformT] = TransformT.MinMax):
     """
     The common part of the `rescale` factories (ScalaTion's `ARX*.rescale`): the transform of type
-    args.tFormT (None => MinMax) fitted on the TRAINING rows of y and of the backfilled exogenous
-    variables (column by column), applied to the whole series; NormForm turns the non-negativity off.
+    `tFormT` (None => MinMax) fitted on the leading rows `Model.fitRows` gives (the training
+    rows, ScalaTion's `Model.trSize`, or the fit rows while choosing) of y and of the backfilled
+    exogenous variables (column by column), applied to the whole series; NormForm turns the
+    non-negativity off.
 
     Parameters
     ----------
     args : Args
         The settings of the model being built (changed in place: nneg off for Norm).
+    tFormT : TransformT, default=TransformT.MinMax
+        The transform type of the rescaling (ScalaTion's `rescale (..., tFormT)`), a construction
+        choice of the factory like `fEndo` / `fExo`, not a setting of the model.
 
     Returns
     -------
@@ -48,12 +63,13 @@ def _rescaleData(args: Args, y: np.ndarray, xe: Optional[np.ndarray]):
         The settings, the rescaled y, the rescaled backfilled xe (None without exogenous lags) and
         the transform of y.
     """
-    tFormT = TransformT.MinMax if args.tFormT is None else args.tFormT
+    tFormT = TransformT.MinMax if tFormT is None else tFormT
+    _checkTFormT(args, tFormT)
     if tFormT is TransformT.Norm:
-        args.nneg = False
+        args.nneg = False                                                # ScalaTion: if tFormT.name == "NormForm" then hparam("nneg") = 0
     y = np.asarray(y, dtype=float)
-    tr_size = trSizeOf(len(y), args.te_ratio)
-    tForm_y = tFormT.form(y[:tr_size])                               # the training rows' statistics, for In-ST and TnT
+    tr_size = Model.fitRows(len(y), args.te_ratio)
+    tForm_y = tFormT.form(y[:tr_size])                               # the statistics of the leading rows, for In-ST and TnT
     y_scl = tForm_y.f(y)
     xe_scl = None
     if xe is not None and xe.shape[1] > 0 and args.px > 0:
@@ -91,7 +107,7 @@ class ARX(Forecaster_Reg):
     Forecaster : the base forecasting logic (Yf, rollValidate, inSample_Test, tnT_Test).
     """
 
-    ARGS = ("p", "px", "spec", "method", "lam", "scaled", "tFormT") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "method", "lam", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,
@@ -124,7 +140,7 @@ class ARX(Forecaster_Reg):
             self._tForms = {"tForm_y": None}
         super().__init__(y, hh, args, X)
         self._useforge = self._X is None
-        self._modelName = f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}"
+        self._modelName = f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{self.hpTag}"
 
         if self._X is None:
             xe_bfill = backfill_matrix(xe) if xe is not None and xe.shape[1] > 0 and self._hparam["px"] > 0 else None
@@ -135,29 +151,35 @@ class ARX(Forecaster_Reg):
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
-                args: Any = None) -> "ARX":
+                args: Any = None,
+                tFormT: TransformT = TransformT.MinMax) -> "ARX":
         """
         Creates the model on rescaled data (ScalaTion's `ARX.rescale`): y and the backfilled exogenous
-        variables are transformed by args.tFormT fitted on the TRAINING rows, the matrix is built from
-        the rescaled series, and forecasts are inverted before being stored in `Yf`.
+        variables are transformed by `tFormT` fitted on the training rows (ScalaTion's
+        `Model.trSize`; the fit rows while choosing under `Model.validating`: `Model.fitRows`), the matrix
+        is built from the rescaled series, and forecasts are inverted before being stored in `Yf`.
+        `refitTransform ()` rebuilds the model with the transforms fitted on the training rows.
 
         Parameters
         ----------
         y, hh, xe, args
-            As in the constructor; args.tFormT is the transform type (None => MinMax, to [-2, 2];
-            Norm turns the non-negativity off; Log1p ...).
+            As in the constructor.
+        tFormT : TransformT, default=TransformT.MinMax
+            The transform type of the rescaling (MinMax to [-2, 2]; Norm turns the non-negativity
+            off; Log1p ...), as ScalaTion's `rescale (..., tFormT)`.
 
         Returns
         -------
         ARX
             The model on the rescaled series.
         """
-        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe)
+        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe, tFormT)
         mod = cls(y_scl, hh, xe_scl, args, X=np.zeros((len(y_scl), 1)))
         mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod._hparam))        # xe_scl is already backfilled
         mod._useforge = True
         mod._tForms["tForm_y"] = tForm_y
         mod._setYForm(tForm_y, y)
+        mod._recipe = lambda: cls.rescale(y, hh, xe, args, tFormT)
         return mod
 
     @classmethod
@@ -185,7 +207,8 @@ class ARX(Forecaster_Reg):
         return cls(y, hh, xe, args)
 
     @classmethod
-    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, args: Any = None, trSize: int = -1):
+    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, args: Any = None,
+                  tFormT: Optional[TransformT] = None, trSize: int = -1):
         """
         Creates the model from the terms of a formula (ScalaTion's `ARX.fromTerms`), with one
         column per term (lagged variable, transform, interaction or wave), so skipped lags and
@@ -206,18 +229,21 @@ class ARX(Forecaster_Reg):
         hh : int
             The maximum forecasting horizon.
         args : Args or dict, optional
-            The settings: tFormT (the transform type applied to every base column; None => the
-            formula's), method, lam and scaled (the ridge regression standardizes the term columns),
+            The settings: method, lam and scaled (the ridge regression standardizes the term columns),
             nneg, skip (defaults to the formula's largest lag), te_ratio; p, px and spec = 0 come from
             the formula (ScalaTion's `lagHP`).
+        tFormT : TransformT, optional
+            The transform type applied to every base column (ScalaTion's `fromTerms (..., tFormT)`);
+            None => the formula's own (its "TFORM:" clause).
         trSize : int, default=-1
-            The number of leading rows the transforms are fit on (-1 => `trSize` of args.te_ratio).
+            The number of leading rows the transforms are fit on (ScalaTion's `fromTerms (...,
+            trSize)`; -1 => `Model.fitRows`: the training rows, or the fit rows while choosing).
         """
         args = Args.of(args)
-        tFormT = args.tFormT
         f = formula if tFormT is None else formula.__class__(formula.resp, formula.preds, tFormT)
         m = len(next(iter(dataset.values())))
-        td = f.prepare(dataset, trSize if trSize > 0 else trSizeOf(m, args.te_ratio))   # checks and base-column transforms
+        n_fit = Model.fitRows(m, args.te_ratio, trSize)
+        td = f.prepare(dataset, n_fit)                                   # checks and base-column transforms
         X = f.matrix(td.data)                                         # one column per term
         hp = f.lagHP()
         args.update(p=hp["p"], px=hp["px"], spec=0)
@@ -225,15 +251,14 @@ class ARX(Forecaster_Reg):
             args.skip = f.maxLag
         mod = cls(td.y, hh, None, args, X=X)
         mod._n_exo = hp["n_exo"]
-        mod._modelName = f"{cls.__name__}_{hp['p']}_{hp['px']}_{hp['n_exo']}"
-        mod._fname = f.labels
+        mod._modelName = f"{cls.__name__}_{hp['p']}_{hp['px']}_{hp['n_exo']}{mod.hpTag}"
+        mod._fname = f.names
         mod._tForms["tForm_y"] = td.tForm_y
         mod._setYForm(td.tForm_y, dataset[f.resp.name])               # column 0 of Yf stays in ORIGINAL units
-        mod._tr_size = td.trSize
-        mod._te_size = len(td.y) - td.trSize
         mod._useforge = ARX._standard_layout(f, hp)
         if hasattr(mod, "_Y"):
             mod._Y = makeMatrix4Y(mod._y, hh)
+        mod._recipe = lambda: cls.fromTerms(formula, dataset, hh, args, tFormT)
         return mod
 
     @staticmethod
@@ -244,7 +269,7 @@ class ARX(Forecaster_Reg):
         want = [f"{yn}~{k}" for k in range(hp["p"], 0, -1)]
         for v in sorted(f.vars - {yn}):
             want += [f"{v}~{k}" for k in range(hp["px"], 0, -1)]
-        return f.labels == want
+        return f.names == want
 
     @staticmethod
     def buildMatrix(xe_bfill: Optional[np.ndarray], y: np.ndarray, hparam: Dict[str, Any]) -> np.ndarray:
@@ -361,4 +386,4 @@ class ARX(Forecaster_Reg):
         """
         cols = self.mcols if cols is None else list(cols)
         sub = ARX(self.getY(), 1, None, self._subArgs(), X=self._X[:, cols])
-        return self._subModel(sub, cols, modelName=f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}")
+        return self._subModel(sub, cols, modelName=f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{sub.hpTag}")

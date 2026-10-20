@@ -10,8 +10,8 @@ from Util.transform import Log1pForm, TransformT
 from modeling.fit import QoF
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, ProductTerm, TransformedTerm,
-                                              WaveTerm, distinct, lagv, log, log1p, pow, powr, sq, wave, wave_pair)
+from modeling.forecasting.arx_formula import (ARX_Formula, AvgTerm, FormulaVar, LabelMode, ProductTerm, TransformedTerm,
+                                              WaveTerm, avg, distinct, lagv, log, log1p, pow, powr, sq, wave, wave_pair)
 from modeling.forecasting.datasets import Example_Covid
 from modeling.forecasting.formula_parser import FormulaError, FormulaParser
 
@@ -67,6 +67,29 @@ def test_columns_of_the_terms():
     assert s.shape == (116,) and s[0] == 0.0
 
 
+def test_avg_is_the_mean_of_a_lag_block():
+    """`avg(x~(hi,lo))`: ONE column, the mean of the lags lo..hi (the lag grouping that removes the collinearity
+    of consecutive lags); parsed by both parsers, rejected without a range, and in the grammar library."""
+    data = covid()
+    y = FormulaVar("y")
+    a = avg(y, 4, 2)
+    assert isinstance(a, AvgTerm) and a.label() == "avg(y~(4,2))" and a.lag == 4 and a.vars == {"y"} and a.key == a.label()
+    assert np.allclose(a.column(data), np.mean([lagv(data["y"], l) for l in (2, 3, 4)], axis=0))
+    assert avg("icu", 3) == AvgTerm("icu", 3, 1) and a != avg(y, 4, 1) and a.fresh({}) is a and a.params() == []
+    f = ARX_Formula(y, [y.lagged(1), a, avg("icu", 3, 1)])
+    assert f.formulaStr == "y ~= y~1 + avg(y~(4,2)) + avg(icu~(3,1))" and f.maxLag == 4
+    g = FormulaParser.parseFormula("y ~= y~1 + avg(y~(4,2)) + avg(icu~(3,1))", list(data), 6)
+    assert g.key == f.key and g.matrix(data).shape == (116, 3)
+    with pytest.raises(FormulaError, match="avg needs a lag range"):
+        FormulaParser.parseFormula("y ~= avg(y~2)", list(data), 6)
+    with pytest.raises(FormulaError, match="outside"):
+        FormulaParser.parseFormula("y ~= avg(y~(9,2))", list(data), 6)
+    with pytest.raises(ValueError):
+        AvgTerm("y", 2, 4)
+    m = ARX_D.fromTerms(f, data, 3, {"lam": 1.0, "method": "ridge"})
+    assert m.fname == ["y~1", "avg(y~(4,2))", "avg(icu~(3,1))"] and m.hparameter["p"] == 4
+
+
 def test_distinct_drops_duplicate_labels():
     y = FormulaVar("y")
     ts = distinct(y.lags(2, 1) + y.lags(3, 1))
@@ -82,7 +105,7 @@ def test_dsl_and_parser_give_the_same_formula_str_and_key():
     g = FormulaParser.parseFormula(f.formulaStr, VARS, 6)
     assert g.formulaStr == f.formulaStr and g.key == f.key
     assert f.key == "y ~= " + " + ".join(sorted(t.label(LabelMode.SLOT) for t in f.preds))
-    assert f.labels == f.names() == [t.label() for t in f.preds] and f.nTerms == 7
+    assert f.names == [t.label() for t in f.preds] and f.nTerms == 7
     assert f.vars == {"y", "icu", "pRate"} and f.maxLag == 3
     assert f.lagHP() == {"p": 3, "px": 2, "spec": 0, "n_exo": 2}
     h = ARX_Formula(y, [icu.lagged(2), y.lagged(1)])
@@ -147,7 +170,7 @@ def test_fit_d_and_fit_return_the_scala_named_models(capsys):
     out = capsys.readouterr().out
     assert isinstance(mod_D, ARX_D) and mod_D.modelName == "ARX_D_3_2_2"
     assert "modelName  mn  = ARX_D_3_2_2" in out and "features   fn  = Array(y~3, y~2, y~1, icu~2, icu~1, log1p(pRate~1))" in out
-    assert mod_D.fname == f.labels and mod_D.params.shape == (7, HH) and mod_D.X.shape == (116, 6)
+    assert mod_D.fname == f.names and mod_D.params.shape == (7, HH) and mod_D.X.shape == (116, 6)
     hp = mod_D.hparameter
     assert hp["p"] == 3 and hp["px"] == 2 and hp["skip"] == 3 and mod_D.getSkip() == 3
     yf = mod_D.forecast()
@@ -242,4 +265,4 @@ def test_wave_without_frequencies_and_term_cap():
     with pytest.raises(FormulaError, match="exceeds maxTerms"):
         FormulaParser.parseFormula("y ~= y~(6,1) + icu~(6,1)", VARS, 6, maxTerms=10)
     f = FormulaParser.parseFormula("y ~= y~(2,1) * icu~(2,1)", VARS, 6)
-    assert f.labels == ["y~2 * icu~2", "y~2 * icu~1", "y~1 * icu~2", "y~1 * icu~1"], "a lag range distributes over the product"
+    assert f.names == ["y~2 * icu~2", "y~2 * icu~1", "y~1 * icu~2", "y~1 * icu~1"], "a lag range distributes over the product"

@@ -61,10 +61,10 @@ def test_toy_shift_exponent_shift_fit_d_keeps_the_start_values_and_fitnl_d_recov
     assert all(q.resolved for q in f.params()) and s1.lb < 0 < s1.ub and (p.lb, p.ub) == (1.1, 4.0)
     assert s1.value == s1.w0 and p.value == 1.5 and s2.value == s2.w0, "fit_D moves no parameter"
     assert f.formulaStr == f"y ~= pow(?{fmt(s1.w0)} + x~1, ?1.5) + log(?{fmt(s2.w0)} + z~1)", "start values shown as ?w"
-    assert mod0.fname == f.labels and mod0.params.shape == (3, 1)
+    assert mod0.fname == f.names and mod0.params.shape == (3, 1)
 
     mod = f.fitNL_D(data, 1, Args(lam=LAM))                                          # NARX_SR_D with the parameters fitted
-    assert isinstance(mod, NARX_SR_D) and mod.modelName == "NARX_SR_D(0, 1, 2)"
+    assert isinstance(mod, NARX_SR_D) and mod.modelName == f"NARX_SR_D(0, 1, 2){mod.hpTag}"
     assert np.allclose(mod.w_nl, [2.0, 1.7, 1.5], atol=1e-3), f"fitNL_D must recover (2, 1.7, 1.5), got {mod.w_nl}"
     assert np.allclose(mod.intercept, [1.0], atol=1e-3) and np.allclose(mod.parameter, [0.5, 3.0], atol=1e-3)
     assert mod.nFree == 3 and mod.optimizer is OptimizerNL.VarPro and mod.dof == 5
@@ -82,7 +82,7 @@ def test_labels_with_slots_shared_parameter_and_key():
     y, hosp = V("y"), V("hosp")
     p = power()
     f1 = NARX_Formula(y, y.lags(3, 1) + pow(y.lags(3, 1), p) + [log(shift() + hosp.lagged(1)), exp(rate() * hosp.lagged(1))])
-    assert f1.labels == ["y~3", "y~2", "y~1", "pow(y~3, ?1.5)", "pow(y~2, ?1.5)", "pow(y~1, ?1.5)",
+    assert f1.names == ["y~3", "y~2", "y~1", "pow(y~3, ?1.5)", "pow(y~2, ?1.5)", "pow(y~1, ?1.5)",
                          "log(? + hosp~1)", "exp(? * hosp~1)"]
     assert f1.nParams == 3, "the three power terms share one parameter"
     assert f1.key == "y ~= exp(? * hosp~1) + log(? + hosp~1) + pow(y~1, ?) + pow(y~2, ?) + pow(y~3, ?) + y~1 + y~2 + y~3"
@@ -238,7 +238,7 @@ def test_covid_fit_d_and_fitnl_d_with_rolling_validation():
                            "trans(y~1, ?, ?) * y~3 + y~1 + y~2 + y~3")
 
     mod0 = formula.fit_D(data, hh, Args(scaled=True))                    # ARX_D with the parameters at their start values
-    assert mod0.modelName == "ARX_D_3_1_2" and mod0.fname == formula.labels and mod0.X.shape == (116, 8)
+    assert mod0.modelName == "ARX_D_3_1_2" and mod0.fname == formula.names and mod0.X.shape == (116, 8)
     assert all(not q.fitted for q in formula.params())
     mod0.setSkip()
     yf0 = mod0.rollValidate(rc=2)
@@ -248,7 +248,7 @@ def test_covid_fit_d_and_fitnl_d_with_rolling_validation():
     assert ft0.shape == (hh, 26) and np.all(np.isfinite(ft0[:, 9]))
 
     mod = formula.fitNL_D(data, hh, Args(scaled=True))                   # NARX_SR_D with the parameters fitted
-    assert mod.modelName == "NARX_SR_D(3, 1, 2)" and mod.fname == formula.labels and mod.nFree == 4
+    assert mod.modelName == "NARX_SR_D(3, 1, 2)_L0.1" and mod.fname == formula.names and mod.nFree == 4   # the default ridge penalty 0.1
     assert all(q.fitted and q.lb <= q.value <= q.ub for q in formula.params()), "fitted inside their bounds"
     assert "?" not in formula.formulaStr and formula.nParams == 4
     mod.setSkip()

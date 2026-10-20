@@ -40,7 +40,7 @@ def test_canonical_key_ignores_start_values():
 def test_constants_in_parameter_positions_are_not_free():
     f = NARX_FormulaParser.parseFormula("y ~= sat(icu~1, 2.5) + pow(y~1, 1.5) + dq(y~1, 3) + y~2 + log(2 + y~1)", VARS, 6)
     assert f.nFree == 0
-    assert f.labels == ["sat(icu~1, 2.5)", "pow(y~1, 1.5)", "dq(y~1, 3)", "y~2", "log(2 + y~1)"]
+    assert f.names == ["sat(icu~1, 2.5)", "pow(y~1, 1.5)", "dq(y~1, 3)", "y~2", "log(2 + y~1)"]
 
 
 def test_duplicates_collapse_and_waves_print_once():

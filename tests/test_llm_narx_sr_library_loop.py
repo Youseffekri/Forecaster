@@ -45,7 +45,8 @@ def test_grammar_library_and_union_library():
     data = planted_ar3()
     sc = FormulaScorer(data, hh=1)
     lib = TermLibrary.fromGrammar("y", ["z"], maxLag=4)
-    assert lib.size == 8 + 16 + 8 and lib.labels[:4] == ["y~1", "y~2", "y~3", "y~4"] and lib.indexOf("z~2") == 5
+    assert lib.size == 8 + 2 + 16 + 8 and lib.labels[:4] == ["y~1", "y~2", "y~3", "y~4"] and lib.indexOf("z~2") == 5
+    assert lib.labels[8:10] == ["avg(y~(3,2))", "avg(z~(3,2))"]            # the lag blocks of 2+ lags (maxLag 4: one)
     assert lib.indexOf("nope") == -1 and lib.unitOf(3) == {3}
     f1 = NARX_FormulaParser.parseFormula("y ~= y~1 + z~2", ["y", "z"], 4)
     f2 = NARX_FormulaParser.parseFormula("y ~= y~1 + y~3", ["y", "z"], 4)
@@ -73,7 +74,7 @@ def test_free_parameter_library_mechanics():
     current values without a fit, the selected equation has its OWN fitted parameters, the grammar
     library with nlTerms has one parameter per form, `fitted` makes at most one fit per term."""
     data = planted_log()
-    sc = FormulaScorer(data, hh=1, hp={"lambda": 1e-6, "boundTol": -1.0, "maxVIF": 0.0, "valFrac": 0.0})
+    sc = FormulaScorer(data, hh=1, hp={"lambda": 1e-6, "boundTol": -1.0, "maxVIF": 0.0}, validating=False)
     vars_ = sc.vars
     cands = [sc.score(NARX_FormulaParser.parseFormula(s, vars_, 4)) for s in
              ("y ~= y~1 + log(? + z~1)", "y ~= y~1 + log(?3 + z~1) + z~2", "y ~= y~2 + pow(z~1, ?)")]

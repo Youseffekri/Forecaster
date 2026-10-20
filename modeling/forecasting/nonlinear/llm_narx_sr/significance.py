@@ -13,10 +13,12 @@ structures as the TnT rolling validation on the testing rows does?).
 The Python counterpart of ScalaTion's `llm_narx_sr/Significance.scala`.  `wilcoxon_test` gives the
 same (W, z, p) as ScalaTion's; its p-value equals scipy's `wilcoxon (a, b, method="approx",
 correction=True)` for n >= 2 (scipy is not used, so a tiny n gives the same number as the Scala run).
+rev2.2 adds the statistics of the measurement protocol (`protocol.py`): `hacVar` (the Newey-West
+variance of a mean) and `dm_test` (Diebold-Mariano on paired per-origin losses, HLN-corrected).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-20
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -29,6 +31,7 @@ from typing import Callable, List, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import norm, rankdata, spearmanr
+from scipy.stats import t as student_t
 
 from Util.tools import banner
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import ExpRun, Method
@@ -64,6 +67,52 @@ def wilcoxon_test(a: Sequence[float], b: Sequence[float], show: bool = False) ->
     if show:
         print(f"wilcoxon_test: n = {n}, W+ = {wp}, W- = {wm}, W = {w}, z = {z}, p-value = {p}")
     return w, z, p
+
+
+def hacVar(d: np.ndarray, lag: int) -> float:
+    """
+    The heteroskedasticity-and-autocorrelation-consistent (Newey-West) variance of the MEAN of a
+    series d: (gamma_0 + 2 sum_{k=1}^{lag} (1 - k / (lag + 1)) gamma_k) / n with Bartlett weights (the
+    weights keep the estimate positive), gamma_k the autocovariance at lag k.  For h-step forecast
+    errors of consecutive origins lag = h - 1 (the errors overlap h - 1 periods: Diebold & Mariano 1995).
+    """
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    if n < 2:
+        return float("nan")
+    dc = d - d.mean()
+    g0 = float(dc @ dc) / n
+    v = g0
+    for k in range(1, min(int(lag), n - 1) + 1):
+        gk = float(dc[k:] @ dc[:-k]) / n
+        v += 2.0 * (1.0 - k / (lag + 1.0)) * gk
+    return max(v, 0.0) / n
+
+
+def dm_test(lossA: Sequence[float], lossB: Sequence[float], h: int = 1) -> Tuple[float, float, float]:
+    """
+    The Diebold-Mariano test of equal forecast accuracy on PAIRED losses (one pair per origin, the same
+    horizon h): d = lossA - lossB, DM = mean (d) / sqrt (HAC var of the mean, lag h - 1), with the
+    Harvey, Leybourne & Newbold (1997) small-sample correction DM* = DM sqrt ((n + 1 - 2h + h (h - 1) / n) / n)
+    compared with Student's t on n - 1 degrees of freedom.  Returns (mean d, DM*, two-sided p-value):
+    a negative DM* with a small p says A's loss is smaller.  (0, 0, 1) when every pair is tied or n < 3.
+    """
+    a, b = np.asarray(lossA, dtype=float), np.asarray(lossB, dtype=float)
+    if len(a) != len(b):
+        raise ValueError(f"dm_test: paired losses must have the same length ({len(a)} vs {len(b)})")
+    d = a - b
+    n = len(d)
+    if n < 3 or np.allclose(d, 0.0):
+        return (float(d.mean()) if n > 0 else 0.0), 0.0, 1.0
+    v = hacVar(d, h - 1)
+    if not v > 0.0:
+        return float(d.mean()), 0.0, 1.0
+    dm = float(d.mean()) / math.sqrt(v)
+    corr = (n + 1 - 2 * h + h * (h - 1) / n) / n                          # HLN: a scalar below 1 for h > 1
+    dm_star = dm * math.sqrt(max(corr, 1e-12))
+    p = float(2.0 * student_t.sf(abs(dm_star), n - 1))
+    return float(d.mean()), dm_star, min(1.0, p)
+
 
 
 def scorr(a: Sequence[float], b: Sequence[float]) -> float:

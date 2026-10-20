@@ -11,8 +11,8 @@ adds the matrix, the forecasts (`forecast`, `predict_rows`) and the sub-models (
 `buildMatrix`, `formNames` as the companion's; the settings come from the `Args`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-19
+Version: 2.1
 License: MIT License
 """
 
@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix
+from Util.transform import TransformT
 from modeling.forecasting.arx import ARX, _rescaleData
 from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.forecaster_d import Forecaster_D
@@ -56,7 +57,7 @@ class ARX_D(Forecaster_D):
     """
 
     METHOD = "sm_ols"
-    ARGS = ("p", "px", "spec", "method", "lam", "scaled", "tFormT") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "method", "lam", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,
@@ -74,7 +75,7 @@ class ARX_D(Forecaster_D):
         self._xe = xe
         self._n_exo = xe.shape[1] if xe is not None else 0
         self._useforge = self._X is None
-        self._modelName = f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}"
+        self._modelName = f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{self.hpTag}"
 
         if not hasattr(self, "_tForms"):
             self._tForms = {"tForm_y": None}
@@ -88,35 +89,41 @@ class ARX_D(Forecaster_D):
                 y: np.ndarray,
                 hh: int,
                 xe: Optional[np.ndarray] = None,
-                args: Any = None) -> "ARX_D":
+                args: Any = None,
+                tFormT: TransformT = TransformT.MinMax) -> "ARX_D":
         """
         Creates the model on rescaled data (ScalaTion's `ARX_D.rescale`): y and the backfilled
-        exogenous variables are transformed by args.tFormT fitted on the TRAINING rows (None => MinMax
-        to [-2, 2]; Norm; Log1p ...); forecasts are inverted before being stored in `Yf`, and they are
-        not rectified in a space where y can be negative (`centered`).
+        exogenous variables are transformed by `tFormT` fitted on the training rows (ScalaTion's
+        `Model.trSize`; the fit rows while choosing under `Model.validating`: `Model.fitRows`; MinMax to
+        [-2, 2] by default; Norm turns the non-negativity off; Log1p ...); forecasts are inverted
+        before being stored in `Yf`, and they are not rectified in a space where y can be negative
+        (`centered`).  `refitTransform ()` rebuilds the model with the transforms fitted on the
+        training rows.
 
         Returns
         -------
         ARX_D
             The model on the rescaled series (Y built from the rescaled y).
         """
-        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe)
+        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe, tFormT)
         mod = cls(y_scl, hh, xe_scl, args, X=np.zeros((len(y_scl), 1)))
         mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod._hparam))        # xe_scl is already backfilled
         mod._useforge = True
         mod._tForms["tForm_y"] = tForm_y
         mod._setYForm(tForm_y, y)
+        mod._recipe = lambda: cls.rescale(y, hh, xe, args, tFormT)
         return mod
 
     @classmethod
-    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, args: Any = None, trSize: int = -1) -> "ARX_D":
+    def fromTerms(cls, formula, dataset: Dict[str, np.ndarray], hh: int, args: Any = None,
+                  tFormT: Optional[TransformT] = None, trSize: int = -1) -> "ARX_D":
         """
         Creates the direct model from the terms of a formula (ScalaTion's `ARX_D.fromTerms`): one
         column per term, the response's transform kept for inverting forecasts, no intercept
         column; every formula is supported since no forging is needed (see `ARX.fromTerms` for the
         settings).
         """
-        mod = ARX.fromTerms.__func__(cls, formula, dataset, hh, args, trSize)
+        mod = ARX.fromTerms.__func__(cls, formula, dataset, hh, args, tFormT, trSize)
         mod._useforge = True                                          # no forging in a direct model
         return mod
 
@@ -181,7 +188,7 @@ class ARX_D(Forecaster_D):
         """
         cols = self.mcols if cols is None else list(cols)
         sub = ARX_D(self.getY(), self.hh, None, self._subArgs(), X=self._X[:, cols])
-        return self._subModel(sub, cols, modelName=f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}")
+        return self._subModel(sub, cols, modelName=f"ARX_D_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{sub.hpTag}")
 
     def getModel_h(self, cols: Optional[Sequence[int]] = None, h: int = 1) -> ARX:
         """
@@ -203,7 +210,8 @@ class ARX_D(Forecaster_D):
         cols = self.mcols if cols is None else list(cols)
         mh = len(self._y) - h + 1                                         # the rows whose horizon-h response is defined
         sub = ARX(self.getY()[h - 1:], 1, None, self._subArgs(), X=self.getX()[:mh, cols])
-        self._subModel(sub, cols, modelName=f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}")
+        self._subModel(sub, cols, modelName=f"ARX_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{sub.hpTag}")
         sub._y = self._Y[:mh, h - 1]                                      # the horizon-h response (model units)
         sub._te_size = mh - sub._tr_size
+        sub._lead = h - 1                                                 # its row r targets y[r + h - 1]: the boundary rule
         return sub

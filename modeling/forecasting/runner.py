@@ -14,7 +14,7 @@ columns, the model, its hyper-parameters, the horizon, the test -- in one `Args`
 
     loadData (args)                  (xe, y) of args.dataset with the exogenous columns args.exo
                                      (None: the dataset's default; []: none), as the loaders return them
-    makeModel (args, y, xe)          args.model on your own data: `rescale` when args.tFormT is set
+    makeModel (args, y, xe)          args.model on your own data: `rescale (..., args.tFormT)` when it is set
                                      (AR: NormForm, ScalaTion's `AR.rescale`; RandomWalk and ARIMA
                                      are not rescaled), `NARX_SR_D.apply` / `rescale` for NARX_SR_D
     run (args)                       the In-Sample test, the TnT test (rolling validation retraining
@@ -26,8 +26,8 @@ The models never load data, make folders or plot: `run` does the loading, so a m
 models from the test mains of its examples).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-16
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -91,24 +91,26 @@ def loadData(args: Any) -> Tuple[Optional[np.ndarray], np.ndarray]:
 def makeModel(args: Any, y: np.ndarray, xe: Optional[np.ndarray] = None) -> Forecaster:
     """
     Builds the model args.model on (y, xe) with the settings of args (horizon args.hh): through
-    `rescale` when args.tFormT is set (AR: its NormForm; RandomWalk and ARIMA: not rescaled), with
-    `NARX_SR_D.apply` / `NARX_SR_D.rescale` (their default transform types) for NARX_SR_D.
+    `rescale (..., tFormT = args.tFormT)` when that run setting is set (AR: its NormForm; RandomWalk
+    and ARIMA: not rescaled), with `NARX_SR_D.apply` / `NARX_SR_D.rescale` (their default transform
+    types) for NARX_SR_D.
     """
     args = Args.of(args)
-    name, hh, rescale = args.model, args.hh, args.tFormT is not None
+    name, hh, tFormT = args.model, args.hh, args.tFormT
     cls = MODEL_CLASSES[name]
     if name in NO_EXO:
-        return AR.rescale(y, hh, args) if name == "AR" and rescale else cls(y, hh, args)
+        return AR.rescale(y, hh, args) if name == "AR" and tFormT is not None else cls(y, hh, args)
     if name == "NARX_SR_D":
-        return NARX_SR_D.rescale(y, hh, xe, args) if rescale else NARX_SR_D.apply(y, hh, xe, args)
-    return cls.rescale(y, hh, xe, args) if rescale else cls(y, hh, xe, args)
+        return NARX_SR_D.rescale(y, hh, xe, args, tFormT=tFormT) if tFormT is not None else NARX_SR_D.apply(y, hh, xe, args)
+    return cls.rescale(y, hh, xe, args, tFormT) if tFormT is not None else cls(y, hh, xe, args)
 
 
 def run(args: Any) -> Forecaster:
     """
     One forecasting run: loads the data (`loadData`), builds the model (`makeModel`) and makes the
-    test(s) of args.validation -- "inSample" (`inSample_Test`), "tnT" (`tnT_Test (args.rc)`) or
-    "both" (each on a fresh model) -- printing ScalaTion's output.
+    test(s) of args.validation -- "inSample" (`inSample_Test`), "tnT" (`tnT_Test (args.rc)`), "tvT"
+    (`tvT_Test (args.rc)`: the validation rows, then the testing rows) or "both" (In-Sample and TnT,
+    each on a fresh model) -- printing ScalaTion's output.
 
     Returns
     -------
@@ -126,4 +128,7 @@ def run(args: Any) -> Forecaster:
     if args.validation in ("tnT", "both"):
         mod = makeModel(args, y, xe)
         mod.tnT_Test(args.rc)
+    if args.validation == "tvT":
+        mod = makeModel(args, y, xe)
+        mod.tvT_Test(args.rc)
     return mod

@@ -1,5 +1,383 @@
 # Changelog
 
+## 3.2.0 (ForecasterPy_rev2.2) -- 2026-10-20: consistent with ScalaTion rev5.3 (the knobs), plus the measurement protocol
+
+ScalaTion rev5.3 generalized the penalty search to the KNOBS of whatever regression is bound, moved the `llm_narx_sr`
+engine onto the platform's switch and renamed the second switch; this release does the same in Python and adds the
+measurement protocol the roadmap's Stage 1 asked for.
+
+1. The knobs.  `Knob (name, grid, log, tag)` in `modeling/hyper_parameter.py` with `tagOf` (`_L1.0`, `_L0.01`,
+   `_L1.0E-12`, `_A0.5`, `_A0.25`: ScalaTion's tags, digit for digit), `toCoord` / `fromCoord`; `Knob.LAMBDA`
+   (1e-3 .. 1e3 by decades, log) and `Knob.L1_RATIO` (0 .. 1 by quarters, linear); the regressions declare theirs:
+   `CenteredRidge.tunable = (LAMBDA,)`, `ElasticNet.tunable = (LAMBDA, L1_RATIO)`.
+2. `Forecaster.knobs` (by the model's method), `penalized` (= knobs present), `hpAll`, `hpTag`, `withHP (hp)` (was
+   `withLambda (lam)`), `tune (knobs, measure, hs, verbose, search = "grid" | "golden" | "random", folds, trials, seed)
+   -> ({name: value}, score)` (was `findLambda`): the grid is the product of the knobs' grids (7 for the ridge, 35 for
+   the elastic net), golden sweeps each knob in its coordinate between the neighbours of the best grid value, random
+   draws from one seeded generator in the knobs' box; `bestHP (cols)` (was `bestLambda`).  `Forecaster.LAMBDAS`,
+   `lamTag`, `_setLambda` are gone.  The names: `ARX_D_6_6_2_L1.0` under the ridge, `ARX_D_6_6_2_L1.0_A0.5` under the
+   elastic net, and NO tag for a plain least-squares model (was `_L0.0`: no knobs, no tag) or a model without a regression.
+3. `Model.tuning` (was `tuneLambda`) and `Model.folds` (0 => the validation block, k => `cvScore (k)`: `tune`'s default);
+   `withValidation (ratio = None, tuning = False)` always sets `tuning`, as ScalaTion's does.  `evalCols` / `fitCols`
+   tune each candidate set by `withHP (tune ()[0])` under `Model.tuning`; `_subModel` and `selectedModel` apply `bestHP`.
+4. `FormulaScorer`: `tuning` (was `tuneLambda`), `build (f, size, fit_params, hp)`, `fresh (f)`, `tuned (mod)`,
+   `fitFull (f, hp)`, `tnt (f, hp)`, `Candidate.hp` (a dict; `lam` is a property of it); and two rules now shared with
+   ScalaTion rev5.3: (a) in-sample a candidate is fitted AND diagnosed on the FS rows of its block (`fs_rng (rows)` =
+   rows.stop - hh + 1, the boundary rule, exactly as `Forecaster_D.fitCols`) -- the in-sample numbers moved (Covid
+   baseline arm 17.048, was 18.117; the validation and TnT numbers did not); (b) `scoreH` and the validation pass
+   roll a FRESH copy at the fit's knobs, never the cached model.  `toModel` / `record` / `showPareto` build the final
+   model at the candidate's knobs.  `Fit.resetDF_k` warns once per model (hundreds of identical lines before).
+5. The measurement protocol (roadmap 2.2; Python first).  `Forecaster.errorTable (rng, scale)`: after `rollTest`,
+   one row per origin and horizon whose target lies in the block, in original units -- y, yhat, e, ae, sape (a
+   horizon's mean sape IS its sMAPE), ase (|e| / the naive one-step MAE of the rows before the block: MASE's
+   denominator; the QoF table's `mase` scales by the block).  `llm_narx_sr/protocol.py`: `Protocol (te_ratio = 0.4,
+   rc, hh, loss)` with `runModels` (named factories) and `runArms` (the harness's arms, each best model rolled over
+   the testing rows at its knobs) appending to one long table; `summary ()` (sMAPE and MASE per dataset, model and
+   horizon and over all, with a 95 % HAC interval: Newey-West, Bartlett weights, lag h - 1); `compare (A, B)` on the
+   paired per-origin losses: the Diebold-Mariano test with the Harvey-Leybourne-Newbold correction
+   (`significance.dm_test`, `hacVar`) next to the Wilcoxon signed-rank test; `compareAll`, `report`, `write` (CSV).
+   `Examples/Example_Protocol.py [covid|ili|gef14|etth1|all] [--arms]` writes the "before" tables of the base
+   models and the deterministic arms (`results/protocol/`): on Covid-19's 47 origins the ridge `ARX_D` beats the
+   random walk (DM* -3.7, p < 0.001 pooled over the horizons), `sel-arx` is worse than the random walk at h = 1
+   (DM* +4.3) -- the selection variance, quantified.
+6. Examples: `Example_Covid.py arx_d2` (tune: grid, golden, random, a wider block, 5-fold; selection with
+   `Model.tuning`), `enet` (the ridge's one knob and the elastic net's two by the same `tune`, the lasso at a fixed
+   share); docs: README (the knobs, the protocol), `docs/CONVENTIONS.md` (the table "ScalaTion rev5.3 <-> Python
+   rev2.2: the knobs").
+7. Tests: `tests/test_validation_tune.py` (was `test_validation_find_lambda.py`: the knobs and tags, `tune` grid /
+   golden / random / k-fold, the elastic net's two knobs, the tuning switch, the scorer), `tests/test_protocol.py`
+   (the error table against the QoF table, HAC and DM, the runner, summary, comparisons, CSV); the `_L0.0` pins
+   dropped; the in-sample pins of the scorer and the anchors re-pinned; 261 tests pass.
+
+## 3.1.0 (ForecasterPy_rev2.1) -- 2026-10-19: consistent with ScalaTion rev5.2 (the protocol)
+
+ScalaTion rev5.2 gave the tree the switch, ONE rolling routine, the penalty search and the boundary rule; this
+release makes the names and the numbers agree again.
+
+1. `Forecaster.valTest (rc, showYf, showParams, verbose)` is the validation pass (was `validate (rc, verbose)`):
+   ScalaTion's name, ScalaTion's signature next to `tnT_Test`'s.  `tvT_Test` and `valScore` go through it.
+2. The boundary rule (ScalaTion rev5.2's `trainWindow`): a rolling test retrains only on rows whose targets lie
+   before the forecast origin.  `Forecaster._trainWindow (is_, t)` -> (targets, X rows) replaces the
+   `_train_target` hook; `Forecaster_D._trainWindow` returns the rows `[is_, t - hh + 1)` (the old `[is_, t)` had
+   hh - 1 rows with targets inside the block rolled over); the single-horizon model at horizon h (`getModel_h`)
+   carries `_lead = h - 1` and stops that many rows early (its split is computed on `mSeries = len (y) + lead`,
+   the series length, so its blocks are its parent's, cut at its last row with a target).  `fs_rng` of both
+   bases and `cvScore`'s rows are cut the same way.  EVERY rolling number of a direct model moved a little
+   (honestly so); the anchors are re-pinned (Covid baseline arm: validation 23.217, TnT 47.684, were 20.030 /
+   43.483; `nARX_SR_DTest5` TnT sMAPE 22.8084 .., was 17.8772 ..; GEFCom's 21-lag baseline 12.798, was 12.783 --
+   a long series barely moves).  The recursive models are unchanged.
+3. `Model.TE_RATIO = 0` is allowed: no testing set (a competition's dataset), `teSize = 0`, `trSize = m`, the
+   chooser works on the last `VAL_RATIO` of the dataset (`valTest`, `findLambda` under `withValidation`) and the
+   model entered is fit on all the rows; `tnT_Test` prints the flaw and returns None, `tvT_Test` reports NaN for
+   the test.  `args.te_ratio` defaults to None = `Model.TE_RATIO` when the model is built (it was a copy of 0.2
+   taken at import time, so `Model.TE_RATIO = r` never reached a model); `Args (te_ratio = 0)` per model; the
+   `TE_RATIO` constant of `args.py` and `Forecaster.TE_RATIO` are gone (one name: `Model.TE_RATIO`).
+4. `Model.fitRows (m, te_ratio, trSize)` replaces `arx.fitRows` (ScalaTion's `Model.fitRows`).
+5. `findLambda (search = "golden")` replaces `"brent"`: the grid, then a golden-section search in log10 lambda
+   between the neighbours of the best grid value (tolerance 0.02 decades, at most 40 evaluations, memoised) --
+   the one algorithm of both code bases; scipy's `minimize_scalar` is no longer imported by `forecaster.py`.
+6. Docs: `docs/CONVENTIONS.md` gets the table "ScalaTion rev5.2 <-> Python rev2.1: the protocol" and the boundary
+   rule under the regression paragraph; README: `te_ratio`, TE_RATIO = 0, the rule; the Covid example prints the
+   golden-section lambda.
+7. Tests: `tests/test_rev21_protocol.py` (9 tests: the direct window `[0, 87)` on Covid and its fit, the moved TnT
+   numbers, `_lead` of `getModel_h`, the recursive models unchanged, `valTest`'s signature, `Model.fitRows`,
+   TE_RATIO = 0 end to end, a model keeps the split it was built with, golden); the pins of the arms, the
+   NARX_SR_D TnT and the FS rows re-pinned; 256 tests pass.
+
+## 3.0.0 (ForecasterPy_rev2.0) -- 2026-10-17: consistent with ScalaTion rev5.0, argument for argument
+
+A major version: the factory signatures change (the Python code was ahead of ScalaTion in places where it should
+not have been).  Base: ScalaTion rev5.0 (`scalation_beforeElNet.zip`) and its rev5.1 (the elastic net).
+
+1. `rescale` has no `trSize`: `ARX.rescale (y, hh, xe, args, tFormT = MinMax)`, `ARX_D.rescale (...)`,
+   `ARX_SR.rescale (y, hh, xe, args, fEndo, fExo, tFormT)`, `ARX_SR_D.rescale (...)`.  The rows the transform is
+   fitted on come from `Model`, as in ScalaTion (`Model.trSize`; `Model.fitSize` while choosing under the switch,
+   `arx.fitRows`).  `NARX_SR_D.apply` / `rescale` and every `fromTerms` keep `trSize = -1`, as ScalaTion's do.
+2. `tFormT` comes before `trSize`: `fromTerms (formula, dataset, hh, args, tFormT = None, trSize = -1)` (ARX, ARX_D;
+   `NARX_SR_D.fromTerms (formula, dataset, hh, args, tFormT, trSize, maxLag, freqs, **opt)`), `ARX_Formula.fit` /
+   `fit_D (dataset, hh, args, tFormT = None, trSize = -1)`, `NARX_Formula.fitNL_D (dataset, hh, args, tFormT, trSize,
+   **opt)` -- ScalaTion's `fit (hh, tFormT, trSize, scaled)`; `tFormT` was an `args` entry in the old docstrings of
+   `fit*`, which was wrong since rev1.10 (it is a RUN setting there).
+3. `ARX_Formula.names` (a property) is the one name of the terms' labels (ScalaTion's `names (preds)`); the
+   `labels` property and the `names ()` method are gone (`TermLibrary.labels` stays: a different thing).
+4. `Model.TE_RATIO` is a checked class property (a metaclass): `Model.TE_RATIO = r` raises `ValueError` unless
+   0.05 < r < 0.95, ScalaTion's `TE_RATIO_=` flaw.
+5. `Forecaster_D.tnT_Test (rc, showYf = True, showParams, verbose)` overrides the base's `showYf = False`, as
+   ScalaTion's `Forecaster_D.tnT_Test (rc = 5, showYf = true)`: the direct models print their forecast matrix.
+6. `refitTransform ()` takes no size: it rebuilds the model by its factory under the new `Model.inSample ()` (the
+   switch suspended), so the transforms land on the training rows; the recipes are zero-argument.  `withLambda`
+   keeps the lambda through a refit as before.  (ScalaTion has no `refitTransform`: its `rescale` always fits on
+   `Model.trSize`.)
+7. Documented, not changed: Python's `Forecaster.validate (rc)` is the rolling pass over the validation rows;
+   ScalaTion's `Forecaster.validate (rando, ratio)` is Dr. Miller's one-step split test, not ported (docstring,
+   CONVENTIONS).  Kept on purpose: the data order `(y, hh, xe, args)`, `Args` for `hparam` / `scaled` / `tune`, the
+   un-ported `fname_` / `tRng` / `bakcast`, the Python-first features (the switch, `scoreOf`, `findLambda`, the
+   rankers, `effDF`, `enet`, `avg`), which ScalaTion will get step by step from rev5.2.
+8. `docs/CONVENTIONS.md`: the table "ScalaTion rev5.0 <-> Python rev2.0: the factory signatures"; the Model and
+   Forecaster rows now separate ScalaTion's members from the Python-first ones; the ElasticNet row names rev5.1's
+   `ElasticNetRegression` / `CenteredElasticNet` (+ MV; `l1_ratio`, `cdIter`).
+9. Tests: `tests/test_scalation_signatures.py` (7 tests: the signatures by `inspect`, the checked TE_RATIO,
+   `inSample`, the rows `rescale` fits on and `refitTransform`, `fromTerms` / `fit_D` with a positional `tFormT`,
+   `names`, `tnT_Test`'s default); the refitTransform and labels pins re-pinned; 247 tests pass.  No numeric pin
+   moved: with the switch off `fitRows` is `Model.trSize`, the rows the old `trSize = -1` gave.
+
+## 2.11.0 (ForecasterPy_rev1.11) -- 2026-10-17: the ten changes of the "naming options" review
+
+The penalty
+1. Standardized columns (`scaled = True`) are shown next to the raw ones wherever lambda is read: `arx_d2` prints both
+   lambda landscapes with the column scales (sd deaths 5.6e3, icu 6.0e4, positive_rate 0.38: on raw columns lambda = 1
+   is heavy for positive_rate's lags and invisible to the others, which is why every raw-column search lands on 1;
+   standardized, the landscape is flat).  The default stays `False` (ScalaTion's `CenteredRidge`, the parity pins), and
+   on Covid-19 the raw-column ridge at lambda 1 tests BETTER (full model TnT sMAPE 32.8 against 49.2 standardized): the
+   shrinkage of the positive_rate block is what helps.
+2. More scoring rows for the chooser: `findLambda (folds = k)` / `Forecaster.cvScore (folds, measure, hs)`, k-fold
+   cross-validation on the embedded rows of the regression (contiguous blocks; the recursive models by their h = 1
+   regression, the direct ones every horizon; original units; the model itself untouched), which scores every training
+   row and is valid for a lag-input model with uncorrelated residuals (Bergmeir, Hyndman & Koo 2018) -- the k-fold
+   ScalaTion's `findLambda` intended, minus its bugs.  The wider validation block needs no code: `withValidation
+   (ratio = 0.4)` fits 45 and scores 47 rows, and `rollTest` IS the expanding window (refit every rc rows), so the
+   "validation folds" of the review add nothing to it.  On Covid-19 the four ways disagree (grid on 24 rows: 1; Brent:
+   1.38; 47 rows: 0.01; 5-fold on 92 rows: 1 raw, 100 standardized): the choice of lambda depends on the rows it is
+   scored on more than on the search.
+3. Ridge-aware statistics: `CenteredRidge.effDF` (1 + tr H_lambda) and `CenteredRidge.stdErr (k)` (the sandwich
+   covariance sigma^2 (X'X + lI)^-1 X'X (X'X + lI)^-1 with sigma^2 = SSE / (m - effDF); the OLS errors at lambda 0);
+   `Fit.summary (..., stdErr)`, `Forecaster.stdErrOf`, `summary ()` / `summary (h)` of a ridge print them (finite on
+   19 collinear lags).  `Forecaster.scoreOf (..., nParams)` charges a penalized fit its effective parameters in the FPE
+   factor (`Forecaster.effDF`, one value per horizon; `Candidate.nParams`; `jointQoF (qof, nParams)`,
+   `FormulaScorer.scoreOf (qof, extra, nParams)`), so in-sample a ridge is no longer charged one parameter per column:
+   the in-sample ridge pins move -- aRX_DTest8 CEM keeps [0, 3, 6, 7, 10, 11, 12, 13, 17, 18] at 10.3174 (effDF 7.4;
+   was [0, 6, 7, 18] at 10.5218), nARX_SR_DTest5 Backward [0, 6, 8, 12, 13, 28] with the trace 52.2695 / 13.4114.
+4. The elastic net: `method = "enet"` (`modeling/elastic_net.py`, `ElasticNet` with `CenteredRidge`'s interface;
+   scikit-learn's coordinate descent on the centered, optionally standardized columns; alpha = lam / m so l1_ratio = 0
+   reproduces the ridge; `Args.l1_ratio`, 0.5; `nnz`, `effDF` = 1 + nnz).  `PENALIZED_METHODS` = (ridge, enet) is the
+   rule behind `lam`, `penalized`, `withLambda`, `findLambda`, `bestLambda`, `_subModel`, the evaluators and `train` /
+   `_predict`.  `Example_Covid enet` compares ridge and enet (l1_ratio 0.3, 1) at their found lambdas: on standardized
+   columns enet l1 0.3 at lambda 100 tests at 25.6 against the ridge's 41.3 and the lasso's 38.1 (one run, 24 test
+   weeks: a hint, not a result).  NARX_SR_D stays ridge-only (VarPro's linear step is a ridge), so the LLM pipeline has
+   no enet arm yet.
+5. `findLambda (search = "brent")`: the grid, then Brent's bounded minimization in log10 lambda between the neighbours
+   of the best grid value (the continuous optimum, ~8 more evaluations, without settling in the wrong valley); the
+   grid stays the default.
+6. `avg (x ~ (hi, lo))`: the mean of a lag block as ONE term (`AvgTerm`, the DSL's `avg (x, hi, lo)`, both parsers,
+   "avg needs a lag range" otherwise); `TermLibrary.fromGrammar` adds the two blocks of 2+ lags per variable for
+   maxLag >= 4 (`avg(v~(mid,2))`, `avg(v~(maxLag,mid+1))`, mid = (maxLag + 2) // 2; lag 1 stays its own term); the
+   proposer's grammar text names it.
+7. `Example_Covid diff`: ARX_D on the differenced series (d = 1, nneg off), the forecasts integrated back to levels
+   from the origin t - 1 (the cumulative sum along row t - 1 of the forecast matrix) and diagnosed on the same testing
+   rows: better at h = 1 (13.0 against 13.9), much worse from h = 3 on (mean 52.5 against 30.0).
+8. The name tag: `lamTag` -- one decimal, except below 0.1 where the digits are kept (`_L0.01`, `_L0.001`), since the
+   grid's small values all printed `_L0.0`; `Candidate` prints `lam=1` (`:g`).
+9. / 10. The rankers by name: `selectFeatures (Ranked, rank = "t")`, the t-statistics |b_j| / se_j re-ranked per step
+   (backward elimination by p-value, a ridge with its own standard errors) and `rank = "vif"`, minus the variance
+   inflation factors (the most collinear column first); `SelectionReport.ranker`, `tImportance` / `vifImportance` in
+   `Forecaster_Reg`, `Forecaster_D` and `FormulaScorer` (for `TermLibrary.selectBy`), `Example_RankedSelection` runs
+   them.  On Covid-19 (ARX_D ridge, joint over h = 1..6) the t-ranker is competitive but not better than Backward / CEM
+   (raw, in-sample: 34.5 against 28.4; standardized, validating: 38.6 against 54.3 for Backward), the VIF ranker keeps
+   almost everything (no column has a VIF below 10): a statistic for the report, not a gate.
+
+Tests: `test_ridge_summary_uses_the_sandwich_covariance_and_the_effective_df`,
+`test_find_lambda_brent_refines_the_grid_and_k_fold_scores_the_training_rows`, `test_avg_is_the_mean_of_a_lag_block`,
+the named rankers in `test_ranked_elimination...` (test_feature_selection), the enet name; the library size (+1 avg term per variable at maxLag 4).
+240 tests pass.
+
+## 2.10.0 (ForecasterPy_rev1.10) -- 2026-10-16: `tFormT` is an argument of `rescale`; one model per scenario
+
+`tFormT` back in ScalaTion's place
+- The transform type of a rescaling is a parameter of the factory again, as in ScalaTion and as `fEndo` / `fExo`
+  already were: `ARX.rescale (y, hh, xe, args, tFormT = TransformT.MinMax, trSize = -1)`, the same for `ARX_D`,
+  `ARX_SR.rescale (y, hh, xe, args, fEndo, fExo, tFormT, trSize)`, `ARX_SR_D`, and
+  `NARX_SR_D.rescale (y, hh, xe, args, fEndo, fExo, tFormT, lu, trSize, fname, **opt)`; `fromTerms (..., tFormT = None)`
+  (ARX, ARX_D, NARX_SR_D: None => the formula's own `TFORM:` clause).  The NormForm rule (nneg off) lives in
+  `_rescaleData`, where ScalaTion has it.  It had moved into `Args` in rev1.4 with the other keyword settings, for
+  the one-object `run (args)` style -- but it is a construction choice of the factory, not a setting of the model.
+- `Args.tFormT` is a RUN setting now (next to `dataset`, `model`, `validation`), the transform `run (args)` passes to
+  the model's `rescale` (None => no rescaling); no model reads it and the model classes' `ARGS` no longer list it.
+  `rescale` raises when `args.tFormT` is set to another type than the one given, so a script that still writes
+  `Args (tFormT = Log1p)` fails loudly instead of rescaling by MinMax.
+- Call sites: the examples (Covid, ILI, ETTh1, GEFCom, FeatureSelection) and tests pass `TransformT.Log1p` /
+  `Norm` / `MinMax` to `rescale`; `test_base_api` pins the refusal.
+
+One model per scenario
+- `Example_Covid.aRX_D_test2` builds the model at the lambda found once and uses it for In-Sample, TnT and the six
+  selections (a selection never trains or alters its model; `inSample_Test` and `tnT_Test` retrain from scratch,
+  the skip restored), as ScalaTion's `aRX_DTest4` does; the duplicate constructions between In-Sample and TnT in
+  `randomWalk_test`, `aRIMA_test`, `aRX_D_test`, `aRX_SR_D_test` (Covid), `aRX_D_test`, `aRX_SR_D_test` (ILI),
+  `aR_test` (ETTh1, GEFCom) and the RandomWalk scenarios are gone (the per-p loops of `aR_test` stay: one model per p).
+- `Forecaster_D.selectFeatures` clears `_theBest` at the start, so the previous selection's best step (and its
+  lambda, `bestLambda`) cannot leak into the next search on the same model.
+
+The selection banners name the selected model
+- `reportSelection`'s "selected: k = ... of n = ..." banner and `testSelected`'s "In-Sample Test / TnT Test ... of the
+  selected model" banners (Forecaster_Reg, Forecaster_D) print the SELECTED model's name, whose `_L` tag is the lambda
+  its best step found, instead of the host model's -- a host built at lambda 7 whose best step chose 1 printed
+  `ARX_D_6_6_2_L7.0: selected ...` above a model fitted at `_L1.0`.  The host keeps its own name (it is the full
+  column set at its own lambda).  Pinned in `test_tune_lambda_switch_gives_every_candidate_its_own_lambda`.
+
+Findings (Covid-19, `arx_d2`): `findLambda` works (grid 22.3 / 22.3 / 21.5 / 15.7 / 21.3 / 23.6 / 23.8, a smooth U
+with its minimum near 1.2; small sets pick 10 or 1000), but every selected set lands on lambda 1.0 because the ridge is
+centered, not standardized (`scaled` False) and the series differ in scale by 10^5 (sd: deaths 5.6e3, icu 6.0e4,
+positive_rate 0.38): lambda is one knob, "how much to shrink the positive_rate lags", the same for every set that has
+them; with `scaled = True` the landscape is flat and prefers the smallest lambda.  `tuneLambda` on gives the same sets,
+J and TnT as lambda fixed at 1 for all techniques, at 6-8x the time -- keep it off by default and call `findLambda`
+once.  237 tests pass.
+
+## 2.9.0 (ForecasterPy_rev1.9) -- 2026-10-16: `_L` on every regression-based model; `findLambda` -> (lambda, score)
+
+The `_L{lambda}` tag
+- EVERY regression-based model carries its ridge penalty in its name, written by the model class where the name is
+  set (`f"ARX_D_{p}_{px}_{n_exo}_L{self.lam:.1f}"`, as ScalaTion's `modelName` strings will): `ARX_D_6_6_2_L0.0`
+  under the default `sm_ols` (`Forecaster.lam` is 0.0 for a plain regression: least squares is the ridge at 0),
+  `ARX_D_6_6_2_L1.0` under `method = "ridge", lam = 1`; the sub-models of `getModel` / `getModel_h` and
+  `ARX.fromTerms` alike.  A model without a regression (AR, ARIMA, RandomWalk; `lam` None) has no tag.
+  `Forecaster.modelName` is the plain property again; `lamSuffix` is gone.  `withLambda` re-tags its copy
+  (`_setLambda`: the tag is the last part of the name).
+- `SelectionReport.bestLambda (cols)`: the lambda the best step of the last selection found for that column set
+  (None otherwise); `_subModel` applies it, so `getModel (getBest ().mod_cols)` -- the docstrings' "selected
+  forecaster" -- carries the best step's lambda, and `selectedModel` (Forecaster_Reg, Forecaster_D) uses the same
+  hook on its refit model instead of its own guard.
+
+`findLambda` and the score
+- `lam, score = mod.findLambda (lams, measure, hs, verbose)` returns the pair, as ScalaTion's
+  `RidgeRegression.findLambda` does; the model is untouched and `mod.withLambda (lam)` is the copy at the lambda
+  found.  A model under a plain regression has nothing to search: (0.0, its validation score).  The verbose line
+  prints the raw lambda (`lambda = 0.001 (ARX_D_6_6_2_L0.0)`), since the tag rounds to one decimal.
+- `Forecaster.scoreOf (qof, inSample, extra, measure = QoF.smape, hs = None)`: the error measure averaged and the
+  horizons averaged are arguments (`Forecaster.ERROR_MEASURES`; a goodness measure such as rSq raises, since the
+  FPE factor would reward complexity); `valScore (rc, measure, hs)` passes them on.  Defaults unchanged: the mean
+  sMAPE over all horizons, so no pinned number moves ...
+- ... except under `tuneLambda` for a recursive sub-model: `Forecaster_Reg.evalCols` now tunes by `hs = [1]`, the
+  one horizon a sub-model without the lag structure forecasts (the horizon `evalCols` scores by), where before the
+  mean over all hh horizons entered; `Forecaster_D.fitCols` keeps all horizons (direct models).  Both call
+  `findLambda` only for a ridge (nothing to tune otherwise), the scorer always has one.
+
+Examples and tests
+- `Example_Covid.aRX_D_test2` (`arx_d2`): ARX_D ridge, `findLambda` on the validation rows (68 / 24 / 24), In-Sample
+  and TnT at the lambda found (1.0, mean validation sMAPE 15.70), then all six selection techniques with
+  `tuneLambda` on, each selected model reported and TnT-tested at its best step's lambda.
+- Tests: `test_score_of_takes_the_measure_and_the_horizons`; `findLambda`'s pair, `bestLambda`,
+  `getModel (getBest ().mod_cols)` at the best lambda, the re-tag of `withLambda`; the plain models' names carry
+  `_L0.0` (`test_args`, `test_arx_formula`, `test_base_api`, `test_exo_screen`, `test_feature_selection`,
+  `test_narx_formula`, `test_narx_sr_d`).  237 tests pass.
+
+## 2.8.0 (ForecasterPy_rev1.8) -- 2026-10-16: findLambda and the tuneLambda switch; HyperSearch removed
+
+The ridge penalty
+- Every model fitted by the ridge carries its penalty in its name: `ARX_D_6_6_2_L1.0`, `NARX_SR_D(6, 4, 2)_L6.0`
+  (`Forecaster.modelName` appends `lamSuffix` = `_L` + lambda with ONE digit after the decimal point; a model
+  without a ridge, method sm_ols / sk_lr, has no tag).  `Forecaster.lam` is the penalty (None without a ridge).
+- `Forecaster.LAMBDAS` = (1e-3, 1e-2, 1e-1, 1, 10, 100, 1e3); `withLambda (lam)` (a copy with a new regression,
+  same rows, matrix and transforms, untrained; a factory-made model's `refitTransform` keeps the new lambda);
+  `findLambda (lams, verbose)`: the copy at the grid value with the best `valScore`, ScalaTion's
+  `RidgeRegression.findLambda` with the forecaster's rolling validation in place of k-fold CV (which is wrong for a
+  time series).  Needs `Model.validating`: in-sample a ridge always prefers the smallest lambda.
+- `Model.tuneLambda` (the second switch, `withValidation (ratio, tuneLambda)`): every candidate a chooser evaluates
+  gets its own best lambda -- `Forecaster_Reg.evalCols` / `select0`, `Forecaster_D.fitCols`, `FormulaScorer.fit`
+  and `evalCols` -- so the best step of a feature selection carries the best lambda for its columns (its model's
+  name shows it), `selectedModel` / `reportSelection` build the reported model at that lambda, and a `Candidate`
+  carries `lam`, which `tnt (f, lam)`, `fitFull (f, lam)`, `record` and `toModel` use; `repr` and `report` print it;
+  the scorer counts one fit per grid value in `evaluations`.  Off (the default) is exactly rev1.7.
+
+Removed
+- `modeling/hyper_search.py` (HyperRange, HyperSpace, Trial, Sampler, Grid, Random, HyperSearch) and
+  `llm_narx_sr/llm_sampler.py` (LLMSampler), `LLM_NARX_SR.llmTunedArm`, `BaselineArm (sampler, maxTrials)`: the one
+  numeric knob the models need is lambda, found by `findLambda`; p and px come from the EDA (PACF, CCF), feature
+  selection or the nested tuned-arx loop, which is its own double loop again (the same 42 structures, the same J).
+
+Tests: `tests/test_validation_find_lambda.py` replaces `test_validation_hyper_search.py` (the model names, findLambda,
+the tuneLambda switch on ARX_D, the scorer and a library selection); the model-name assertions carry `_L`.
+236 tests pass.
+
+## 2.7.0 (ForecasterPy_rev1.7) -- 2026-10-15: one split, one switch, one score; Ranked selection; HyperSearch
+
+The validation, tuning and selection plan (the Oct 15 plan doc / PDF), implemented Python-first; ScalaTion rev4.2
+is to follow it.  237 tests pass (PyTorch optional).
+
+The switch (`modeling/model.py`, NEW: ScalaTion's `Model` object)
+- `Model.TE_RATIO` (0.2), `Model.VAL_RATIO` (= TE_RATIO: the validation block has the testing block's size, 116
+  Covid-19 weeks -> 68 / 24 / 24), `Model.validating` (the ONE switch), `teSize`, `trSize`, `valSize`, `fitSize`,
+  `fitRng`, `valRng`, `teRng`, `splitStr`, `withValidation (ratio)` (a context manager: the switch on, then
+  restored).  `forecaster.py` re-exports `trSize`, `teSize`, `teRng` from it; `args.py`'s `TE_RATIO` is `Model`'s.
+  No folds and no modes: validation always rolls over `valRng` with the test's retraining cycle.
+- Every chooser reads the switch: `Forecaster_Reg.evalCols` / `select0`, `Forecaster_D.fitCols` (ON: the candidate
+  is trained on the fit rows and rolled over the validation rows, `rollTest`; OFF: today's rows, penalised),
+  `FormulaScorer` (`validating` argument, else `Model.validating` at construction), the factories' transforms
+  (`rescale (..., trSize)`, `fromTerms (..., trSize)`: `fitRows` = the fit rows while validating) and
+  `reportSelection` (`selectedModel` refits the transforms on the training rows, `refitTransform`).
+
+Forecaster (one rolling routine, three tests, one score)
+- `Forecaster.RC = 5` (the retraining cycle; `args.rc` None => it), `Forecaster.scoreOf (qof, inSample, extra)`:
+  the mean sMAPE over the horizons, times the FPE factor (1 + 2 (dfr + 1 + extra) / n_h) when the rows were fitted.
+  `Forecaster_D.smapeFPE` / `aggFPE` and `FormulaScorer.jOf` / `hSel` are gone: `scoreOf` is the one score
+  (`Forecaster_D.jointQoF` aggregates a QoF matrix for the joint selection with it).
+- `rollTest (rng, rc, label, verbose, showYf, showParams)`: trains on the rows before the block, `rollValidate`
+  over it (now with a `rng` block and `verbose`), diagnoses the block's rows only (a validation pass never reads a
+  testing row), and RESTORES the skip (ScalaTion rev4.1's `tnT_Test` left it at 0, so a selection run afterwards
+  scored the burn-in rows).  `tnT_Test` = rollTest over the testing rows (its REPORT is now the model trained on
+  the training rows; the QoF tables are unchanged), NEW `validate ()` = rollTest over `Model.valRng`, NEW
+  `tvT_Test` = validate then tnT_Test with one summary line, NEW `valScore ()` = scoreOf (validate ()), NEW
+  `refitTransform (n)` (a factory-made model rebuilt with its transforms fitted on n rows; `_recipe`).
+- `runner.run`: `args.validation = "tvT"`.
+
+Feature selection
+- NEW `SelectionTech.Ranked` and `SubsetSearch.ranked (n, eval, rank, fixed, units, minCols)`: backward
+  elimination in the order of a ranking (recursive feature elimination): the ranker decides which column leaves,
+  the criterion where to stop; n evaluations.  `rank` is a vector (one ranking of the full set) or a function of
+  the current set (re-ranked after every removal).  Hosts: `Forecaster_Reg.rankedElimAll (rank, first, cross,
+  minCols)` with the rankers `coefImportance` (|b_j| sd(x_j), the default) and `permImportance`;
+  `Forecaster_D.selectFeatures (..., rank)` (joint `coefImportance`), `selectFeaturesAtH (..., rank)`;
+  `TermLibrary.selectBy (Ranked, scorer, rank)` with `FormulaScorer.coefImportance (lib, cols)` as the default.
+- The in-sample selection score of the base evaluators is `scoreOf (inSample = True)`, the FPE form, in the
+  sMAPE-IC slot (rev4.1: `Fit.smapeC`'s additive 2(k+2)/m): aRX_DTest8's CEM keeps 4 columns at 10.522 (was 12
+  at 8.901); the traces' sMAPE-IC column changes, the selected sets of the other pinned tests do not.
+
+HyperSearch (`modeling/hyper_search.py`, NEW, at the model level)
+- `HyperRange` (`Discrete`, `IntRange`, `LogRange`, `Continuous`), `HyperSpace` (`size`, `points`, `sample`,
+  `keyOf`), `Trial`, `Sampler` (`Grid`, `Random`), `HyperSearch (space, objective, sampler, maxTrials, stream,
+  minimize, verbose)`: `run ()`, `best`, `trials` (a cache by key: a point is never evaluated twice; a failing
+  objective scores inf), `ranked ()`, `report ()`, `saveCSV (path)`.  The objective is a closure the caller
+  writes, e.g. `lambda hp: ARX_D (y, hh, xe, Args (**hp)).valScore ()`.
+- `BaselineArm (Method.TunedARX, sampler, maxTrials)` runs through it (the grid by default; the same J as every
+  arm); NEW `llm_narx_sr/llm_sampler.py`: `LLMSampler (client, eda, perCall, maxCalls, shown)`, a `Sampler` that
+  asks the LLM for the next points (snapped into the space, de-duplicated, random fallback);
+  `LLM_NARX_SR.llmTunedArm (llm, eda, maxTrials)` is the tuned-arx-llm arm (run per stream).
+
+FormulaScorer on the switch
+- `FormulaScorer (data, hh, hp, scaled, freqs, validating)`: score = fit on the fit rows + `qofValidation` (a
+  fresh copy rolled by `rollTest`) + `scoreOf` when validating, else the in-sample FPE-form J; `tnt` / `tntModel`
+  through `tnT_Test`; `splitStr`; `rc` = `Forecaster.RC`; `skip` = hp["maxLag"] (one skip for every candidate).
+  REMOVED: the hp entries valFrac, valFolds, rc, skip, hSel (an unknown hp key is now an error) and the methods
+  `qofValidationAll`, `jOf`, `qofTnt`.  `LLM_NARX_SR.VALIDATING = True`: the harness's scorers score on the
+  validation rows (`scorerOf (dataset, hp, validating)`); the results CSV gains val_ratio and rc; `ExpRun.valRatio`,
+  `rc`; the grid banner prints the split; `showBest` tests through `tnT_Test`.
+- The anchors change with the protocol (fit 68, validation 24 rolled with rc = 5): Covid-19 icu/pRate baseline
+  20.030 / 18.117 / 20.030 / 43.483 (score, in-sample, validation, TnT), tuned-arx 16.169 / 20.128 / 16.169 /
+  44.586 (y~1 + icu~(5,1) + pRate~(5,1)), sel-arx 14.570 / 21.686 / 14.570 / 51.228, random-walk 42.117 / 32.978
+  / 42.117 / 45.712; auto exo (exMort, cases): 25.089 / 18.417 / 25.089 / 61.807, 24.730 / 19.761 / 24.730 /
+  61.913, 22.837 / 20.386 / 22.837 / 73.976.  The TnT numbers of the baseline and the random walk are the rev4.1
+  log's: the test pass did not change.
+
+The attention ranker (`modeling/attn_ranker.py`, NEW, optional PyTorch: `pip install -e .[neural]`)
+- `Attn_Ranker (x, y, dModel, heads, hidden, dropout, epochs, lr, weightDecay, batch, seeds, stream, score,
+  regressor)`, the shape of `CEM_Selector`: `run ()` returns the importance per column (`scores`: the mean
+  attention a column receives as a key, the NARX_SR paper's eq. 4; `gradScores`: gradient x input), averaged over
+  seeds, on standardized rows.  Its `AttnRegressor` gives every column its own embedding (x_j w_j + b_j), which
+  the paper's `MHAttn_Regressor` (a shared `Linear (1, d)` and mean pooling, permutation-invariant over the
+  columns) lacks; that regressor plugs in through `regressor` for the comparison.
+- NEW `Examples/Example_RankedSelection.py`: the experiment that decides the ScalaTion port -- the rankings
+  (coefficients, permutation, attention, gradient x input, the paper's regressor), `Ranked` with each against
+  Backward and CEM, the switch off and on, Spearman between the rankings, J, sets evaluated, TnT sMAPE.
+
+Not changed (base-file decisions still open in the plan): the trend column names (cons, lin, quad), column 0 under
+first = 1, `Forecaster_D.train` fitting every horizon on the rows of the last one, `Fit.smapeC` itself.
+
+Tests
+- NEW `tests/test_validation_hyper_search.py` (the split and the switch, rollTest / validate / tvT_Test, the
+  evaluators under the switch, HyperSearch and its samplers, the LLM-tuned arm, the attention ranker (skipped
+  without torch)); `test_feature_selection.py` (Ranked, scoreOf / jointQoF, aRX_DTest8 re-pinned),
+  `test_formula_scorer.py` (the switch, the unknown-hp error, J in-sample vs validation),
+  `test_llm_narx_sr_arms.py` (the anchors re-pinned, the CSV header), `test_random_walk.py` / `test_narx_sr_d.py`
+  (the skip restored).
+
 ## 2.6.0 (ForecasterPy_rev1.6) -- 2026-10-13: fixes found by the ScalaTion rev4.1 logs
 
 Yousef's rev4.1 runs (Oct 13: `datasetsTest`, `datasetsTest2`, `eDA4TSTest`, `formulaScorerTest`, `lLMProposerTest`,
@@ -36,9 +414,12 @@ Still different from ScalaTion (by design or not yet decided)
   read "NARX_SR_D(6, 6, 2)" where ScalaTion prints "ARX_D_6_6_2" (the fits are the same).
 - The nonlinear optimizer is scipy's `least_squares` (ScalaTion: its `LevenbergMarquardt_TR`): fitted parameters
   agree to about 3 digits on flat objectives (lLMProposerTest: 1.947 / 7.702 vs 1.9475 / 7.6982).
-- The validation-block refits run on copies of the formula (ScalaTion refits the candidate's own parameters, so its
-  formula then shows the LAST block's values: lLMProposerTest's 2.012 / 4.742).
 - `UnitRoot.setTrend` does not print ScalaTion's "setTrend: trend = c, npar = 2" line.
+
+Same in both now: the validation blocks refit COPIES of a candidate's formula (Python always did; ScalaTion's
+re-issued rev4.1 `FormulaScorer.score` does too -- before, it refitted the candidate's own parameters, which then
+showed the LAST block's values: the first rev4.1 lLMProposerTest printed 2.012 / 4.742 for a model fitted with
+1.9475 / 7.698).
 
 ## 2.5.0 (ForecasterPy_rev1.5) -- 2026-10-13: datasets and EDA4TS at the forecasting level; loaders as ScalaTion's
 
