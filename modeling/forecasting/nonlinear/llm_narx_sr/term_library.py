@@ -28,22 +28,22 @@ array (None for a non-CEM technique); the random stream of the CEM sampler is `C
 (ScalaTion's `Random` port).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
 from modeling.cem_selector import CEM_Selector
 from modeling.feature_selection import Cols, SelectionTech
 from modeling.fit import QoF
-from modeling.forecasting.arx_formula import FormulaVar, LabelMode, Term, WaveTerm, fn, wave as wave_k
+from modeling.forecasting.arx_formula import AvgTerm, FormulaVar, LabelMode, Term, WaveTerm, fn, wave as wave_k
 from modeling.forecasting.nonlinear.narx_formula import (NARX_Formula, Par, ParWaveTerm, decay, ema, half, hinge,
                                                         pow as pow_p, power, sat, shift, thresh)
 from modeling.forecasting.arx_formula import log, pow as pow_fixed
@@ -217,12 +217,12 @@ class TermLibrary:
 
     def selectBy(self, tech: SelectionTech, scorer: FormulaScorer, prior: Optional[Sequence[float]] = None,
                  stream: int = 0, maxCols: int = -1, nSample: int = CEM_Selector.N_SAMPLE,
-                 maxIter: int = CEM_Selector.MAX_ITER, minCols: int = 1
+                 maxIter: int = CEM_Selector.MAX_ITER, minCols: int = 1, rank: Any = None
                  ) -> Tuple[Candidate, Optional[np.ndarray], int]:
         """
         Selects one equation from the library by a selection technique of `SubsetSearch` -- the
         cross-entropy method (`CEM_Selector`), backward elimination, forward selection, stepwise
-        selection or beam search -- every set scored by the criterion of the scorer
+        selection, beam search or ranked elimination -- every set scored by the criterion of the scorer
         (`FormulaScorer.evalCols`: the fit rows, the ridge penalty, J) with wave pairs completed
         first and kept whole (`unitOf`).  Returns the selected equation scored as a `Candidate`, the
         final inclusion probability per column (CEM; None otherwise) and the number of column sets
@@ -247,7 +247,13 @@ class TermLibrary:
         maxIter : int
             The maximum number of rounds (CEM).
         minCols : int, default=1
-            The smallest set kept (Backward).
+            The smallest set kept (Backward, Ranked).
+        rank : str, callable or array, optional
+            The importance per column (Ranked): a name ("coef", the default: `scorer.coefImportance`,
+            the standardized coefficients of the library model re-fit on the remaining columns; "t"
+            the t-statistics, elimination by p-value; "vif" minus the variance inflation factors), a
+            callable of the current column set, re-run after every removal, or an array, one fixed
+            ranking of the library (an attention score, a frequency prior ...).
         """
         if self.size == 0:
             raise ValueError("selectBy: the library is empty")
@@ -277,6 +283,17 @@ class TermLibrary:
             path = SubsetSearch.stepwise(self.size, eval_, [], self.unitOf, qk=qk)
         elif tech is SelectionTech.Beam:
             path = SubsetSearch.beam(self.size, eval_, [], self.unitOf, qk=qk)
+        elif tech is SelectionTech.Ranked:
+            rankers = {"coef": scorer.coefImportance, "t": scorer.tImportance, "vif": scorer.vifImportance}
+            if rank is None or isinstance(rank, str):                     # a name: the scorer's ranker, re-run per step
+                name = "coef" if rank is None else rank.lower()
+                if name not in rankers:
+                    raise ValueError(f"selectBy: rank {rank!r} is not one of {list(rankers)}")
+                imp = rankers[name]
+                rank_ = lambda cols: imp(lib, self.completeWaves(cols))   # noqa: E731
+            else:
+                rank_ = rank
+            path = SubsetSearch.ranked(self.size, eval_, rank_, [], self.unitOf, minCols, qk=qk)
         else:
             raise ValueError(f"selectBy: unknown technique {tech}")
 
@@ -370,8 +387,10 @@ class TermLibrary:
                     nWaves: int = 0, tFormT=None, nlTerms: bool = False) -> "TermLibrary":
         """
         The grammar expanded into a library: every variable (response first) at lags 1..maxLag,
-        each such term under every function and power, the free-parameter forms when `nlTerms`,
-        and the seasonal wave pairs.
+        the means of its lag blocks of two or more lags (`avg(v~(mid,2))` and `avg(v~(maxLag,mid+1))`,
+        mid = (maxLag+2)//2, for maxLag >= 4; lag 1 stays its own term), each lagged variable under
+        every function and power, the free-parameter
+        forms when `nlTerms`, and the seasonal wave pairs.
 
         Parameters
         ----------
@@ -401,6 +420,12 @@ class TermLibrary:
         for v in vars_:
             for k in range(1, maxLag + 1):
                 terms.append(FormulaVar(v, k))
+        if maxLag >= 4:                                                   # the lag blocks of 2+ lags: avg(v~(mid,2)),
+            mid = (maxLag + 2) // 2                                       # avg(v~(maxLag,mid+1)): lag 1 stays its own term
+            for v in vars_:
+                terms.append(AvgTerm(v, mid, 2))
+                if maxLag - mid >= 2:
+                    terms.append(AvgTerm(v, maxLag, mid + 1))
         for v in vars_:
             for k in range(1, maxLag + 1):
                 for f in funcs:

@@ -84,8 +84,8 @@ def covid_test() -> None:
     """Covid-19 weekly deaths with icu patients and the positivity rate (116 weeks, hh = 6)."""
     banner("Covid-19 (icu, pRate): formulas with and without free parameters")
     cfg = Datasets.COVID2
-    sc = FormulaScorer(cfg.load(), hh=6)
-    print(f"rows {sc.m}: training {sc.trSize} (fit {sc.fitSize} + validation blocks {[(b.start, b.stop) for b in sc.blocks]}), "
+    sc = FormulaScorer(cfg.load(), hh=6, validating=True)
+    print(f"rows {sc.m}: split fit / validation / test = {sc.splitStr} (validating = {sc.validating}), "
           f"testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} weeks")
     score_table(sc, [
         cfg.baselineFormulaStr(6),                             # the plain-ARX baseline: 18 lag terms
@@ -128,7 +128,7 @@ def gefcom_test() -> None:
     banner("GEFCom2014 daily peak load (temp, tmax): the V shape")
     print("mean peak load per 10 F band, 20-30 .. 80-90 F:", [round(v) for v in Example_GEFCom.v_table()])
     data = Datasets.GEF14.load()
-    sc = FormulaScorer(data, hh=6, hp={"maxLag": 7, "skip": 7})      # the weekly cycle
+    sc = FormulaScorer(data, hh=6, hp={"maxLag": 7}, validating=True)      # the weekly cycle
     print(f"rows {sc.m}: training {sc.trSize}, testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} days")
     for opt in OptimizerNL:
         m = NARX_SR_D.fromTerms("y ~= y~(7,1) + hinge(temp~1, ?)", data, 6, Args(lam=1.0, scaled=True, optimizer=opt), maxLag=7)
@@ -148,7 +148,7 @@ def etth1_test() -> None:
     """ETTh1 first year: hourly transformer oil temperature with the six loads (nneg = False: OT goes negative)."""
     banner("ETTh1 first year (8,760 hours): oil temperature from the loads")
     data = Datasets.ETTH1_1Y.load()
-    sc = FormulaScorer(data, hh=6, hp={"nneg": False})
+    sc = FormulaScorer(data, hh=6, hp={"nneg": False}, validating=True)
     print(f"rows {sc.m}: training {sc.trSize}, testing {sc.teSize}; periodogram periods {np.round(1 / np.array(sc.freqs), 1)} hours")
     print(f"the screening's shortlist of the six loads: {sc.shortlist(Datasets.ETTH1_1Y)}")
     score_table(sc, [
@@ -169,7 +169,7 @@ def baseline_test() -> None:
     the rev3.2 ScalaTion numbers are TnT 43.5, 30.7 (y~1 + icu~(3,1) + pRate~(3,1)), 51.3 and 45.7."""
     banner("BaselineArm: the classical anchors on Covid-19 (icu, pRate)")
     cfg = Datasets.COVID2
-    sc = FormulaScorer(cfg.load(), hh=6)
+    sc = FormulaScorer(cfg.load(), hh=6, validating=True)
     runs = [BaselineArm(k, verbose=False).run(cfg, sc, 0) for k in (Method.Baseline, Method.TunedARX, Method.SelARX, Method.RandomWalk)]
     run_table(runs)
     print("\nthe tuned ARX's five best structures (score, in-sample sMAPE, terms):")
@@ -182,7 +182,7 @@ def genetic_test() -> None:
     of GEFCom2014, seeded with the plain-ARX baseline; the same stream reproduces the run."""
     banner("PipelineArm (genetic): Covid-19 (icu, pRate), streams 0 and 1")
     cfg = Datasets.COVID2
-    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL)
+    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL, validating=True)
     arm = PipelineArm(ArmSpec.genetic, verbose=False)
     runs = [arm.run(cfg, sc, s) for s in (0, 1)]
     run_table(runs)
@@ -192,7 +192,7 @@ def genetic_test() -> None:
     LLM_NARX_SR.showTraces(r, 8)
     banner("PipelineArm (genetic): GEFCom2014, the first 700 days, lags 1..7")
     data = {k: v[:700] for k, v in Datasets.GEF14.load().items()}
-    scg = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7, "skip": 7})
+    scg = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7}, validating=True)
     rg = PipelineArm(ArmSpec.genetic, verbose=False).run(Datasets.GEF14, scg, 0)
     base = BaselineArm(Method.Baseline, verbose=False).run(Datasets.GEF14, scg, 0)
     run_table([base, rg])
@@ -202,10 +202,10 @@ def random_test() -> None:
     """The random arm (grammar sampling, no feedback) on Covid-19 and on the first 700 days of GEFCom2014."""
     banner("PipelineArm (random): Covid-19 (icu, pRate) and GEFCom2014 (700 days)")
     cfg = Datasets.COVID2
-    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL)
+    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL, validating=True)
     rc = PipelineArm(ArmSpec.random, verbose=False).run(cfg, sc, 0)
     data = {k: v[:700] for k, v in Datasets.GEF14.load().items()}
-    scg = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7, "skip": 7})
+    scg = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7}, validating=True)
     rg = PipelineArm(ArmSpec.random, verbose=False).run(Datasets.GEF14, scg, 0)
     run_table([rc, rg])
     print(f"\nCovid-19: {rc.nProposed} proposals, {rc.nValid} legal, {rc.nFailed} failed or rejected fits")
@@ -224,7 +224,7 @@ def mockllm_test() -> None:
     in the prompt, rejects counted as invalid, the selector over the union library."""
     banner("PipelineArm (llm-loop, llm-cem) with a scripted MockLLMClient on Covid-19")
     cfg = Datasets.COVID2
-    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL)
+    sc = FormulaScorer(cfg.load(), hh=6, hp=SMALL, validating=True)
     mock = lambda: MockLLMClient(list(REPLIES))
     runs = [PipelineArm(spec, mock, verbose=False).run(cfg, sc, 0)
             for spec in (ArmSpec.llmLoop, ArmSpec.llmCEM, ArmSpec.llmCEM.copy(trimmer=SelectionTech.Backward))]

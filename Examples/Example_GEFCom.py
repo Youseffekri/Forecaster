@@ -19,8 +19,8 @@ Run from the repository root:  python Examples/Example_GEFCom.py [rw|ar|arx_d|ar
 (no argument: the quick default -- RandomWalk and ARX_D TnT).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-16
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -57,10 +57,11 @@ def load_gefcom():
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation."""
-    banner("In-ST Forecasts: RandomWalk on GEFCom2014 Dataset (daily peak load)")
-    RandomWalk(y, hh).inSample_Test()
-    banner("TnT Forecasts: RandomWalk on GEFCom2014 Dataset (daily peak load)")
-    RandomWalk(y, hh).tnT_Test(RC)
+    mod = RandomWalk(y, hh)
+    banner(f"In-ST Forecasts: {mod.modelName} on GEFCom2014 Dataset (daily peak load)")
+    mod.inSample_Test()
+    banner(f"TnT Forecasts: {mod.modelName} on GEFCom2014 Dataset (daily peak load)")
+    mod.tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, p=LAG, method="adjusted"):
@@ -69,7 +70,6 @@ def aR_test(y, hh=HH, p=LAG, method="adjusted"):
     mod = AR(y, hh, args)
     banner(f"In-ST Forecasts: {mod.modelName} on GEFCom2014 Dataset")
     mod.inSample_Test()
-    mod = AR(y, hh, args)
     banner(f"TnT Forecasts: {mod.modelName} on GEFCom2014 Dataset")
     mod.tnT_Test(RC)
 
@@ -86,10 +86,10 @@ def aRX_D_test(y, xe, hh=HH, args=None):
 def aRX_SR_D_test(y, xe, hh=HH, args=None):
     """ARX_SR_D (direct, SR terms): y^1.5 next to the lags of the load, temp^1.5 and log (1 + temp) next to the
     lags of each temperature (a bend for the V shape), rescaled by Log1p first (as ScalaTion's tests): TnT."""
-    args = Args(p=LAG, px=3, spec=0, tFormT=TransformT.Log1p) if args is None else args
+    args = Args(p=LAG, px=3, spec=0) if args is None else args
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[PowForm(), LogForm()] for _ in range(xe.shape[1])]          # xe_j^1.5 and log (1 + xe_j)
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo, TransformT.Log1p)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on GEFCom2014 Dataset")
     mod.tnT_Test(RC)

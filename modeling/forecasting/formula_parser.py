@@ -15,6 +15,7 @@ ScalaTion's `FormulaParser.scala`.  The grammar is the one `ARX_Formula.formulaS
               | ID "~(" INT ")"                    # same, parenthesized  y~(3)
               | ID "~(" INT "," INT ")"            # lag range        y~(5,1)
               | FN "(" atom ")"                    # FN in `ARX_Formula.FUNCTIONS`
+              | "avg" "(" ID "~(" INT "," INT ")" ")"   # the mean of a lag range  avg(y~(4,2))
               | "pow"  "(" atom "," NUM ")"        # plain power
               | "powr" "(" atom "," NUM ")"        # sign-safe power
               | "wave" "(" INT ")"                 # k seasonal sin/cos pairs; frequencies
@@ -35,8 +36,8 @@ validity rate is itself a reported metric.  Duplicate terms (same label) are col
 than rejected, as they would make the design matrix singular.
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.6
+Date: 2026-10-17
+Version: 1.7
 License: MIT License
 Note: AI assisted code
 """
@@ -49,8 +50,8 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from Util.transform import TransformT, transform_t
-from modeling.forecasting.arx_formula import (ARX_Formula, FUNCTIONS, FormulaVar, ProductTerm, Term, fn, pow as pow_,
-                                              powr, wave)
+from modeling.forecasting.arx_formula import (ARX_Formula, AvgTerm, FUNCTIONS, FormulaVar, ProductTerm, Term, fn,
+                                              pow as pow_, powr, wave)
 
 
 class FormulaError(ValueError):
@@ -336,6 +337,15 @@ class FormulaParser:
             return wave(ast.k, freqs)
         if isinstance(ast, Ast.Call):
             f, num = ast.fn, ast.num
+            if f == "avg":                                                # the mean of a lag range: ONE term
+                a = ast.arg
+                if num is not None or not isinstance(a, Ast.Lag) or a.hi == a.lo:
+                    fail("avg needs a lag range, e.g., avg(y~(4,2))")
+                if a.name not in vars_:
+                    fail(f"variable '{a.name}' not in dataset {{{','.join(vars_)}}}")
+                if a.lo < 1 or a.hi > maxLag:
+                    fail(f"lag range ({a.hi},{a.lo}) outside [1,{maxLag}]")
+                return [AvgTerm(a.name, a.hi, a.lo)]
             if f in ("pow", "powr"):
                 if num is None:
                     fail(f"{f} needs (term, exponent)")

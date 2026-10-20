@@ -18,16 +18,24 @@ and are not printed, as in ScalaTion, where they live in other objects.
 no model or script can change the defaults of the models made after it -- the values of a model are
 set in its `Args` (modeling/forecasting/args.py); `copy` gives a writable copy.
 
+A `Knob` (ScalaTion rev5.3) is a hyper-parameter a tuner may turn: its name in the map, the grid a
+grid search tries, whether a continuous search moves in log10 (a penalty spanning decades) or linearly
+(a share in [0, 1]), and the letter that writes its value into a model's name.  A regression declares
+its knobs (`CenteredRidge.tunable` = [`Knob.LAMBDA`], `ElasticNet.tunable` adds `Knob.L1_RATIO`), and
+`Forecaster.tune` turns whatever it finds.
+
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-20
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Mapping, Optional
+import math
+from dataclasses import dataclass
+from typing import Any, ClassVar, Dict, Iterable, Mapping, Optional
 
 
 def _num_str(v: Any, like: Any = None) -> str:
@@ -155,3 +163,67 @@ class HyperParameter(dict):
         return "HyperParameter(" + ", ".join(items) + ")"
 
     __str__ = __repr__
+
+
+@dataclass(frozen=True)
+class Knob:
+    """
+    One tunable hyper-parameter (ScalaTion's `Knob`).
+
+    Parameters
+    ----------
+    name : str
+        The key in the hyper-parameter map (e.g., "lambda"; the `Args` name is `lam`).
+    grid : sequence of float
+        The values a grid search tries (its ends are the range of a continuous search).
+    log : bool
+        Whether a continuous search moves in log10 (True: a penalty) or linearly (False: a share).
+    tag : str
+        The letter written before the value in a model's name ("L" => _L1.0, "A" => _A0.5).
+    """
+    name: str
+    grid: tuple
+    log: bool
+    tag: str
+
+    def tagOf(self, v: float) -> str:
+        """The tag of a value as a model's name writes it: "_" + the letter + the value -- a log knob
+        with one digit after the decimal point (1.0, 10.0) or all its digits below 0.1 (0.01, 1e-12);
+        a linear knob with two digits, trailing zeros dropped (0.5, 0.25, 1.0)."""
+        v = float(v)
+        if self.log:
+            s = (f"{v:.1f}" if not (0.0 < v < 0.1) else _java_double(v))
+        else:
+            s = f"{v:.2f}".rstrip("0")
+            if s.endswith("."):
+                s += "0"
+        return f"_{self.tag}{s}"
+
+    def toCoord(self, v: float) -> float:
+        """The search coordinate of a value (log10 for a log knob)."""
+        return math.log10(v) if self.log else float(v)
+
+    def fromCoord(self, c: float) -> float:
+        """The value of a search coordinate (10^c for a log knob)."""
+        return 10.0 ** c if self.log else float(c)
+
+    LAMBDA: ClassVar["Knob"]
+    L1_RATIO: ClassVar["Knob"]
+
+
+def _java_double(v: float) -> str:
+    """A small double as Java's `Double.toString` prints it (what ScalaTion's `s"$v"` gives):
+    "0.01", "0.001", "1.0E-12" (Python's repr gives "1e-12")."""
+    r = repr(v)
+    if "e" in r:
+        mant, exp = r.split("e")
+        if "." not in mant:
+            mant += ".0"
+        return f"{mant}E{int(exp)}"
+    return r
+
+
+#: The ridge / elastic-net penalty lambda: decades from 1e-3 to 1e3, searched in log10 (ScalaTion's `Knob.LAMBDA`).
+Knob.LAMBDA = Knob("lambda", (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0, 1e3), True, "L")
+#: The elastic net's share of the L1 penalty (0 ridge, 1 lasso), searched linearly (ScalaTion's `Knob.L1_RATIO`).
+Knob.L1_RATIO = Knob("l1_ratio", (0.0, 0.25, 0.5, 0.75, 1.0), False, "A")

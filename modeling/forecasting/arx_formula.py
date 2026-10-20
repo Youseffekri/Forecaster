@@ -24,8 +24,8 @@ The nonlinear terms with free parameters (shift, exponent, threshold, ...) exten
 `modeling/forecasting/nonlinear/narx_formula.py` (ScalaTion's `NARX_Formula.scala`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 2.0
 License: MIT License
 Note: AI assisted code
 """
@@ -361,9 +361,50 @@ class WaveTerm(Term):
         return np.sin(self.w * np.arange(m) + self.phase)
 
 
+class AvgTerm(Term):
+    """
+    The MEAN of the lags lo..hi of a variable, `avg(x~(hi,lo))`: one column for a block of
+    consecutive lags, the lag grouping that keeps the information of a dense lag structure while
+    removing the collinearity of its near-copies (yl2, yl3, yl4 correlate above 0.95 on a smooth
+    series; their mean is one interpretable "recent past" regressor).  Parameter-free; the discrete
+    cousin of the exponential moving average `ema (x, decay)` of the nonlinear terms.
+    """
+
+    def __init__(self, name: str, hi: int, lo: int) -> None:
+        if lo < 1 or hi < lo:
+            raise ValueError(f"AvgTerm: lag range ({hi},{lo}) for variable '{name}' must satisfy 1 <= lo <= hi")
+        self._name, self.hi, self.lo = name, int(hi), int(lo)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def label(self, mode: LabelMode = LabelMode.VALUE) -> str:
+        return f"avg({self._name}~({self.hi},{self.lo}))"
+
+    @property
+    def lag(self) -> int:
+        return self.hi
+
+    def column(self, dataset: Dict[str, np.ndarray]) -> np.ndarray:
+        x = dataset[self._name]
+        return np.mean([lagv(x, l) for l in range(self.lo, self.hi + 1)], axis=0)
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, AvgTerm) and (other._name, other.hi, other.lo) == (self._name, self.hi, self.lo)
+
+    def __hash__(self) -> int:
+        return hash(("avg", self._name, self.hi, self.lo))
+
+
 # ---------------------------------------------------------------------------------------------
 #  The DSL (ScalaTion's top-level `log`, `pow`, `wave`, ...)
 # ---------------------------------------------------------------------------------------------
+
+def avg(x: Union[FormulaVar, str], hi: int, lo: int = 1) -> AvgTerm:
+    """The mean of the lags lo..hi of a variable: `avg(y, 4, 2)` = (y~4 + y~3 + y~2) / 3."""
+    return AvgTerm(x.name if isinstance(x, FormulaVar) else str(x), hi, lo)
+
 
 def _each(ts, f):
     """Applies f to a term or to every term of a list (a lag range)."""
@@ -528,13 +569,9 @@ class ARX_Formula:
     # -- terms ------------------------------------------------------------------------------
 
     @property
-    def labels(self) -> List[str]:
-        """The terms' labels (the feature names of the matrix)."""
-        return [t.label() for t in self.preds]
-
     def names(self) -> List[str]:
-        """ScalaTion's name for `labels`."""
-        return self.labels
+        """The terms' labels: the feature names of the matrix (ScalaTion's `ARX_Formula.names (preds)`)."""
+        return [t.label() for t in self.preds]
 
     @property
     def nTerms(self) -> int:
@@ -650,10 +687,11 @@ class ARX_Formula:
 
     # -- fitting ----------------------------------------------------------------------------
 
-    def fit(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1) -> "ARX":
+    def fit(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None,
+            tFormT: Optional[TransformT] = None, trSize: int = -1) -> "ARX":
         """
-        Fits the recursive `ARX` model with one column per term (ScalaTion's `ARX_Formula.fit`:
-        `ARX.fromTerms` then `trainNtest` in-sample).
+        Fits the recursive `ARX` model with one column per term (ScalaTion's `ARX_Formula.fit (hh,
+        tFormT, trSize, scaled)`: `ARX.fromTerms` then `trainNtest` in-sample).
 
         Parameters
         ----------
@@ -662,22 +700,26 @@ class ARX_Formula:
         hh : int, default=1
             The maximum forecasting horizon.
         args : Args or dict, optional
-            The settings of the model: tFormT (the transform type of every base column; None => the
-            formula's), method ("ridge" is ScalaTion's `CenteredRidge`), lam (default 0.1), scaled
-            (the regression standardizes the term columns), nneg, skip, te_ratio.
+            The settings of the model: method ("ridge" is ScalaTion's `CenteredRidge`), lam (default
+            0.1), scaled (the regression standardizes the term columns), nneg, skip, te_ratio.
+        tFormT : TransformT, optional
+            The transform type of every base column (ScalaTion's `fit (..., tFormT)`); None => the
+            formula's own (its "TFORM:" clause).
         trSize : int, default=-1
-            The training rows the transforms are fit on (-1 => `trSize`).
+            The training rows the transforms are fit on (-1 => the training rows, or the fit rows
+            while choosing).
         """
-        mod = ARX.fromTerms(self, dataset, hh, args, trSize)
+        mod = ARX.fromTerms(self, dataset, hh, args, tFormT, trSize)
         mod.trainNtest()
         return mod
 
-    def fit_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None, trSize: int = -1) -> "ARX_D":
+    def fit_D(self, dataset: Dict[str, np.ndarray], hh: int = 1, args: Any = None,
+              tFormT: Optional[TransformT] = None, trSize: int = -1) -> "ARX_D":
         """
         Fits the direct `ARX_D` model with one column per term (ScalaTion's `ARX_Formula.fit_D`:
         `ARX_D.fromTerms` then `trainNtest` in-sample).  Parameters as in `fit`.
         """
-        mod = ARX_D.fromTerms(self, dataset, hh, args, trSize)
+        mod = ARX_D.fromTerms(self, dataset, hh, args, tFormT, trSize)
         mod.trainNtest()
         return mod
 

@@ -22,17 +22,18 @@ The FEATURE SELECTION scenarios of ScalaTion's `Forecaster_D` live here as well 
     reportSelection     prints and tests any of them, in-sample and/or TnT (`SelectionReport`)
 
 The model classes provide `getModel (cols)` (the direct sub-model) and `getModel_h (cols, h)` (the
-single-horizon model at h); `smapeFPE` / `aggFPE` are the companion object's functions.
+single-horizon model at h).  One selection score, `Forecaster.scoreOf`, serves both ways of scoring
+(rev1.7: the FPE-form sMAPE of rev1.5's `aggFPE` is `scoreOf (qof, inSample = True)`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-19
+Version: 2.1
 License: MIT License
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import statsmodels.api as sm
@@ -42,51 +43,8 @@ from Util.tools import array_str, banner, set_str
 from modeling.feature_selection import (BestStep, Cols, FeatureSelection, SelectionReport, SelectionTech, given_qk,
                                         updateQoF)
 from modeling.fit import N_QoF, Fit, QoF, vif
-from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, trSize
+from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, Model, trSize
 from modeling.subset_search import SubsetSearch
-
-
-# ---------------------------------------------------------------------------------------------
-# The companion object: the FPE-form sMAPE and its aggregation over the horizons
-# ---------------------------------------------------------------------------------------------
-
-def smapeFPE(qof: np.ndarray) -> np.ndarray:
-    """
-    The FPE-form parsimony-adjusted sMAPE per horizon (ScalaTion's `Forecaster_D.smapeFPE`),
-
-        sMAPE_h (1 + 2 p / n_h),  p = |S| + 1 (the slopes and the intercept),
-
-    n_h the rows diagnosed at horizon h (the `dfr` and `m` slots of the QoF matrix).  Akaike's
-    FPE = sigma^2 (n + p) / (n - p) ~ sigma^2 (1 + 2p/n) charges a term in proportion to the loss,
-    so the weight of the penalty against the loss is the same at every error level.
-
-    Parameters
-    ----------
-    qof : np.ndarray, shape (hh, N_QoF)
-        The QoF matrix, one row per horizon.
-    """
-    qof = np.asarray(qof, dtype=float)
-    p = qof[:, QoF.dfr.ordinal] + 1.0
-    n = qof[:, QoF.m.ordinal]
-    return qof[:, QoF.smape.ordinal] * (1.0 + 2.0 * p / n)
-
-
-def aggFPE(qof: np.ndarray) -> np.ndarray:
-    """
-    Aggregates a QoF matrix over the horizons for `selectFeatures` (h = 0) (ScalaTion's
-    `Forecaster_D.aggFPE`): the mean of every measure, with the sMAPE-IC slot holding the mean
-    FPE-form sMAPE over the horizons (`smapeFPE`), the selection score J of the LLM-NARX-SR search;
-    with qk = smapeC the joint selection therefore minimizes J.
-
-    Parameters
-    ----------
-    qof : np.ndarray, shape (hh, N_QoF)
-        The QoF matrix, one row per horizon.
-    """
-    qof = np.asarray(qof, dtype=float)
-    v = qof.mean(axis=0)
-    v[QoF.smapeC.ordinal] = float(np.mean(smapeFPE(qof)))
-    return v
 
 
 class Forecaster_D(SelectionReport, Forecaster):
@@ -197,13 +155,28 @@ class Forecaster_D(SelectionReport, Forecaster):
             Xc = sm.add_constant(X_, has_constant="add")
             self._models_fit = [sm.OLS(Y_[:, j], Xc).fit() for j in range(Y_.shape[1])]
             self._set_params(np.column_stack([np.asarray(f.params) for f in self._models_fit]))
-        elif self._method == "ridge":
+        elif self.penalized:                                              # CenteredRidge / ElasticNet
             self._model.fit(X_, Y_)
             self._set_params(self._model.params)
             self._b = self._model.parameter                              # ScalaTion's bb = reg.parameter
         else:
             self._model.fit(X_, Y_)
             self._set_params(np.column_stack([self._model.intercept_, self._model.coef_]).T)
+
+    def _cvData(self) -> Tuple[np.ndarray, np.ndarray]:
+        """The embedded rows of the direct regressions on the chooser's rows (`cvScore`): the target
+        matrix Y (one column per horizon) and X of the rows whose hh targets all lie before the end of
+        the chooser's rows (`_trainWindow`: the boundary rule)."""
+        n = Model.fitSize(len(self._y), self._te_ratio) if Model.validating else self._tr_size
+        return self.fit_rows(*self._trainWindow(0, n))
+
+    def _cvTrain(self, T: np.ndarray, X: np.ndarray) -> None:
+        """Fits the regression of every horizon on (X, T)."""
+        self.train(T, X)
+
+    def _cvPredict(self, X: np.ndarray) -> np.ndarray:
+        """The forecasts (rows, hh) of the rows of X in model units, clipped at zero when nneg."""
+        return self._rectify(self._predict(X))
 
     def _predict(self, X_rows: np.ndarray) -> np.ndarray:
         """The forecasts (rows, hh) of the given input rows, in model units, not rectified
@@ -239,17 +212,29 @@ class Forecaster_D(SelectionReport, Forecaster):
             h = int(x_)
             if not 1 <= h <= self.hh:
                 raise ValueError(f"summary: horizon h = {h} out of range [1, {self.hh}]")
-            return f"\nhorizon h = {h}\n" + self.summary(b_=self.params[:, h - 1])
+            se = self._model.stdErr(h - 1) if self._ridgeSE() else None
+            x1 = np.column_stack((np.ones(self._X.shape[0]), self._X))
+            return f"\nhorizon h = {h}\n" + Fit.summary(self, x1, ["intercept"] + list(self.fname), self.params[:, h - 1], vif(x1), se)
         x_ = self._X if x_ is None else x_
         fname_ = self.fname if fname_ is None else fname_
         x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
         b1 = self.params[:, 0] if b_ is None else b_                   # intercept +: slopes of horizon 1
         v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
-        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1)
+        se = self._model.stdErr(0) if b_ is None and self._ridgeSE() else None   # a ridge: the sandwich covariance
+        return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1, se)
 
-    def _train_target(self, is_: int, t: int) -> np.ndarray:
-        """The training target rows [is_, t) of the matrix Y."""
-        return self._Y[is_:t]
+    def _trainWindow(self, is_: int, t: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        The training window before the forecast origin t (ScalaTion's `Forecaster_D.trainWindow`):
+        the rows [is_, t - hh + 1) of the target matrix Y and of X -- the rows whose hh targets
+        y[r], .., y[r + hh - 1] all lie before t, so NO training target lies in the block rolled over
+        (the boundary rule; before rev2.1 the window was [is_, t) and the last hh - 1 rows had targets
+        inside the block).
+        """
+        te = t - self.hh + 1
+        if te <= is_:
+            raise ValueError(f"_trainWindow: the window [{is_}, {te}) is empty (t = {t}, hh = {self.hh})")
+        return self._Y[is_:te], self._X[is_:te]
 
     # -- F E A T U R E   S E L E C T I O N  (ScalaTion's `Forecaster_D`) ---------------------------
 
@@ -321,11 +306,13 @@ class Forecaster_D(SelectionReport, Forecaster):
 
     def fitCols(self, cols: Sequence[int]) -> Tuple["Forecaster_D", np.ndarray]:
         """
-        Fits the multi-horizon model of a column set on the FS rows (the training rows, or all
-        rows when `FeatureSelection.fullset_FS`) and returns it with its QoF matrix (one row per
-        horizon) on those rows in ORIGINAL space with the first `getSkip ()` rows left out -- the
-        evaluation of every candidate set of `selectFeatures` (h = 0) and the fit behind
-        `getBest ()` (h >= 1).
+        Fits the multi-horizon model of a column set and returns it with its QoF matrix (one row per
+        horizon), under the switch `Model.validating`: ON => trained on the fit rows and rolled
+        over the validation rows (`rollTest`, original units, no skip), at its own best ridge
+        knobs under `Model.tuning` (`tune`); OFF => fitted on the FS rows
+        (the training rows, or all rows when `FeatureSelection.fullset_FS`) and diagnosed there in
+        ORIGINAL space with the first `getSkip ()` rows left out -- the evaluation of every candidate
+        set of `selectFeatures` (h = 0) and the fit behind `getBest ()` (h >= 1).
 
         Parameters
         ----------
@@ -333,8 +320,12 @@ class Forecaster_D(SelectionReport, Forecaster):
             The columns of the set.
         """
         m = len(self._y)
-        rng = range(0, m) if FeatureSelection.fullset_FS else range(0, trSize(m, self._te_ratio))
         sub = self.getModel(cols)                                         # this model's transforms and scaling
+        if Model.validating:                                              # fit rows -> rolled over the validation rows
+            if Model.tuning and sub.penalized:                            # the set at its own best knobs, all horizons
+                sub = sub.withHP(sub.tune()[0])
+            return sub, sub.rollTest(Model.valRng(m, self._te_ratio), verbose=False)
+        rng = self.fs_rng
         sub.setSkip(self.getSkip())
         sub.train(sub.Y[rng.start:rng.stop], sub.X[rng.start:rng.stop])
         sub.forecast()                                                    # every row and horizon into Yf
@@ -347,10 +338,92 @@ class Forecaster_D(SelectionReport, Forecaster):
             qof[h - 1] = sub.diagnose(yy, yfh)                            # original space, skip rows dropped
         return sub, qof
 
+    @property
+    def fs_rng(self) -> range:
+        """The rows a candidate is fitted on (ScalaTion's `fs_rng`): the fit rows under
+        `Model.validating`, else the training rows (all rows when `fullset_FS`) -- cut hh - 1 rows
+        early, to the rows whose hh targets all lie before the end (the boundary rule of
+        `_trainWindow`: no training target in the block that follows)."""
+        m = len(self._y)
+        if Model.validating:
+            end = Model.fitSize(m, self._te_ratio)
+        else:
+            end = m if FeatureSelection.fullset_FS else trSize(m, self._te_ratio)
+        return range(0, end - self.hh + 1)
+
+    @staticmethod
+    def jointQoF(qof: np.ndarray, nParams: Optional[Any] = None) -> np.ndarray:
+        """
+        The QoF matrix of a candidate (one row per horizon) as ONE QoF vector for the joint selection
+        (h = 0): the mean of every measure over the horizons, with the sMAPE-IC slot holding the
+        selection score `Forecaster.scoreOf` (penalised in-sample -- charging `nParams`, the fitted
+        model's `effDF`, when given --, plain on the validation rows), so with qk = smapeC the joint
+        selection minimizes the one score every chooser uses.
+        """
+        q = np.asarray(qof, dtype=float).mean(axis=0)
+        q[QoF.smapeC.ordinal] = Forecaster.scoreOf(qof, inSample=not Model.validating, nParams=nParams)
+        return q
+
+    def coefImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        The STANDARDIZED COEFFICIENTS of the multi-horizon model on `cols`, |b_jh| sd(x_j) averaged
+        over the horizons h, as an importance per column of X (NaN for the columns not in the set):
+        the model is fit on the FS rows (`fitCols`) and its slopes are in original units, so the
+        product is unit-free.  The default ranker of the Ranked technique over all horizons
+        (`selectFeatures` with h = 0); the single-horizon models have `Forecaster_Reg`'s.
+
+        Parameters
+        ----------
+        cols : sequence of int
+            The current column set.
+        """
+        cols = list(cols)
+        rng = self.fs_rng
+        imp = np.full(self.getX().shape[1], np.nan)
+        sub, _ = self.fitCols(cols)
+        b = np.abs(np.asarray(sub.slopes, dtype=float)).mean(axis=1)      # (n_sub,): mean |b_jh| over the horizons
+        sd = np.std(sub.X[rng.start:rng.stop], axis=0)
+        imp[cols] = b * sd
+        return imp
+
+    def tImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        The t-STATISTICS of the multi-horizon model on `cols`, |b_jh| / se_jh averaged over the horizons
+        h, as an importance per column of X (NaN for the columns not in the set): the model is fit on
+        the FS rows (`fitCols`), the standard errors are the regression's own per horizon (`stdErrOf`:
+        a ridge's sandwich covariance, the least-squares formula otherwise).  The ranker of
+        elimination by p-value over all horizons (`selectFeatures (Ranked, rank = "t")`).
+        """
+        cols = list(cols)
+        rng = self.fs_rng
+        imp = np.full(self.getX().shape[1], np.nan)
+        sub, _ = self.fitCols(cols)
+        Y_, X_ = sub.fit_rows(sub.Y[rng.start:rng.stop], sub.X[rng.start:rng.stop])
+        resid = Y_ - sub._predict(X_)
+        t = np.zeros(len(cols))
+        for h in range(Y_.shape[1]):
+            se = sub.stdErrOf(X_, resid[:, h], h)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                t += np.abs(np.asarray(sub.slopes, dtype=float)[:, h] / se[1:])
+        imp[cols] = t / Y_.shape[1]
+        return imp
+
+    def vifImportance(self, cols: Sequence[int]) -> np.ndarray:
+        """
+        MINUS the VARIANCE INFLATION FACTORS of the columns `cols` on the FS rows (given an intercept),
+        as an importance per column of X (NaN for the columns not in the set): the most collinear
+        column leaves first (`selectFeatures (Ranked, rank = "vif")`); a property of X, no fit needed.
+        """
+        cols = list(cols)
+        rng = self.fs_rng
+        imp = np.full(self.getX().shape[1], np.nan)
+        x1 = np.column_stack((np.ones(rng.stop - rng.start), self.getX()[rng.start:rng.stop][:, cols]))
+        imp[cols] = -vif(x1)
+        return imp
+
     def selectFeatures(self, tech: SelectionTech, cross: str = "none", first: int = 1, swap: bool = True,
                        h: int = 0, prior: Optional[Sequence[float]] = None, stream: int = 0, bk: int = 3,
-                       agg: Callable[[np.ndarray], np.ndarray] = aggFPE,
-                       qk: Optional[int] = None) -> Tuple[List[Cols], List[List[np.ndarray]]]:
+                       rank: Any = None, qk: Optional[int] = None) -> Tuple[List[Cols], List[List[np.ndarray]]]:
         """
         Performs feature selection for this multi-horizon model, returning the columns selected and
         the QoF measures for all steps -- as LISTS of ONE column set and ONE trace, the shape
@@ -359,12 +432,12 @@ class Forecaster_D(SelectionReport, Forecaster):
         train or roll-validate).  Two ways to score a candidate column set:
 
         h = 0  -- ALL HORIZONS JOINTLY: every set is fit as ONE multi-horizon model (`fitCols`: this
-                  model's transforms and scaling, the FS rows, per-horizon QoF in original space with
-                  the skip rows dropped) and scored by `agg` over the horizons (default `aggFPE`: the
-                  mean of every measure, the sMAPE-IC slot holding the mean FPE-form sMAPE, so with
-                  qk = smapeC the criterion is the selection score J of the LLM-NARX-SR search).  The
-                  trace holds the best-so-far per step (aggregated measures); no cross-validation
-                  column; a set whose fit fails is skipped.
+                  model's transforms and scaling, per-horizon QoF in original space on the fit rows
+                  with the skip rows dropped, or on the validation rows under `Model.validating`) and
+                  scored by `jointQoF` (the mean of every measure, the sMAPE-IC slot holding
+                  `Forecaster.scoreOf`, so with qk = smapeC the criterion is the selection score J of
+                  the LLM-NARX-SR search).  The trace holds the best-so-far per step (aggregated
+                  measures); no cross-validation column; a set whose fit fails is skipped.
         h >= 1 -- AT ONE HORIZON: the single-horizon model at h decides (`selectFeaturesAtH`:
                   `Forecaster_Reg`'s selection on `getModel_h (h)`, so `cross` applies and the trace
                   is that model's) and its columns are shared by every horizon; `getBest ()` then
@@ -373,7 +446,7 @@ class Forecaster_D(SelectionReport, Forecaster):
         Parameters
         ----------
         tech : SelectionTech
-            The selection technique (Forward, Backward, Stepwise, Beam, CEM).
+            The selection technique (Forward, Backward, Stepwise, Beam, CEM, Ranked).
         cross : str, default="none"
             Indicator to include the cross-validation/validation QoF measure (h >= 1 only).
         first : int, default=1
@@ -389,8 +462,12 @@ class Forecaster_D(SelectionReport, Forecaster):
             The random number stream (CEM only, h = 0).
         bk : int, default=3
             The beam width (h = 0; the single-horizon model's own default otherwise).
-        agg : callable, default=aggFPE
-            The aggregation of the (hh, N_QoF) matrix (one row per horizon) into one QoF vector (h = 0).
+        rank : str, callable or array, optional
+            The importance per column (Ranked only): a name ("coef", the default: the standardized
+            coefficients of the multi-horizon fit averaged over the horizons, or the single-horizon
+            model's at h >= 1; "t" the t-statistics, elimination by p-value; "vif" minus the variance
+            inflation factors; see `ranker`), a callable of the current column set re-run after every
+            removal, or an array, one fixed ranking of the full matrix.
         qk : int, optional
             The index of the QoF measure to compare on (defaults to the given `qk`, sMAPE-IC).
 
@@ -402,9 +479,10 @@ class Forecaster_D(SelectionReport, Forecaster):
         qk = given_qk(qk)
         if not 0 <= h <= self.hh:
             raise ValueError(f"selectFeatures: horizon h = {h} out of range [0, {self.hh}]")
-
+        self._theBest = None                                              # a new selection: the last one's best step
+                                                                          # (and its knobs, `bestHP`) must not leak in
         if h > 0:                                                         # the single-horizon model at h decides
-            cols, rSq = self.selectFeaturesAtH(tech, cross, first, swap, h, prior, qk)
+            cols, rSq = self.selectFeaturesAtH(tech, cross, first, swap, h, prior, rank, qk)
             best = self._theBest                                          # that model's best step
             if best.qof is not None:                                      # its QoF, the multi-horizon model
                 try:
@@ -418,14 +496,16 @@ class Forecaster_D(SelectionReport, Forecaster):
         def evalJoint(cols: Cols) -> BestStep:                            # fit and score one set over all horizons
             try:
                 sub, qof = self.fitCols(cols)
-                q = agg(qof)
+                q = self.jointQoF(qof, sub.effDF)
                 return BestStep(-1, q, sub, cols, qk, float(q[qk]))
             except Exception as e:
                 print(f"selectFeatures: cols = {set_str(cols)} failed: {e}")
                 return BestStep(-1, None, None, cols, qk)
 
+        if tech is SelectionTech.Ranked:
+            rank = self.coefImportance if rank is None else self.ranker(rank)   # true RFE: re-ranked after every removal
         path = SubsetSearch.run(tech, self.getX().shape[1], evalJoint, list(range(first)), swap=swap, bk=bk,
-                                prior=prior, stream=stream, qk=qk)
+                                prior=prior, stream=stream, rank=rank, qk=qk)
         for step in path.steps:
             updateQoF(rSq, "none", step)
         self._theBest = path.best
@@ -435,7 +515,7 @@ class Forecaster_D(SelectionReport, Forecaster):
         return [path.cols], [rSq]
 
     def selectFeaturesAtH(self, tech: SelectionTech, cross: str = "none", first: int = 1, swap: bool = True,
-                          h: int = 1, prior: Optional[Sequence[float]] = None,
+                          h: int = 1, prior: Optional[Sequence[float]] = None, rank: Any = None,
                           qk: Optional[int] = None) -> Tuple[Cols, List[np.ndarray]]:
         """
         Performs regression-based feature selection on the single-horizon model at horizon h
@@ -458,6 +538,8 @@ class Forecaster_D(SelectionReport, Forecaster):
             The horizon.
         prior : sequence of float, optional
             The prior inclusion probability per column (CEM only; None => 0.5 each).
+        rank : callable or array, optional
+            The importance per column (Ranked only; None => the single-horizon model's `coefImportance`).
         qk : int, optional
             The index of the QoF measure to compare on.
 
@@ -481,6 +563,8 @@ class Forecaster_D(SelectionReport, Forecaster):
             res = mod_h.beamSelAll(cross, qk=qk)
         elif tech is SelectionTech.CEM:
             res = mod_h.cemSelAll(cross, first, prior, qk=qk)
+        elif tech is SelectionTech.Ranked:
+            res = mod_h.rankedElimAll(rank, first, cross, qk=qk)
         else:
             raise ValueError(f"selectFeaturesAtH: unknown technique {tech}")
         rSq = res[1][0]                                                   # its trace (the single-horizon model's selection)
@@ -512,14 +596,28 @@ class Forecaster_D(SelectionReport, Forecaster):
             rSqArr.append(rSq)
         return colsArr, rSqArr
 
+    def tnT_Test(self, rc: Optional[int] = None, showYf: bool = True, showParams: bool = False,
+                 verbose: bool = True) -> np.ndarray:
+        """
+        Train-and-Test testing with rolling validation (`Forecaster.tnT_Test`), printing the forecast
+        matrix by default: ScalaTion's `Forecaster_D.tnT_Test (rc = 5, showYf = true)` overrides the
+        base's `showYf = false` for the direct models, whose matrix is the result.
+        """
+        return super().tnT_Test(rc, showYf, showParams, verbose)
+
     # -- R E P O R T I N G   T H E   S E L E C T I O N  (the hooks of `SelectionReport.reportSelection`)
 
     def selectedModel(self, cols: Cols, h: int) -> Any:
         """
         Builds the forecaster of a selected column set (the hook of `reportSelection`): the
-        multi-horizon model on the columns, or the single-horizon model at h (h > 0).
+        multi-horizon model on the columns, or the single-horizon model at h (h > 0), of this model
+        with its transforms refitted on the training rows (`refitTransform`) when they were fitted
+        on the fit rows while choosing (`Model.validating`).
         """
-        return self.getModel_h(cols, h) if h > 0 else self.getModel(cols)
+        base = self.refitTransform() if Model.validating else self
+        mod = base.getModel_h(cols, h) if h > 0 else base.getModel(cols)
+        hp2 = self.bestHP(cols)                                           # a refit model has no best step of its own
+        return mod if hp2 is None else mod.withHP(hp2)
 
     def testSelected(self, mod: Any, inSample: bool, tnt: bool, rc: int,
                      showYf: bool) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -545,14 +643,14 @@ class Forecaster_D(SelectionReport, Forecaster):
         qofIn: Optional[np.ndarray] = None
         qofTnT: Optional[np.ndarray] = None
         if inSample:
-            banner(f"{self.modelName}: In-Sample Test of the selected model on {array_str(mod.fname)}")
+            banner(f"{mod.modelName}: In-Sample Test of the selected model on {array_str(mod.fname)}")
             mod.trainNtest()                                              # train on all the rows
             mod.forecastAll()                                             # forecast h-steps ahead for all y
             qofIn = mod.diagnoseAll()                                     # QoF for each horizon
             if showYf:
                 print(f"Forecast Matrix yf = {mod.Yf}")
         if tnt:
-            banner(f"{self.modelName}: TnT Test (rolling validation) of the selected model on {array_str(mod.fname)}")
+            banner(f"{mod.modelName}: TnT Test (rolling validation) of the selected model on {array_str(mod.fname)}")
             mod.trainNtest()                                              # initial training updated by `rollValidate`
             mod.forecastAll()
             mod.setSkip()                                                 # diagnose: don't skip any rows
@@ -562,6 +660,3 @@ class Forecaster_D(SelectionReport, Forecaster):
                 print(f"Forecast Matrix yf = {mod.Yf}")
         return qofIn, qofTnT
 
-    # the companion object's functions, reachable from the class as in ScalaTion (`Forecaster_D.aggFPE`)
-    smapeFPE = staticmethod(smapeFPE)
-    aggFPE = staticmethod(aggFPE)

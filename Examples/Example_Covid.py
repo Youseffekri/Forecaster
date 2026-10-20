@@ -13,6 +13,12 @@ rolling validation; every model prints ScalaTion's blocks (REPORT, "fitMap QoF =
     aRIMA_test        ARIMA(1,1,1), ARIMA(2,1,0), ARIMA(1,0,1)   In-Sample and TnT (statsmodels-backed)
     aRX_test          ARX (p = px = 6, spec 0), also rescaled (Norm)   TnT (example_CovidTest16, recursive)
     aRX_D_test        ARX_D (p = px = 6, spec 0)                 TnT (aRX_DTest4, the paper's baseline, direct)
+    aRX_D_test2       ARX_D ridge: tune on the validation rows (grid, golden, random, a wider block, 5-fold), In-Sample
+                      and TnT at the knobs found, then every feature selection technique with Model.tuning on
+    aRX_D_enet_test   ridge vs elastic net on standardized columns: the knobs (lambda; lambda and l1_ratio) by tune, TnT,
+                      the columns the L1 part kept
+    aRX_D_diff_test   ARX_D on the differenced series (d = 1), forecasts integrated back to levels, TnT against the
+                      undifferenced model on the same testing rows
     aRX_SR_test       ARX_SR.rescale (Log1p) with PowForm / LogForm   TnT (recursive, SR terms)
     aRX_SR_D_test     ARX_SR_D.rescale (Log1p) with PowForm, RootForm, LogForm   In-Sample, SUMMARY, TnT (aRX_SR_DTest)
     aRX_Formula_test  ARX_Formula DSL: fit (ARX) and fit_D (ARX_D), TFORM: Log1p   (aRX_FormulaTest5)
@@ -28,12 +34,12 @@ hyper-parameters follow ScalaTion: `spec` counts the trend columns (0 implicit c
 2 quadratic, 3 cubic), `p` the lags of y, `px` the lags of each exogenous variable, `skip` the rows
 dropped from the In-Sample diagnosis (p by default), `lam` the ridge penalty (RidgeRegression.hp("lambda")).
 
-Run from the repository root:  python Examples/Example_Covid.py [rw|ar|arima|arx|arx_d|arx_sr|arx_sr_d|formula|narx|narx_sr|optimizers|mhattn|run|all]
+Run from the repository root:  python Examples/Example_Covid.py [rw|ar|arima|arx|arx_d|arx_d2|enet|diff|arx_sr|arx_sr_d|formula|narx|narx_sr|optimizers|mhattn|run|all]
 (no argument: the quick default -- RandomWalk, AR(6) and ARX_D).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 1.8
 License: MIT License
 Note: AI assisted code
 """
@@ -61,6 +67,8 @@ from modeling.forecasting.arx_sr_d import ARX_SR_D
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula, decay, ema, half, sat, thresh, trans, width
 from modeling.forecasting.nonlinear.narx_sr_d import OPTIMIZER_NL, NARX_SR_D, OptimizerNL
 from modeling.forecasting.datasets import Example_Covid
+from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.hyper_parameter import Knob
 from modeling.forecasting.random_walk import RandomWalk
 from modeling.forecasting.runner import run
 
@@ -79,10 +87,11 @@ def load_covid():
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation (randomWalkTest3, randomWalkTest4)."""
-    banner("In-ST Forecasts: RandomWalk on COVID-19 Dataset")
-    RandomWalk(y, hh).inSample_Test()
-    banner("TnT Forecasts: RandomWalk on COVID-19 Dataset")
-    RandomWalk(y, hh).tnT_Test(RC)
+    mod = RandomWalk(y, hh)
+    banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
+    mod.inSample_Test()
+    banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
+    mod.tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, ps=range(1, 11), method="adjusted"):
@@ -106,20 +115,19 @@ def aRIMA_test(y, hh=HH, orders=((1, 1, 1), (2, 1, 0), (1, 0, 1))):
         mod = ARIMA(y, hh, args)
         banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
         mod.inSample_Test()
-        mod = ARIMA(y, hh, args)
         banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
         mod.tnT_Test(RC)
 
 
 def aRX_test(y, xe, hh=HH, args=None):
-    """ARX (recursive) on the raw series and rescaled by NormForm (args.tFormT = TransformT.Norm): TnT."""
+    """ARX (recursive) on the raw series and rescaled by NormForm (`rescale (..., TransformT.Norm)`): TnT."""
     if args is None:
         args = Args()
         args.p, args.px, args.spec = 6, 6, 0
     mod = ARX(y, hh, xe, args)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
-    mod = ARX.rescale(y, hh, xe, args.copy(tFormT=TransformT.Norm))
+    mod = ARX.rescale(y, hh, xe, args, TransformT.Norm)
     banner(f"TnT Forecasts: {mod.modelName} (rescaled, NormForm) on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
@@ -132,19 +140,126 @@ def aRX_D_test(y, xe, hh=HH, args=None):
     mod = ARX_D(y, hh, xe, args)
     banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.inSample_Test()
-    mod = ARX_D(y, hh, xe, args)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
+
+
+def aRX_D_test2(y, xe, hh=HH, args=None):
+    """ARX_D fitted by the ridge (p = px = 6, spec = 1) with its knobs TUNED on the validation rows
+    (`tune`: the knobs the regression declares -- `Knob.LAMBDA`, decades from 1e-3 to 1e3 --, the best mean
+    validation sMAPE over h = 1..hh, the split 68 / 24 / 24) -- with the lambda landscape on raw and on
+    standardized columns, and the knobs found by the golden-section refinement, by random search, on a wider
+    validation block and by 5-fold cross-validation on the training rows (`Model.folds`) --, then In-Sample
+    and TnT at the knobs found; then every feature selection technique with `Model.tuning` on (each
+    candidate column set at its own best knobs), the selected model of each reported and TnT-tested at
+    the knobs its best step found (the tag of every name, _L1.0, says which).  Under `method = "enet"` the
+    same code tunes two knobs (lambda, l1_ratio: the 35-point grid) and the names carry _L.._A.. ."""
+    if args is None:
+        args = Args(p=6, px=6, spec=1, lam=1.0, method="ridge")        # a ridge: lambda is the knob tune turns
+    with Model.withValidation():                                        # choose on the validation rows
+        mod = ARX_D(y, hh, xe, args)
+        banner(f"tune: {mod.modelName} on COVID-19 Dataset, knobs {[k.name for k in mod.knobs]}, fit / validation / test = {Model.splitStr(len(y))}")
+        hpG, score = mod.tune(verbose=True)                             # the model's own knobs play no part
+        lam = hpG["lambda"]
+        print(f"best knobs = {hpG}, validation score (mean sMAPE over h = 1..{hh}) = {score:.4f}")
+        banner("the lambda landscape depends on the column scales: raw columns vs standardized (scaled = True)")
+        print(f"column sd: y {np.std(y):.0f}, {EXO[0]} {np.std(xe[:, 0]):.0f}, {EXO[1]} {np.std(xe[:, 1]):.3f}  "
+              f"-- on raw columns lambda = 1 is heavy for {EXO[1]}'s lags and invisible to the others")
+        modS = ARX_D(y, hh, xe, args.copy(scaled=True))
+        for name, m_ in (("raw", mod), ("scaled", modS)):
+            sc = {l: m_.withHP({"lambda": l}).valScore() for l in Knob.LAMBDA.grid}
+            print(f"  {name:>6s}: " + "  ".join(f"L{l:g} {v:6.2f}" for l, v in sc.items()))
+        banner("the knobs found five ways (raw columns): the search and the rows it is scored on")
+        print(f"  grid, 24 validation rows:   {hpG}, score {score:.4f}")
+        hpS, sb = mod.tune(search="golden")
+        print(f"  golden, 24 validation rows: lambda = {hpS['lambda']:.3g}, score {sb:.4f}   (the grid refined between its neighbours)")
+        hpR, sr = mod.tune(search="random", trials=10, seed=7)
+        print(f"  random, 10 points:          lambda = {hpR['lambda']:.3g}, score {sr:.4f}   (log-uniform between the grid's ends)")
+    with Model.withValidation(ratio=0.4):                               # a wider block: fit 45, score 47 (rollTest IS the
+        hp47, s47 = mod.tune()                                          # expanding window, refit every rc rows)
+        print(f"  grid, 47 validation rows:   {hp47}, score {s47:.4f}   (fit / validation / test = {Model.splitStr(len(y))})")
+    hp5, s5 = mod.tune(folds=5)                                         # k-fold on the 92 training rows (no switch needed)
+    print(f"  grid, 5-fold on 92 rows:    {hp5}, score {s5:.4f}   (Bergmeir, Hyndman & Koo: valid for a lag-input model)")
+    args = args.copy(lam=lam)
+    mod = ARX_D(y, hh, xe, args)                                        # ONE model at the knobs found: In-Sample, TnT
+    banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")     # and the selections below (a selection
+    mod.inSample_Test()                                                 # never trains or alters its model)
+    banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
+    mod.tnT_Test(RC)
+
+    with Model.withValidation(tuning=True):                             # every candidate set at its own best knobs
+        for tech in SelectionTech:
+            banner(f"Feature Selection ({tech}, tuning on): {mod.modelName} on COVID-19 Dataset")
+            colsArr, rSqArr = mod.selectFeatures(tech)
+            best = mod.getBest()
+            print(f"{tech}: best step {best.mod.modelName}: k = {len(best.mod_cols)} of n = {len(mod.mcols)}, "
+                  f"knobs = {mod.bestHP(best.mod_cols)}, score = {best.qof[best.qk]:.4f}, "
+                  f"columns = {[mod.fname[j] for j in best.mod_cols]}")
+            mod.reportSelection(colsArr, rSqArr, inSample=False, rc=RC)   # TnT of the selected model at its knobs
+
+
+def aRX_D_enet_test(y, xe, hh=HH, args=None):
+    """The ELASTIC NET next to the ridge (p = px = 6, spec = 1, standardized columns): the ridge's one knob
+    (lambda) and the elastic net's two (lambda, l1_ratio: the 35-point grid, then one golden-section sweep per
+    knob) tuned on the validation rows by the SAME `tune`, then TnT at the knobs found with the columns the
+    L1 part kept at h = 1 -- the continuous selection every hard selection should be measured against (the
+    grouping effect keeps correlated lags together); the lasso (l1_ratio fixed at 1) next to them."""
+    args = Args(p=6, px=6, spec=1, lam=1.0, scaled=True) if args is None else args
+    banner("ridge vs elastic net on COVID-19 (standardized columns): the knobs by tune (grid + golden), then TnT")
+    print(f"{'method':<16s} {'knobs':>26s} {'val score':>10s} {'TnT mean sMAPE':>15s} {'nonzero at h = 1':>17s}")
+    rows = (("ridge", None, None), ("enet", None, None), ("enet", 1.0, (Knob.LAMBDA,)))
+    for method, l1, knobs in rows:
+        a = args.copy(method=method) if l1 is None else args.copy(method=method, l1_ratio=l1)
+        mod = ARX_D(y, hh, xe, a)
+        with Model.withValidation():
+            hp2, score = mod.tune(knobs, search="golden")
+        mod = mod.withHP(hp2)
+        Forecaster.SHOW_QoF, keep = False, Forecaster.SHOW_QoF
+        try:
+            qt = mod.tnT_Test(RC, verbose=False)
+        finally:
+            Forecaster.SHOW_QoF = keep
+        nz = int(np.sum(np.asarray(mod.params)[1:, 0] != 0.0))
+        label = method if l1 is None else f"{method} (l1 {l1:g} fixed)"
+        kn = ", ".join(f"{k} {v:.3g}" for k, v in hp2.items())
+        print(f"{label:<16s} {kn:>26s} {score:10.3f} {Forecaster.scoreOf(qt, False):15.2f} {nz:17d}   {mod.modelName}")
+
+
+def aRX_D_diff_test(y, xe, hh=HH, args=None):
+    """ARX_D on the DIFFERENCED series (d = 1), an experiment without a base change: the model is fitted on
+    z_k = y_{k+1} - y_k (the exogenous variables aligned with z, the non-negativity off: a difference may be
+    negative), its TnT forecasts of the differences are integrated back to levels -- from the origin t - 1,
+    y_{t+h-1} = y_{t-1} + sum_{j <= h} z-forecast_j, i.e. the cumulative sum along row t - 1 of the forecast
+    matrix -- and the levels are diagnosed on the SAME testing rows as the undifferenced model (`diagnoseAll`),
+    so the two QoF tables compare directly.  Differencing removes the level's trend and most of the
+    collinearity of its lags; whether it forecasts better is what the table says."""
+    args = Args(p=6, px=6, spec=0, lam=1.0, method="ridge") if args is None else args
+    mod = ARX_D(y, hh, xe, args)
+    banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset (levels)")
+    qofLevel = mod.tnT_Test(RC)
+
+    z, xez = np.diff(y), xe[1:]                                          # z_k = y_{k+1} - y_k, xe aligned with z
+    modz = ARX_D(z, hh, xez, args.copy(nneg=False))
+    banner(f"TnT Forecasts: {modz.modelName} on the DIFFERENCED COVID-19 Dataset (d = 1)")
+    modz.tnT_Test(RC)                                                   # its QoF on the differences
+    Yf = mod.Yf.copy()                                                  # the level layout: Yf[t, h] = y_{t+h-1} forecast at t - 1
+    te = range(mod.tr_size, len(y))
+    for t in te:                                                         # row t - 1 of the difference model = origin t - 1
+        Yf[t, 1:hh + 1] = np.maximum(y[t - 1] + np.cumsum(modz.Yf[t - 1, 1:hh + 1]), 0.0)
+    banner(f"diagnoseAll: {modz.modelName} integrated back to LEVELS on the testing rows {te.start}..{te.stop - 1}")
+    qofDiff = mod.diagnoseAll(y, Yf, te)
+    print(f"mean sMAPE over h = 1..{hh}: levels {Forecaster.scoreOf(qofLevel, False):.4f}, "
+          f"differenced then integrated {Forecaster.scoreOf(qofDiff, False):.4f}")
 
 
 def aRX_SR_test(y, xe, hh=HH, args=None):
     """ARX_SR (recursive, symbolic regression terms): y^1.5 next to the lags of y and log (1 + xe_j) next to
     each exogenous variable's lags; rescaled by Log1p first (as ScalaTion's tests), so the powers and logs
     stay defined."""
-    args = Args(p=6, px=4, spec=0, crx=False, tFormT=TransformT.Log1p) if args is None else args
+    args = Args(p=6, px=4, spec=0, crx=False) if args is None else args
     fEndo = [PowForm()]                                                  # (y + 0)^1.5
     fExo = [[LogForm()] for _ in range(xe.shape[1])]                     # log (1 + xe_j)
-    mod = ARX_SR.rescale(y, hh, xe, args, fEndo, fExo)
+    mod = ARX_SR.rescale(y, hh, xe, args, fEndo, fExo, TransformT.Log1p)
     print(f"columns: {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
@@ -153,15 +268,14 @@ def aRX_SR_test(y, xe, hh=HH, args=None):
 def aRX_SR_D_test(y, xe, hh=HH, args=None):
     """ARX_SR_D (direct, SR terms): PowForm and RootForm of y, LogForm of each exogenous variable, rescaled by
     Log1p (aRX_SR_DTest5): In-Sample with the coefficient table (`summary`), then TnT."""
-    args = Args(p=6, px=4, spec=0, crx=False, tFormT=TransformT.Log1p) if args is None else args
+    args = Args(p=6, px=4, spec=0, crx=False) if args is None else args
     fEndo = [PowForm(), RootForm()]                                      # y^1.5 and y^0.5
     fExo = [[LogForm()] for _ in range(xe.shape[1])]                     # log (1 + xe_j)
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo, TransformT.Log1p)
     print(f"columns: {mod.fname}")
     banner(f"In-ST Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.inSample_Test()
     print(mod.summary())                                                 # statistical summary of fit
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
     banner(f"TnT Forecasts: {mod.modelName} on COVID-19 Dataset")
     mod.tnT_Test(RC)
 
@@ -286,8 +400,8 @@ def mHAttn_test(y, xe, hh=HH, args=None):
     except ImportError as e:
         print(f"mHAttn_test skipped: torch is not installed ({e})")
         return
-    args = Args(p=6, px=4, spec=0, tFormT=TransformT.Log1p) if args is None else args
-    model = ARX_SR.rescale(y, hh, xe, args, fExo=[[] for _ in range(xe.shape[1])])
+    args = Args(p=6, px=4, spec=0) if args is None else args
+    model = ARX_SR.rescale(y, hh, xe, args, fExo=[[] for _ in range(xe.shape[1])], tFormT=TransformT.Log1p)
     X_torch = torch.tensor(model.X, dtype=torch.float32)
     y_torch = torch.tensor(model.y.reshape(-1, 1), dtype=torch.float32)
     train_loader = DataLoader(TensorDataset(X_torch, y_torch), batch_size=len(y), shuffle=False)
@@ -326,6 +440,9 @@ SCENARIOS = {
     "arima": lambda y, xe: aRIMA_test(y),
     "arx": lambda y, xe: aRX_test(y, xe),
     "arx_d": lambda y, xe: aRX_D_test(y, xe),
+    "arx_d2": lambda y, xe: aRX_D_test2(y, xe),
+    "enet": lambda y, xe: aRX_D_enet_test(y, xe),
+    "diff": lambda y, xe: aRX_D_diff_test(y, xe),
     "arx_sr": lambda y, xe: aRX_SR_test(y, xe),
     "arx_sr_d": lambda y, xe: aRX_SR_D_test(y, xe),
     "formula": lambda y, xe: aRX_Formula_test(),

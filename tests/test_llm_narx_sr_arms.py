@@ -34,26 +34,34 @@ def mock():
 @pytest.fixture(scope="module")
 def covid():
     cfg = Datasets.COVID2
-    return cfg, FormulaScorer(cfg.load(), hh=6, hp=SMALL)
+    return cfg, FormulaScorer(cfg.load(), hh=6, hp=SMALL, validating=True)   # the harness's protocol: J on the validation rows
 
 
 def test_anchors_match_scalation(covid):
-    """baselineArmTest (the rev4.1 log, Oct 13): baseline score 29.456, in-sample 18.590, validation 18.068,
-    TnT 43.483; tuned-arx 22.298 / 20.953 / 17.636 / 30.711 (y~1 + icu~(3,1) + pRate~(3,1)); sel-arx
-    18.271 / 21.622 / 14.817 / 51.286 (y~1 + icu~5 + icu~3 + pRate~6 + pRate~4 + pRate~1); random-walk
-    41.221 / 33.410 / 39.887 / 45.712; the baseline IS the seed."""
+    """baselineArmTest under the protocol (fit 68, validation 24 rolled with rc = 5, test 24; J = the mean
+    validation sMAPE, no penalty) and, since rev2.1, the boundary rule (a direct model trains only on the rows
+    whose hh targets lie before the forecast origin, so every rolling number of a direct model moved):
+    baseline score 23.217, in-sample 17.048, validation 23.217, TnT 47.684 (rev2.0: 20.030 / 18.117 / 20.030 /
+    43.483); tuned-arx 17.941 / 18.523 / 17.941 / 46.882 (y~1 + icu~(5,1) + pRate~(5,1)); sel-arx 15.804 /
+    19.741 / 15.804 / 56.571 (rev2.0 chose pRate~5 where rev2.1 chooses pRate~6); random-walk 42.117 / 33.639 /
+    42.117 / 45.712 (unchanged on the rolling passes: not a direct model); the baseline IS the seed.  rev2.2: the
+    in-sample numbers moved once more -- the scorer fits and diagnoses on the FS rows of the fit rows (0 until
+    68 - hh + 1), as `Forecaster_D.fitCols` does; the scores and the rolling numbers did not.  ScalaTion rev5.3
+    applies the same rules, so its logs are the ones to compare with."""
     cfg, sc = covid
     runs = {k: BaselineArm(k, verbose=False).run(cfg, sc, 0) for k in (Method.Baseline, Method.TunedARX, Method.SelARX, Method.RandomWalk)}
     base, tuned, sel, rw = runs[Method.Baseline], runs[Method.TunedARX], runs[Method.SelARX], runs[Method.RandomWalk]
     assert all(not r.failed and r.stream == -1 for r in runs.values()) and all(BaselineArm(k).deterministic for k in runs)
     def nums(r):
         return [round(v, 3) for v in (r.best.score, r.best.smape, r.valSmape, r.testSmape)]
-    assert nums(base) == [29.456, 18.590, 18.068, 43.483] and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
-    assert nums(tuned) == [22.298, 20.953, 17.636, 30.711] and tuned.best.formulaStr == "y ~= y~1 + icu~3 + icu~2 + icu~1 + pRate~3 + pRate~2 + pRate~1"
-    assert tuned.best.score <= base.best.score + 1e-12 and len(tuned.top) == 5 and tuned.nEval == 126
-    assert nums(sel) == [18.271, 21.622, 14.817, 51.286] and sel.nEval == 1033
-    assert sel.best.formulaStr == "y ~= y~1 + icu~5 + icu~3 + pRate~6 + pRate~4 + pRate~1"
-    assert nums(rw) == [41.221, 33.410, 39.887, 45.712] and rw.best.formula is None and rw.best.model is not None
+    assert nums(base) == [23.217, 17.048, 23.217, 47.684] and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
+    assert nums(tuned) == [17.941, 18.523, 17.941, 46.882] and tuned.best.formulaStr == "y ~= y~1 + icu~5 + icu~4 + icu~3 + icu~2 + icu~1 + pRate~5 + pRate~4 + pRate~3 + pRate~2 + pRate~1"
+    assert tuned.best.score <= base.best.score + 1e-12 and len(tuned.top) == 5 and tuned.nEval == 84
+    assert nums(sel) == [15.804, 19.741, 15.804, 56.571] and sel.nEval == 689
+    assert sel.best.formulaStr == "y ~= y~1 + icu~5 + icu~4 + icu~3 + pRate~6 + pRate~4 + pRate~3 + pRate~1"
+    assert nums(rw) == [42.117, 33.639, 42.117, 45.712] and rw.best.formula is None and rw.best.model is not None
+    assert base.best.hp == {"lambda": 1.0} and base.best.lam == 1.0 and rw.best.hp is None   # the knobs of the fit (none for a random walk)
+    assert all(r.valRatio == pytest.approx(24 / 116) and r.rc == 5 for r in runs.values())
     assert rw.best.label.startswith("RandomWalk") and rw.exoUsed == [] and all(v > 0 for v in rw.smapeTest)
     seed = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
     assert seed.key == base.best.key and seed.score == base.best.score, "the baseline must be the search seed"
@@ -64,15 +72,18 @@ def test_anchors_match_scalation(covid):
 
 
 def test_auto_exo_anchors_match_scalation():
-    """lLM_NARX_SRTest5 (the rev4.1 log, Oct 13): Covid-19 auto exo, the screening's shortlist exMort, cases;
-    the deterministic arms' score, in-sample, validation and TnT sMAPE and their equations."""
+    """lLM_NARX_SRTest5 under the protocol (validating, 68 / 24 / 24) and the boundary rule of rev2.1: Covid-19
+    auto exo, the screening's shortlist exMort, cases; the deterministic arms' score, in-sample, validation and
+    TnT sMAPE and their equations (rev2.0: baseline 25.089 / 18.417 / 25.089 / 61.807, tuned-arx 24.730 /
+    19.761 / 24.730 / 61.913, sel-arx 22.837 / 20.386 / 22.837 / 73.976 with cases~4 kept; rev2.2: the in-sample
+    column on the FS rows of the fit rows, the rest unchanged)."""
     cfg = Datasets.COVID_ALL
-    sc = FormulaScorer(cfg.load(), hh=6)
-    assert sc.shortlist(cfg) == ["exMort", "cases"]
-    expect = {Method.Baseline: ([40.589, 19.114, 24.868, 61.807], None),
-              Method.TunedARX: ([31.569, 21.951, 26.313, 31.109], "y ~= y~1 + exMort~2 + exMort~1 + cases~2 + cases~1"),
-              Method.SelARX: ([25.447, 26.053, 22.454, 54.515], "y ~= y~1 + exMort~4 + cases~1"),
-              Method.RandomWalk: ([41.221, 33.410, 39.887, 45.712], None)}
+    sc = FormulaScorer(cfg.load(), hh=6, validating=True)
+    assert sc.shortlist(cfg) == ["exMort", "cases"] and sc.splitStr == "68 / 24 / 24"
+    expect = {Method.Baseline: ([30.045, 16.529, 30.045, 76.315], None),
+              Method.TunedARX: ([29.738, 16.852, 29.738, 74.697], "y ~= y~1 + exMort~6 + exMort~5 + exMort~4 + exMort~3 + exMort~2 + exMort~1 + cases~6 + cases~5 + cases~4 + cases~3 + cases~2 + cases~1"),
+              Method.SelARX: ([24.399, 18.261, 24.399, 69.993], "y ~= y~1 + cases~5 + cases~1"),
+              Method.RandomWalk: ([42.117, 33.639, 42.117, 45.712], None)}
     for k, (nums, eq) in expect.items():
         r = BaselineArm(k, verbose=False).run(cfg, sc, 0)
         assert [round(v, 3) for v in (r.best.score, r.best.smape, r.valSmape, r.testSmape)] == nums, k
@@ -191,7 +202,7 @@ def test_grid_report_and_folds(covid, tmp_path, capsys):
     csvs = list(tmp_path.glob("*.csv"))
     assert len(csvs) == 1 and csvs[0].name.startswith("Covid-19_icu_pRate__test__")
     lines = csvs[0].read_text().splitlines()
-    assert lines[0].startswith("method,stream,train_h1") and len(lines) == 9 and lines[1].startswith("baseline,-1,")
+    assert lines[0].startswith("method,stream,val_ratio,rc,train_h1") and len(lines) == 9 and lines[1].startswith("baseline,-1,0.20689655172413793,5,")
     front = LLM_NARX_SR.paretoFront(top)
     assert front and all(a.nTerms < b.nTerms and a.score > b.score for a, b in zip(front, front[1:])) and any(c.key == top.best.key for c in front)
     assert len(LLM_NARX_SR.byMethod(runs)) == 7
@@ -268,22 +279,23 @@ def test_plausibility_checks():
 
 
 def test_gefcom_checks():
-    """lLM_NARX_SRTest8 / rev3.3: the 21-lag baseline's rolling TnT sMAPE 12.783, the free hinge on
-    yesterday's mean temperature at the cooling point (~65.8 F), two hinges rejected as collinear (VIF 18.7),
-    and a small genetic run on the daily series with lags 1..7."""
+    """lLM_NARX_SRTest8 / rev3.3: the 21-lag baseline's rolling TnT sMAPE 12.798 (12.783 before the boundary
+    rule of rev2.1: a long series barely moves), the free hinge on yesterday's mean temperature at the cooling
+    point (~65.8 F), two hinges rejected as collinear (VIF 17.1), and a small genetic run on the daily series
+    with lags 1..7."""
     cfg = Datasets.GEF14
     data = cfg.load()
-    sc = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7, "skip": 7})
+    sc = FormulaScorer(data, hh=6, hp={**SMALL, "maxLag": 7})
     assert sc.trSize == 1679 and sc.teSize == 420
     c = sc.score(cfg.baselineFormulaStr(7))
     assert c.nTerms == 21 and not c.failed
     _, q = sc.tnt(c.formula.fresh())
-    assert np.mean([x["smape"] for x in q]) == pytest.approx(12.783, abs=0.005)
+    assert np.mean([x["smape"] for x in q]) == pytest.approx(12.798, abs=0.005)
     ch = sc.score("y ~= y~(7,1) + hinge(temp~1, ?)")
     assert not ch.failed and 55.0 < ch.formula.params()[0].value < 80.0 and ch.formula.params()[0].value == pytest.approx(65.8, abs=0.3)
     c2 = sc.score("y ~= y~(7,1) + hinge(temp~1, ?) + hinge(tmax~1, ?)")
-    assert c2.failed and "collinear" in c2.reason and "VIF 18.7" in c2.reason
+    assert c2.failed and "collinear" in c2.reason and "VIF 17.1" in c2.reason          # VIF on the 1679 training rows (rev4.1: 18.7 on its 1260 fit rows)
     r = PipelineArm(ArmSpec.genetic, verbose=False).run(cfg, sc, 0)
     assert not r.best.failed and r.best.score <= c.score + 1e-12 and r.exoUsed <= ["temp", "tmax"]
     base = BaselineArm(Method.Baseline, verbose=False).run(cfg, sc, 0)
-    assert base.testSmape == pytest.approx(12.783, abs=0.005) and base.exoUsed == ["temp", "tmax"]
+    assert base.testSmape == pytest.approx(12.798, abs=0.005) and base.exoUsed == ["temp", "tmax"]

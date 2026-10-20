@@ -21,8 +21,8 @@ The rolling validation retrains every RC = 24 rows (a day) to keep the run short
 (no argument: the quick default -- RandomWalk and ARX_D TnT).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-16
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -60,10 +60,11 @@ def load_etth1():
 
 def randomWalk_test(y, hh=HH):
     """RandomWalk: In-Sample Testing and TnT with rolling validation."""
-    banner("In-ST Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(y, hh).inSample_Test()
-    banner("TnT Forecasts: RandomWalk on ETTh1 Dataset (OT, first year)")
-    RandomWalk(y, hh).tnT_Test(RC)
+    mod = RandomWalk(y, hh)
+    banner(f"In-ST Forecasts: {mod.modelName} on ETTh1 Dataset (OT, first year)")
+    mod.inSample_Test()
+    banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset (OT, first year)")
+    mod.tnT_Test(RC)
 
 
 def aR_test(y, hh=HH, p=24, method="adjusted"):
@@ -72,7 +73,6 @@ def aR_test(y, hh=HH, p=24, method="adjusted"):
     mod = AR(y, hh, args)
     banner(f"In-ST Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.inSample_Test()
-    mod = AR(y, hh, args)
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)
 
@@ -90,10 +90,10 @@ def aRX_SR_D_test(y, xe, hh=HH, args=None):
     """ARX_SR_D (direct, SR terms): the sign-safe power sign(y) |y|^0.67 next to the lags of OT and of each load
     (`PowRForm`), rescaled by MinMax to ScalaTion's centered [-2, 2] first -- a power or log of a negative value
     is not defined there, and OT and the loads go below zero anyway: TnT."""
-    args = BASE.copy(p=6, px=3, spec=0, tFormT=TransformT.MinMax) if args is None else args
+    args = BASE.copy(p=6, px=3, spec=0) if args is None else args
     fEndo = [PowRForm()]                                                 # sign (y) |y|^0.67 on the [-2, 2] scale
     fExo = [[PowRForm()] for _ in range(xe.shape[1])]                    # sign (xe_j) |xe_j|^0.67
-    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo)
+    mod = ARX_SR_D.rescale(y, hh, xe, args, fEndo, fExo, TransformT.MinMax)
     print(f"columns ({len(mod.fname)}): {mod.fname}")
     banner(f"TnT Forecasts: {mod.modelName} on ETTh1 Dataset")
     mod.tnT_Test(RC)

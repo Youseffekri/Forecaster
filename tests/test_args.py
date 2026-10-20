@@ -14,7 +14,7 @@ from modeling.forecasting.arima import ARIMA
 from modeling.forecasting.args import OPTIMIZERS, SETTINGS, Args, hp
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.forecaster import Forecaster, teRng, trSize
+from modeling.forecasting.forecaster import Forecaster, Model, teRng, trSize
 from modeling.forecasting.datasets import Example_Covid
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D, OptimizerNL
 from modeling.forecasting.random_walk import RandomWalk
@@ -32,7 +32,7 @@ def test_defaults_are_scalation_defaults():
     a = Args()
     assert a.hparam() == {**{k: hp[k] for k in hp}, "lambda": CenteredRidge.hp["lambda"]}
     assert repr(a.hparam()) == repr(hp)                                 # printed as ScalaTion prints AR.hp
-    assert (a.p, a.px, a.spec, a.crx, a.nneg, a.skip, a.lam, a.te_ratio) == (1, 1, 1, False, True, None, 0.1, 0.2)
+    assert (a.p, a.px, a.spec, a.crx, a.nneg, a.skip, a.lam, a.te_ratio) == (1, 1, 1, False, True, None, 0.1, None)   # te_ratio None: Model.TE_RATIO when built
     assert repr(a) == "Args()" and a.changed() == {}
     assert OPTIMIZERS == tuple(o.name for o in OptimizerNL)             # the names Args checks are OptimizerNL's
     assert [n for n, s in SETTINGS.items() if "AR.hp" in s.section] == list(hp.registered())
@@ -55,7 +55,7 @@ def test_unknown_names_say_what_was_meant():
 
 
 @pytest.mark.parametrize("name, value", [("p", -1), ("p", 1.5), ("p", True), ("spec", 6), ("s", 0), ("crx", 2),
-                                         ("nneg", "yes"), ("lam", -0.1), ("te_ratio", 1.0), ("te_ratio", 0.0),
+                                         ("nneg", "yes"), ("lam", -0.1), ("te_ratio", 1.0), ("te_ratio", -0.1),
                                          ("method", "ols"), ("tFormT", "Square"), ("optimizer", "Newton"),
                                          ("model", "LSTM"), ("validation", "kfold"), ("exo", 3), ("skip", -2)])
 def test_bad_values_are_refused(name, value):
@@ -140,7 +140,7 @@ def test_each_model_checks_its_method_and_ignores_what_it_does_not_read():
         AR(y, 3, Args(method="ridge"))
     with pytest.raises(ValueError, match="ARIMA: method 'sm_ols'"):
         ARIMA(y, 3, Args(method="sm_ols"))
-    shared = Args(p=2, px=1, spec=0, d=0, q=1, method=None, lam=1.0, tFormT="Log1p")
+    shared = Args(p=2, px=1, spec=0, d=0, q=1, method=None, lam=1.0)
     rw, ar, arima, arx_d = RandomWalk(y, 3, shared), AR(y, 3, shared), ARIMA(y, 3, shared), ARX_D(y, 3, xe, shared)
     assert rw.method is None and ar.method == "adjusted" and arima.method is None and arx_d.method == "sm_ols"
     assert arima.order == (2, 0, 1) and ar.hparameter["px"] == 0 and ar.hparameter["spec"] == 0
@@ -154,7 +154,7 @@ def test_te_ratio_sets_the_split():
     assert mod.te_ratio == 0.3 and mod.tr_size == trSize(len(y), 0.3) == 81 and mod.te_size == 35
     ft = mod.tnT_Test(rc=5)
     assert ft[0, 11] == len(teRng(len(y), 0.3))                          # the QoF's m: the testing rows
-    assert ARX_D(y, 3, xe).tr_size == trSize(len(y)) == 92 and Forecaster.TE_RATIO == 0.2
+    assert ARX_D(y, 3, xe).tr_size == trSize(len(y)) == 92 and Model.TE_RATIO == 0.2
 
 
 def test_the_old_argument_order_is_refused():

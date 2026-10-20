@@ -341,6 +341,11 @@ class ExpRun:
         The library term labels the probabilities refer to (None when none).
     error : str, optional
         What cut the run short or made it fail (an unreachable LLM, an exception; None when nothing did).
+    valRatio : float
+        The share of the rows held out as the validation block by the run's scorer (0 when the
+        score was in-sample); the results CSV's val_ratio column.
+    rc : int
+        The retraining cycle of the run's scorer's rolling passes; the results CSV's rc column.
     """
     method: Method
     variant: str
@@ -361,6 +366,8 @@ class ExpRun:
     probs: Optional[np.ndarray] = None
     labels: Optional[List[str]] = None
     error: Optional[str] = None
+    valRatio: float = 0.0
+    rc: int = 0
 
     @property
     def name(self) -> str:
@@ -494,12 +501,12 @@ class SearchArm:
     def record(self, scorer: FormulaScorer, cfg: DatasetConfig, stream: int, best: Candidate,
                top: Sequence[Candidate] = (), traces: Sequence[Trace] = ()) -> ExpRun:
         """Wraps a best candidate as a record with its Train-and-Test QoF attached (the base's
-        `rollValidate` on the testing rows, `FormulaScorer.tnt`)."""
+        `tnT_Test` on the testing rows, `FormulaScorer.tnt`) and the scorer's split settings."""
         if best.failed:
             qofTest: List[Dict[str, float]] = []
         elif best.formula is not None:
-            qofTest = scorer.tnt(best.formula.fresh())[1]
+            qofTest = scorer.tnt(best.formula, best.hp)[1]            # a fresh copy at its knobs
         else:
             qofTest = scorer.tnt(best.model)
         return ExpRun(self.method, self.variant, stream, best, qofTest, top=list(top), traces=list(traces),
-                      exoUsed=self.exoOf(cfg, best))
+                      exoUsed=self.exoOf(cfg, best), valRatio=scorer.valSize / scorer.m, rc=scorer.rc)

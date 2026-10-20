@@ -115,6 +115,30 @@ def test_summary_and_vif():
     assert md.summary(2).startswith("\nhorizon h = 2\nfname = Array(intercept,")    # ScalaTion's summary (h)
 
 
+def test_ridge_summary_uses_the_sandwich_covariance_and_the_effective_df():
+    """A ridge fit's SUMMARY takes its standard errors from Cov (b) = sigma^2 (X'X + lI)^-1 X'X (X'X + lI)^-1 with
+    sigma^2 = SSE / (m - effDF): equal to the OLS errors at lambda = 0, finite and smaller on collinear lags at
+    lambda > 0, where the OLS formula (X'X)^-1 blows up; `effDF` = 1 + tr H_lambda falls with lambda."""
+    y, xe = covid()
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((60, 3))
+    X = np.column_stack((X, X[:, 0] + 1e-3 * rng.standard_normal(60)))   # a near-copy: VIF in the thousands
+    yy = X @ [1.0, -2.0, 0.5, 0.0] + rng.standard_normal(60)
+    r0 = CenteredRidge(0.0).fit(X, yy)
+    ols = sm.OLS(yy, sm.add_constant(X)).fit()
+    assert np.allclose(r0.stdErr(), ols.bse) and r0.effDF == pytest.approx(5.0)
+    r1 = CenteredRidge(10.0, scaled=True).fit(X, yy)
+    assert 1.0 < r1.effDF < 5.0 and np.all(np.isfinite(r1.stdErr())) and r1.stdErr()[4] < 0.1 * ols.bse[4]
+    mod = ARX_D(y, 3, xe, Args(p=6, px=6, spec=1, lam=1.0, method="ridge", scaled=True))
+    mod.inSample_Test()
+    s = mod.summary()
+    rows = [ln for ln in s.splitlines() if ln.startswith("    x")]
+    assert all("NaN" not in ln.split("\t ")[2] for ln in rows)              # finite standard errors on 19 collinear lags
+    assert mod.effDF.shape == (1,) and 1.0 < float(mod.effDF[0]) < 20.0     # a ridge: one count for every horizon, below the 20 columns
+    plain = ARX_D(y, 3, xe, Args(p=2, px=1, spec=0))
+    assert plain.effDF is None                                              # least squares: dfr + 1 is the count
+
+
 def test_forecast_at_and_trend():
     y, xe = covid()
     mod = ARX(y, 3, xe, Args(p=2, px=1, spec=1))
@@ -136,10 +160,12 @@ def test_rescale_takes_a_transform_type():
     m = ARX_D.rescale(y, 3, xe, hp)
     assert isinstance(m.yForm, MinMaxForm) and np.isclose(m.y[: m.tr_size].min(), -2) and not m._nneg
     assert np.allclose(m.getY(), y) and np.isclose(m.X[: m.tr_size, -1].max(), 2.0)   # xe rescaled per column
-    n = ARX.rescale(y, 3, xe, hp.copy(tFormT=TransformT.Norm))
+    n = ARX.rescale(y, 3, xe, hp, TransformT.Norm)                      # tFormT: an argument of rescale, as in ScalaTion
     assert isinstance(n.yForm, NormForm) and n.hparameter["nneg"] == 0 and hp.nneg   # the caller's args unchanged
-    l1 = ARX_D.rescale(y, 3, xe, hp.copy(tFormT="Log1p"))
+    l1 = ARX_D.rescale(y, 3, xe, hp, tFormT=TransformT.Log1p)
     assert l1._nneg and np.allclose(l1.y, np.log1p(y))
+    with pytest.raises(ValueError, match="tFormT is an argument of rescale"):
+        ARX_D.rescale(y, 3, xe, hp.copy(tFormT="Log1p"))               # the run setting is not read by a model
     a = AR.rescale(y, 3, Args(p=2))                                    # ScalaTion's AR.rescale: NormForm
     assert isinstance(a.yForm, NormForm) and not a._nneg
 
@@ -166,7 +192,7 @@ def test_imports_are_at_the_top():
     allowed = {("modeling/forecasting/nonlinear/narx_formula.py", "modeling.forecasting.nonlinear.narx_sr_d"),
                ("modeling/forecasting/nonlinear/llm_narx_sr/formula_scorer.py", "modeling.forecasting.nonlinear.llm_narx_sr.explainer"),
                ("modeling/forecasting/neuralforecasting/mhattn_regressor.py", "matplotlib.pyplot"),
-               ("Util/data_loader.py", "torch")}
+               ("Util/data_loader.py", "torch"), ("modeling/attn_ranker.py", "torch")}
     found = set()
     for sub in ("modeling", "Util"):
         for f in (ROOT / sub).rglob("*.py"):

@@ -3,8 +3,8 @@ Args: the Settings of a Forecasting Model (and of a Run)
 
 One object holds everything a model is configured with -- the hyper-parameters of ScalaTion's `AR.hp`
 (p, d, q, P, D, Q, s, px, spec, crx, nneg), the Python-only ones (skip, lam), the model settings
-(method, scaled, tFormT, optimizer, tune, te_ratio) and the settings of a run (`run (args)`: dataset,
-exo, model, hh, validation, rc) -- the dotdict style of experiment scripts, but CHECKED:
+(method, scaled, l1_ratio, optimizer, tune, te_ratio) and the settings of a run (`run (args)`: dataset, exo,
+model, tFormT, hh, validation, rc) -- the dotdict style of experiment scripts, but CHECKED:
 
     args = Args()                       # every setting at its default
     args.p = 6                          # checked when set: name, type and range
@@ -28,11 +28,12 @@ RandomWalk, an ARIMA and an ARX_D side by side.
 Python only: ScalaTion passes `HyperParameter` objects (`hp("p") = 6`); `lam` is ScalaTion's
 `RidgeRegression.hp("lambda")` ("lambda" is a Python keyword: `Args (**{"lambda": 1.0})` is accepted
 as an alias, the HyperParameter keeps the name "lambda"); `te_ratio` is ScalaTion's global
-`Model.TE_RATIO`, here per model.
+`Model.TE_RATIO`, here per model (None, the default: `Model.TE_RATIO` when the model is built;
+0: no testing set, a competition's dataset).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-19
+Version: 1.8
 License: MIT License
 Note: AI assisted code
 """
@@ -52,15 +53,15 @@ from Util.transform import TransformT
 from modeling.centered_ridge import CenteredRidge
 from modeling.hyper_parameter import HyperParameter
 
-TE_RATIO = 0.2                                                       # ScalaTion's `Model.TE_RATIO` (the default)
 
-REGRESSION_METHODS = ("sm_ols", "sk_lr", "ridge")                    # ARX, ARX_D, ARX_SR, ARX_SR_D
+REGRESSION_METHODS = ("sm_ols", "sk_lr", "ridge", "enet")            # ARX, ARX_D, ARX_SR, ARX_SR_D
+PENALIZED_METHODS = ("ridge", "enet")                                # the methods with knobs to tune (tune, withHP)
 AR_METHODS = ("adjusted", "mle", "sm_ols")                           # AR: Yule-Walker (adjusted / MLE) or OLS
 ARIMA_METHODS = ("statespace", "innovations_mle", "hannan_rissanen", "burg", "innovations", "yule_walker")
 OPTIMIZERS = ("VarPro", "LBFGS_B", "Joint")                          # the names of `narx_sr_d.OptimizerNL`
 MODELS = ("RandomWalk", "AR", "ARIMA", "ARX", "ARX_D", "ARX_SR", "ARX_SR_D", "NARX_SR_D")
 DATASETS = ("Covid-19", "ILI", "ETTh1", "GEFCom2014")
-VALIDATIONS = ("inSample", "tnT", "both")
+VALIDATIONS = ("inSample", "tnT", "tvT", "both")                  # the tests run (args) makes
 
 SCALA_HP = "hyper-parameters (ScalaTion's AR.hp, printed in the REPORT)"
 PYTHON_HP = "hyper-parameters (Python only)"
@@ -107,13 +108,16 @@ def _int(lo: int, hi: Optional[int] = None, none: bool = False) -> _Check:
     return _Check(kind.replace("an integer", "int"), fn)
 
 
-def _float(lo: float, hi: Optional[float] = None, open_: bool = False) -> _Check:
+def _float(lo: float, hi: Optional[float] = None, open_: bool = False, none: bool = False) -> _Check:
     if hi is None:
         kind = f"a number >= {lo}"
     else:
         kind = f"a number in ({lo}, {hi})" if open_ else f"a number in [{lo}, {hi}]"
+    kind += " or None" if none else ""
 
     def fn(name: str, v: Any) -> Any:
+        if v is None and none:
+            return None
         if isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, float, np.integer, np.floating)):
             raise _bad(name, v, kind)
         v = float(v)
@@ -227,20 +231,21 @@ _ROWS = (
     Setting("lam",        CenteredRidge.hp["lambda"],   _float(0.0),                  "the ridge penalty lambda of method ridge (ScalaTion's RidgeRegression.hp)", PYTHON_HP),
     Setting("method",     None,                         _choice(REGRESSION_METHODS + AR_METHODS[:2] + ARIMA_METHODS, none=True),
             "the estimation method (None: the model's own, e.g., sm_ols for ARX_D, adjusted for AR)", MODEL),
-    Setting("scaled",     False,                        _bool(),                      "the ridge regression standardizes the columns", MODEL),
-    Setting("tFormT",     None,                         _transformT(),                "the transform of rescale / fromTerms (None: MinMax / the formula's)", MODEL),
+    Setting("scaled",     False,                        _bool(),                      "the penalized regression (ridge, enet) standardizes the columns", MODEL),
+    Setting("l1_ratio",   0.5,                          _float(0.0, 1.0),             "the share of the L1 penalty of method enet (0: ridge, 1: lasso)", MODEL),
     Setting("optimizer",  None,                         _optimizer(),                 "the optimizer of the nonlinear parameters (None: OPTIMIZER_NL)", MODEL),
     Setting("tune",       True,                         _bool(),                      "fit the nonlinear parameters of NARX_SR_D (False: their defaults)", MODEL),
-    Setting("te_ratio",   TE_RATIO,                     _float(0.0, 1.0, open_=True), "the fraction of rows in the testing set (ScalaTion's TE_RATIO)", MODEL),
+    Setting("te_ratio",   None,                         _float(0.0, 0.95, none=True), "the fraction of rows in the testing set (None: Model.TE_RATIO when the model is built; 0: no testing set)", MODEL),
     Setting("dataset",    None,                         _choice(DATASETS, none=True, aliases={"covid": "Covid-19", "gefcom": "GEFCom2014",
                                                                                               "gef14": "GEFCom2014", "etth": "ETTh1"}),
             "the dataset of run (args)", RUN),
     Setting("exo",        None,                         _names(),                     "the exogenous columns (None: the dataset's default; []: none)", RUN),
     Setting("model",      "ARX_D",                      _choice(MODELS),              "the model run (args) builds", RUN),
+    Setting("tFormT",     None,                         _transformT(),                "the transform type run (args) rescales by, passed to the model's rescale (None: no rescaling)", RUN),
     Setting("hh",         6,                            _int(1),                      "the maximum forecasting horizon of run (args)", RUN),
     Setting("validation", "both",                       _choice(VALIDATIONS, aliases={"in-sample": "inSample", "in_st": "inSample"}),
-            "the test(s) run (args) makes: In-Sample, TnT (rolling validation) or both", RUN),
-    Setting("rc",         5,                            _int(1),                      "the retraining cycle of the TnT rolling validation", RUN),
+            "the test(s) run (args) makes: In-Sample, TnT (rolling validation on the testing rows), tvT (validation rows, then TnT) or both (In-Sample and TnT)", RUN),
+    Setting("rc",         None,                         _int(1, none=True),           "the retraining cycle of the rolling tests (None: Forecaster.RC, 5)", RUN),
 )
 
 SETTINGS: Dict[str, Setting] = {s.name: s for s in _ROWS}
@@ -252,7 +257,7 @@ ALIASES = {"lambda": "lam"}
 HINTS = {"max_horizon": ("hh", ""), "horizon": ("hh", ""), "horizons": ("hh", ""),
          "training_ratio": ("te_ratio", " (the TESTING fraction: 1 - the training ratio)"),
          "train_ratio": ("te_ratio", " (the TESTING fraction: 1 - the training ratio)"),
-         "test_ratio": ("te_ratio", ""), "normalization": ("tFormT", " (e.g., TransformT.Norm, used by rescale / run)"),
+         "test_ratio": ("te_ratio", ""), "normalization": ("tFormT", " (e.g., TransformT.Norm, the run setting run (args) passes to rescale)"),
          "model_name": ("model", ""), "lags": ("p", ""), "exo_lags": ("px", ""), "ridge": ("lam", ""),
          "alpha": ("lam", ""), "lamda": ("lam", "")}
 

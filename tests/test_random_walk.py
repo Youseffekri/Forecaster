@@ -78,7 +78,7 @@ def test_tnt_h1_forecasts_equal_y_shifted_and_reproduce_the_scala_smape():
     assert ft.shape == (6, 26)
     assert np.allclose(ft[:, QoF.smape.ordinal], [18.1532, 27.2211, 40.3519, 52.3739, 62.5276, 73.6424], atol=1e-4)
     assert ft[0, QoF.m.ordinal] == len(y) - trSize(len(y))              # no rows skipped in TnT
-    assert mod.getSkip() == 0
+    assert mod.getSkip() == 1                                          # the skip is restored after the test (rev1.7)
 
 
 def test_small_vectors_of_the_scala_tests():

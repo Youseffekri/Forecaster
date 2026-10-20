@@ -26,8 +26,8 @@ regression is ScalaTion's `CenteredRidgeMV`, and `aRX_DTest8_test` reproduces th
 Run from the repository root:  python Examples/Example_FeatureSelection.py [5|6|7|8|9|search|cem|all]
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-16
+Version: 1.6
 License: MIT License
 Note: AI assisted code
 """
@@ -69,10 +69,10 @@ def aRX_DTest5_test(techs=(SelectionTech.CEM,)):
     """
     xe, y = load_covid()
     args = Args(p=10, px=5, spec=2, lam=1.0)                           # endo lags, exo lags, trend spec, regularization
-    args.method, args.tFormT = "ridge", TransformT.Log1p               # ScalaTion's CenteredRidgeMV on Log1p-rescaled data
+    args.method = "ridge"                                              # ScalaTion's CenteredRidgeMV
     FeatureSelection.fullset_FS = True                                 # in-sample test: select on all the rows
 
-    mod = ARX_D.rescale(y, HH, xe, args)                               # create model for time series data
+    mod = ARX_D.rescale(y, HH, xe, args, TransformT.Log1p)             # create model on Log1p-rescaled data
     mod.inSample_Test()                                                # the full model: the reference
 
     banner(f"reference for the selection trace: {mod.modelName} at h = 1 as a single-horizon ARX")
@@ -91,10 +91,10 @@ def aRX_DTest6_test(techs=(SelectionTech.CEM,)):
     `ARX` at h = 1, so its QoF has one horizon).
     """
     xe, y = load_covid()
-    args = Args(p=10, px=5, spec=2, lam=1.0, method="ridge", tFormT=TransformT.Log1p)
+    args = Args(p=10, px=5, spec=2, lam=1.0, method="ridge")
     FeatureSelection.fullset_FS = False                                # TnT test: select on the training rows
 
-    mod = ARX_D.rescale(y, HH, xe, args)
+    mod = ARX_D.rescale(y, HH, xe, args, TransformT.Log1p)
     mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY,
                                                                        # as `tnT_Test` sets skip = 0 and the
                                                                        # selection below must keep the burn-in
@@ -108,7 +108,7 @@ def aRX_DTest7_test(techs=(SelectionTech.Backward,)):
     """
     In-Sample Testing: Feature Selection over ALL HORIZONS JOINTLY (`selectFeatures`, h = 0): every
     candidate column set is fit as ONE multi-horizon model and scored by J, the mean FPE-form sMAPE
-    over the horizons (`aggFPE`); the selected model is tested in-sample against the full model.
+    over the horizons (`Forecaster.scoreOf`); the selected model is tested in-sample against the full model.
     """
     xe, y = load_covid()
     args = Args(p=6, px=6, spec=1, lam=1.0, method="ridge")
@@ -131,10 +131,10 @@ def aRX_DTest8_test(techs=(SelectionTech.CEM,)):
     log this reproduces).
     """
     xe, y = load_covid()
-    args = Args(p=6, px=6, spec=1, lam=1.0, method="ridge", tFormT=TransformT.Log1p)
+    args = Args(p=6, px=6, spec=1, lam=1.0, method="ridge")
     FeatureSelection.fullset_FS = False
 
-    mod = ARX_D.rescale(y, HH, xe, args)                               # the rescaled version
+    mod = ARX_D.rescale(y, HH, xe, args, TransformT.Log1p)             # the rescaled version
     mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY
 
     for tech in techs:

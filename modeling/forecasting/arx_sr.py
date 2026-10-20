@@ -8,15 +8,15 @@ ENDO-EXO cross terms (args.crx).  Multi-step forecasts are RECURSIVE: the foreca
 horizon h feeds the lags of horizon h + 1, and a transformed lag of a forecast is the transform of
 the forecast.
 
-With `rescale`, y and the exogenous variables are rescaled FIRST (args.tFormT fitted on the
+With `rescale`, y and the exogenous variables are rescaled FIRST (`tFormT` fitted on the
 training rows, as in ScalaTion) and the transformations are applied to the rescaled series.
 
 The Python counterpart of ScalaTion's `ARX_SR` (`ARX_SR.apply` / `ARX_SR.rescale` /
 `ARX_SR.buildMatrix` / `formNames` / `forge`).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-13
-Version: 1.5
+Date: 2026-10-17
+Version: 2.0
 License: MIT License
 Note: AI assisted code
 """
@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 from Util.make_matrix4ts import backfill_matrix, makeMatrix4L, makeMatrix4T, trend_names
-from Util.transform import PowForm, Transform
+from Util.transform import PowForm, Transform, TransformT
 from modeling.forecasting.arx import ARX, _rescaleData
 from modeling.forecasting.forecaster import Forecaster
 
@@ -87,7 +87,7 @@ class ARX_SR(ARX):
     ARX : the recursive forecasting logic (train, forecast, _predict, hide).
     """
 
-    ARGS = ("p", "px", "spec", "crx", "method", "lam", "scaled", "tFormT") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "crx", "method", "lam", "scaled") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,
@@ -133,7 +133,7 @@ class ARX_SR(ARX):
         self._tForms = {"tForm_y": None, "fEndo": fEndo, "fExo": fExo}
         self._fExo_sz = [len(s) for s in fExo]
         super().__init__(y, hh, xe, args, X if X is not None else np.zeros((len(y), 1)))
-        self._modelName = f"ARX_SR_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}"
+        self._modelName = f"ARX_SR_{self._hparam['p']}_{self._hparam['px']}_{self._n_exo}{self.hpTag}"
         if X is None:                                                    # ScalaTion's `ARX_SR.apply`
             xe_bfill = backfill_matrix(xe) if n_exo > 0 and self._hparam["px"] > 0 else None
             self._set_X(self.buildMatrix(xe_bfill, self._y, self._hparam, fEndo, fExo))
@@ -146,29 +146,34 @@ class ARX_SR(ARX):
                 xe: Optional[np.ndarray] = None,
                 args: Any = None,
                 fEndo: Optional[Sequence[Transform]] = None,
-                fExo: Optional[Sequence[Sequence[Transform]]] = None) -> "ARX_SR":
+                fExo: Optional[Sequence[Sequence[Transform]]] = None,
+                tFormT: TransformT = TransformT.MinMax) -> "ARX_SR":
         """
         Creates the model on rescaled data (ScalaTion's `ARX_SR.rescale`): y and the backfilled
-        exogenous variables are transformed by args.tFormT fitted on the TRAINING rows (None => MinMax
-        to [-2, 2], where a power or log of a negative value is not defined -- use Log1p, as
-        ScalaTion's tests do, or a sign-safe transform such as PowRForm / DQuadForm), THEN the
-        transformations fEndo / fExo are applied; Norm turns the non-negativity off.
+        exogenous variables are transformed by `tFormT` fitted on the training rows (ScalaTion's
+        `Model.trSize`; the fit rows while choosing; MinMax to [-2, 2] by default, where a power or
+        log of a negative value is not defined -- use Log1p, as ScalaTion's tests do, or a sign-safe
+        transform such as PowRForm / DQuadForm), THEN the transformations fEndo / fExo are applied;
+        Norm turns the non-negativity off.
 
         Parameters
         ----------
         y, hh, xe, args, fEndo, fExo
             As in the constructor.
+        tFormT : TransformT, default=TransformT.MinMax
+            The transform type of the rescaling (ScalaTion's `rescale (..., tFormT)`).
 
         Returns
         -------
         ARX_SR
         """
-        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe)
+        args, y_scl, xe_scl, tForm_y = _rescaleData(cls._argsOf(y, args), y, xe, tFormT)
         mod = cls(y_scl, hh, xe, args, fEndo, fExo, X=np.zeros((len(y_scl), 1)))
         mod._set_X(cls.buildMatrix(xe_scl, y_scl, mod._hparam, mod._tForms["fEndo"], mod._tForms["fExo"]))
         mod._useforge = True
         mod._tForms["tForm_y"] = tForm_y
         mod._setYForm(tForm_y, y)
+        mod._recipe = lambda: cls.rescale(y, hh, xe, args, fEndo, fExo, tFormT)
         return mod
 
     @staticmethod

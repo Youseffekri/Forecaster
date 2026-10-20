@@ -110,9 +110,9 @@ def test_rescale_fits_the_transform_on_training_rows():
     assert not mod._nneg                                                     # a centered space: no rectification
     with pytest.raises(ValueError):                                          # y^1.5 of a negative (rescaled) value
         ARX_SR.rescale(y, 6, xe, hp_(method="sk_lr"), fEndo=[PowForm()], fExo=[[], []])
-    mod_n = ARX_SR_D.rescale(y, 6, xe, hp_(method="sk_lr", tFormT=TransformT.Norm), fEndo=[PowRForm()])
+    mod_n = ARX_SR_D.rescale(y, 6, xe, hp_(method="sk_lr"), fEndo=[PowRForm()], tFormT=TransformT.Norm)
     assert isinstance(mod_n.yForm, NormForm) and not mod_n._nneg and mod_n.hparameter["nneg"] == 0   # NormForm => nneg 0
-    mod_l = ARX_SR_D.rescale(y, 6, xe, hp_(method="sk_lr", tFormT=TransformT.Log1p), fEndo=[PowForm()])
+    mod_l = ARX_SR_D.rescale(y, 6, xe, hp_(method="sk_lr"), fEndo=[PowForm()], tFormT=TransformT.Log1p)
     assert mod_l._nneg                                                       # Log1p keeps zero at zero
     mod.train(); yf = mod.forecast()
     assert np.isfinite(yf).all() and mod.Yf[10, 1] > 50, "Yf holds forecasts in the original scale"

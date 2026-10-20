@@ -3,12 +3,13 @@ Feature Selection Module: Techniques, Best Step and the Selection Report
 
 The Python counterpart of ScalaTion's `modeling/FeatureSelection.scala`:
 
-    SelectionTech     the techniques: Forward, Backward, Stepwise, Beam, CEM
+    SelectionTech     the techniques: Forward, Backward, Stepwise, Beam, CEM, Ranked
     newFname          the feature names restricted to the selected columns
     qk, slack_base    the "given" instances: the QoF index the models are compared on (sMAPE-IC)
                       and the slack base of the stepwise rule (+25 when qk is maximized, -25 otherwise)
     FeatureSelection  the trait: `selectFeatures` dispatches on the technique to `forwardSelAll`,
-                      `backwardElimAll`, `stepwiseSelAll`, `beamSelAll`, `cemSelAll` (the subclasses
+                      `backwardElimAll`, `stepwiseSelAll`, `beamSelAll`, `cemSelAll`, `rankedElimAll`
+                      (the subclasses
                       implement them: `Forecaster_Reg` in `modeling/forecasting/forecaster_reg.py`); its class
                       attribute `fullset_FS` is ScalaTion's `FeatureSelection` object (whether the
                       selection sees the FULL dataset or the TRAINING rows only)
@@ -24,8 +25,8 @@ prints as "LinkedHashSet(0, 1, 3)" (`Util.tools.set_str`).  No plotting (ScalaTi
 trace is not reproduced; the `plot` argument is accepted and ignored).
 
 Author: Yousef Fekri Dabanloo
-Date: 2026-10-12
-Version: 1.0
+Date: 2026-10-17
+Version: 1.4
 License: MIT License
 Note: AI assisted code
 """
@@ -33,7 +34,7 @@ Note: AI assisted code
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -51,6 +52,7 @@ class SelectionTech(Enum):
     Stepwise = 2        # Stepwise Selection (best step add/remove)
     Beam = 3            # Beam Search (improve multiple candidate sub-models)
     CEM = 4             # Cross-Entropy Method (see `CEM_Selector`)
+    Ranked = 5          # Ranked Elimination (remove the lowest-RANKED x_j; see `SubsetSearch.ranked`)
 
     def __str__(self) -> str:
         return self.name
@@ -234,7 +236,8 @@ class SelectionReport:
     `selectedModel` and `testSelected`.  The arrays may hold one column set (`selectFeatures`: one
     model) or one per horizon (`selectFeaturesPerH`: one single-horizon model per horizon).
 
-    The host provides `modelName`, `fname` and `getX ()` (the model's attributes).
+    The host provides `modelName`, `fname`, `getX ()` and `_theBest` (the best step of its last
+    selection; None or empty before one).
     """
 
     def selectedModel(self, cols: Cols, h: int) -> Any:
@@ -279,6 +282,41 @@ class SelectionReport:
         selection returns the path (see `FeatureSelection`) the best step along it.
         """
         return cols
+
+    RANKERS = {"coef": "coefImportance", "t": "tImportance", "vif": "vifImportance", "perm": "permImportance"}
+
+    def ranker(self, rank: Any) -> Any:
+        """
+        The ranking of the Ranked technique: a name -> the host's ranker (re-run after every removal):
+        "coef" the standardized coefficients |b_j| sd (x_j) (the default), "t" the t-statistics
+        |b_j| / se_j (backward elimination by p-value: the least significant column leaves first; a
+        ridge uses its own standard errors), "vif" minus the variance inflation factors (the most
+        collinear column leaves first), "perm" the permutation importance (the recursive models);
+        a callable or an array passes through, None stays None.
+        """
+        if not isinstance(rank, str):
+            return rank
+        meth = self.RANKERS.get(rank.lower())
+        if meth is None or not hasattr(self, meth):
+            raise ValueError(f"ranker: {rank!r} is not one of {[k for k, v in self.RANKERS.items() if hasattr(self, v)]}")
+        return getattr(self, meth)
+
+    def bestHP(self, cols: Cols) -> Optional[Dict[str, float]]:
+        """
+        The knobs the best step of the last selection tuned for the column set `cols` (under
+        `Model.tuning` every candidate is fitted at its own best knobs), as {name: value}; None when
+        the set is not the best step's or no selection has run -- so `getModel (getBest ().mod_cols)`
+        and `selectedModel` build the selected model at the knobs that made its score (ScalaTion's
+        `bestHP`; rev2.2: was `bestLambda`).
+        """
+        best = getattr(self, "_theBest", None)
+        if best is None or best.mod is None or best.mod_cols is None or list(best.mod_cols) != list(cols):
+            return None
+        mod = best.mod
+        if not getattr(mod, "penalized", False):
+            return None
+        h = mod.hpAll
+        return {k.name: float(h[k.name]) for k in mod.knobs}
 
     def colName(self, j: int) -> str:
         """The name of column j for the report: the feature name, or x_j when the model names fewer columns."""
@@ -335,11 +373,12 @@ class SelectionReport:
 
         models = [self.selectedModel(self.bestCols(list(colsArr[k])), k + 1 if perH else h)
                   for k in range(len(colsArr))]
-        for k in range(len(colsArr)):                                    # report the selection(s)
+        for k in range(len(colsArr)):                                    # report the selection(s), under the SELECTED model's
+            # name: its _L tag is the lambda its best step found, which may differ from this model's
             cols = list(colsArr[k])
             best = self.bestCols(cols)
             what = f" for horizon {k + 1}" if perH else (f" for horizon {h}" if h > 0 else "")
-            banner(f"{self.modelName}: selected{what}: k = {len(cols)} of n = {n}, cols = {set_str(cols)}")
+            banner(f"{models[k].modelName}: selected{what}: k = {len(cols)} of n = {n}, cols = {set_str(cols)}")
             if list(best) != cols:
                 print(f"best step: k = {len(best)}, cols = {set_str(best)}")
             print("features: " + ", ".join(self.colName(j) for j in sorted(best)))
@@ -411,7 +450,7 @@ class FeatureSelection(SelectionReport):
         return cols
 
     def selectFeatures(self, tech: SelectionTech, cross: str = "many", first: int = 1, swap: bool = True,
-                       qk: Optional[int] = None) -> Tuple[List[Cols], List[List[np.ndarray]]]:
+                       rank: Any = None, qk: Optional[int] = None) -> Tuple[List[Cols], List[List[np.ndarray]]]:
         """
         Performs feature selection to find the most predictive features/variables to have in the
         model, returning the features/variables added and the Quality of Fit (QoF) measures for
@@ -427,6 +466,9 @@ class FeatureSelection(SelectionReport):
             The first variable to consider for elimination (1 => the intercept x_0 stays in any model).
         swap : bool, default=True
             Whether to allow a swap step (swap out a feature for a new feature in one step).
+        rank : callable or array, optional
+            The importance per column driving the Ranked technique (None => the model family's own
+            ranker, the standardized coefficients re-fit at every step; see `rankedElimAll`).
         qk : int, optional
             The index of the QoF measure to compare on (defaults to the given `qk`).
         """
@@ -441,6 +483,8 @@ class FeatureSelection(SelectionReport):
             return self.beamSelAll(cross, qk=qk)
         if tech is SelectionTech.CEM:
             return self.cemSelAll(cross, first, qk=qk)
+        if tech is SelectionTech.Ranked:
+            return self.rankedElimAll(rank, first, cross, qk=qk)
         raise ValueError(f"selectFeatures: unknown technique {tech}")
 
     def forwardSelAll(self, cross: str = "many", qk: Optional[int] = None):
@@ -470,4 +514,13 @@ class FeatureSelection(SelectionReport):
         raise NotImplementedError(
             f"cemSelAll (cross = {cross}, first = {first}, prior = {prior}, nSample = {nSample}, "
             f"maxIter = {maxIter}, maxCols = {maxCols}, stream = {stream}, qk = {given_qk(qk)}) "
+            "is not supported by this model")
+
+    def rankedElimAll(self, rank: Any = None, first: int = 1, cross: str = "many", qk: Optional[int] = None):
+        """
+        RANKED ELIMINATION (see `SubsetSearch.ranked`): removes the lowest-RANKED feature at each
+        step; the default reports it as unsupported (the model families override it).
+        """
+        raise NotImplementedError(
+            f"rankedElimAll (rank = {rank}, first = {first}, cross = {cross}, qk = {given_qk(qk)}) "
             "is not supported by this model")
