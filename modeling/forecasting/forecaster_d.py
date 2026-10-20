@@ -39,11 +39,13 @@ import numpy as np
 import statsmodels.api as sm
 
 from Util.make_matrix4ts import makeMatrix4Y
-from Util.tools import array_str, banner, set_str
+from Util.tools import array_str, banner, matrix_str, set_str
 from modeling.feature_selection import (BestStep, Cols, FeatureSelection, SelectionReport, SelectionTech, given_qk,
                                         updateQoF)
 from modeling.fit import N_QoF, Fit, QoF, vif
-from modeling.forecasting.forecaster import REGRESSION_METHODS, Forecaster, Model, trSize
+from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.args import REGRESSION_METHODS
+from modeling.model import Model
 from modeling.subset_search import SubsetSearch
 
 
@@ -65,7 +67,7 @@ class Forecaster_D(SelectionReport, Forecaster):
         "ridge" is scaled); `parameter` is its first column, `slopes` the original-unit ones.
     """
 
-    METHOD = "ridge"
+    METHOD = "enet"                                                     # ScalaTion rev5.4: the elastic net is the REGRESSION import
     METHODS = REGRESSION_METHODS
 
     def __init__(self, y: np.ndarray, hh: int, args: Any = None, hasIntercept: bool = True) -> None:
@@ -155,7 +157,7 @@ class Forecaster_D(SelectionReport, Forecaster):
             Xc = sm.add_constant(X_, has_constant="add")
             self._models_fit = [sm.OLS(Y_[:, j], Xc).fit() for j in range(Y_.shape[1])]
             self._set_params(np.column_stack([np.asarray(f.params) for f in self._models_fit]))
-        elif self.penalized:                                              # CenteredRidge / ElasticNet
+        elif self.knobs:                                                  # CenteredRidge / ElasticNet
             self._model.fit(X_, Y_)
             self._set_params(self._model.params)
             self._b = self._model.parameter                              # ScalaTion's bb = reg.parameter
@@ -212,7 +214,7 @@ class Forecaster_D(SelectionReport, Forecaster):
             h = int(x_)
             if not 1 <= h <= self.hh:
                 raise ValueError(f"summary: horizon h = {h} out of range [1, {self.hh}]")
-            se = self._model.stdErr(h - 1) if self._ridgeSE() else None
+            se = self._model.stdErr(h - 1) if self._penalizedSE() else None
             x1 = np.column_stack((np.ones(self._X.shape[0]), self._X))
             return f"\nhorizon h = {h}\n" + Fit.summary(self, x1, ["intercept"] + list(self.fname), self.params[:, h - 1], vif(x1), se)
         x_ = self._X if x_ is None else x_
@@ -220,8 +222,22 @@ class Forecaster_D(SelectionReport, Forecaster):
         x1 = np.column_stack((np.ones(x_.shape[0]), x_))              # column of ones for the implicit intercept
         b1 = self.params[:, 0] if b_ is None else b_                   # intercept +: slopes of horizon 1
         v1 = vif(x1) if vifs is None else vifs                         # one VIF per slope column
-        se = self._model.stdErr(0) if b_ is None and self._ridgeSE() else None   # a ridge: the sandwich covariance
+        se = self._model.stdErr(0) if b_ is None and self._penalizedSE() else None   # penalized: the sandwich covariance
         return Fit.summary(self, x1, ["intercept"] + list(fname_), b1, v1, se)
+
+    def trainNtestWindow(self, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Trains on the rows whose hh targets all lie before n (0 until n - hh + 1) and tests on the
+        first n rows (ScalaTion's `Forecaster_D.trainNtestWindow`): the model that makes the first
+        forecasts of a rolling test, and its REPORT.
+
+        Parameters
+        ----------
+        n : int
+            The number of leading rows.
+        """
+        te = n - self.hh + 1
+        return self.trainNtest(self._Y[:te], self._X[:te], rows=n)
 
     def _trainWindow(self, is_: int, t: int) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -322,7 +338,7 @@ class Forecaster_D(SelectionReport, Forecaster):
         m = len(self._y)
         sub = self.getModel(cols)                                         # this model's transforms and scaling
         if Model.validating:                                              # fit rows -> rolled over the validation rows
-            if Model.tuning and sub.penalized:                            # the set at its own best knobs, all horizons
+            if Model.tuning and sub.knobs:                                # the set at its own best knobs, all horizons
                 sub = sub.withHP(sub.tune()[0])
             return sub, sub.rollTest(Model.valRng(m, self._te_ratio), verbose=False)
         rng = self.fs_rng
@@ -348,7 +364,7 @@ class Forecaster_D(SelectionReport, Forecaster):
         if Model.validating:
             end = Model.fitSize(m, self._te_ratio)
         else:
-            end = m if FeatureSelection.fullset_FS else trSize(m, self._te_ratio)
+            end = m if FeatureSelection.fullset_FS else Model.trSize(m, self._te_ratio)
         return range(0, end - self.hh + 1)
 
     @staticmethod
@@ -596,15 +612,6 @@ class Forecaster_D(SelectionReport, Forecaster):
             rSqArr.append(rSq)
         return colsArr, rSqArr
 
-    def tnT_Test(self, rc: Optional[int] = None, showYf: bool = True, showParams: bool = False,
-                 verbose: bool = True) -> np.ndarray:
-        """
-        Train-and-Test testing with rolling validation (`Forecaster.tnT_Test`), printing the forecast
-        matrix by default: ScalaTion's `Forecaster_D.tnT_Test (rc = 5, showYf = true)` overrides the
-        base's `showYf = false` for the direct models, whose matrix is the result.
-        """
-        return super().tnT_Test(rc, showYf, showParams, verbose)
-
     # -- R E P O R T I N G   T H E   S E L E C T I O N  (the hooks of `SelectionReport.reportSelection`)
 
     def selectedModel(self, cols: Cols, h: int) -> Any:
@@ -648,7 +655,7 @@ class Forecaster_D(SelectionReport, Forecaster):
             mod.forecastAll()                                             # forecast h-steps ahead for all y
             qofIn = mod.diagnoseAll()                                     # QoF for each horizon
             if showYf:
-                print(f"Forecast Matrix yf = {mod.Yf}")
+                print(f"Forecast Matrix yf = {matrix_str(mod.slant())}")
         if tnt:
             banner(f"{mod.modelName}: TnT Test (rolling validation) of the selected model on {array_str(mod.fname)}")
             mod.trainNtest()                                              # initial training updated by `rollValidate`
@@ -657,6 +664,6 @@ class Forecaster_D(SelectionReport, Forecaster):
             mod.rollValidate(rc)                                          # TnT with Rolling Validation
             qofTnT = mod.diagnoseAll(tRng=range(mod.tr_size, len(mod.y)))   # the testing rows only
             if showYf:
-                print(f"Forecast Matrix yf = {mod.Yf}")
+                print(f"Forecast Matrix yf = {matrix_str(mod.slant())}")
         return qofIn, qofTnT
 

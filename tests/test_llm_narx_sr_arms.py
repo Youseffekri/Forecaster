@@ -46,21 +46,24 @@ def test_anchors_match_scalation(covid):
     19.741 / 15.804 / 56.571 (rev2.0 chose pRate~5 where rev2.1 chooses pRate~6); random-walk 42.117 / 33.639 /
     42.117 / 45.712 (unchanged on the rolling passes: not a direct model); the baseline IS the seed.  rev2.2: the
     in-sample numbers moved once more -- the scorer fits and diagnoses on the FS rows of the fit rows (0 until
-    68 - hh + 1), as `Forecaster_D.fitCols` does; the scores and the rolling numbers did not.  ScalaTion rev5.3
-    applies the same rules, so its logs are the ones to compare with."""
+    68 - hh + 1), as `Forecaster_D.fitCols` does; the scores and the rolling numbers did not.  rev2.3: every model is
+    an elastic net (lambda 1, l1_ratio 0.5; ScalaTion rev5.4's REGRESSION import), so every number moved once more
+    (rev2.2: baseline 23.217 / 17.048 / 23.217 / 47.684, tuned-arx 17.941 / 18.523 / 17.941 / 46.882, sel-arx
+    15.804 / 19.741 / 15.804 / 56.571); the formulas chosen did not.  ScalaTion rev5.4 applies the same rules, so
+    its logs are the ones to compare with."""
     cfg, sc = covid
     runs = {k: BaselineArm(k, verbose=False).run(cfg, sc, 0) for k in (Method.Baseline, Method.TunedARX, Method.SelARX, Method.RandomWalk)}
     base, tuned, sel, rw = runs[Method.Baseline], runs[Method.TunedARX], runs[Method.SelARX], runs[Method.RandomWalk]
     assert all(not r.failed and r.stream == -1 for r in runs.values()) and all(BaselineArm(k).deterministic for k in runs)
     def nums(r):
         return [round(v, 3) for v in (r.best.score, r.best.smape, r.valSmape, r.testSmape)]
-    assert nums(base) == [23.217, 17.048, 23.217, 47.684] and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
-    assert nums(tuned) == [17.941, 18.523, 17.941, 46.882] and tuned.best.formulaStr == "y ~= y~1 + icu~5 + icu~4 + icu~3 + icu~2 + icu~1 + pRate~5 + pRate~4 + pRate~3 + pRate~2 + pRate~1"
+    assert nums(base) == [23.586, 16.774, 23.586, 47.484] and base.best.nTerms == 18 and base.exoUsed == ["icu", "pRate"]
+    assert nums(tuned) == [17.347, 18.092, 17.347, 47.260] and tuned.best.formulaStr == "y ~= y~1 + icu~5 + icu~4 + icu~3 + icu~2 + icu~1 + pRate~5 + pRate~4 + pRate~3 + pRate~2 + pRate~1"
     assert tuned.best.score <= base.best.score + 1e-12 and len(tuned.top) == 5 and tuned.nEval == 84
-    assert nums(sel) == [15.804, 19.741, 15.804, 56.571] and sel.nEval == 689
+    assert nums(sel) == [15.465, 19.341, 15.465, 58.377] and sel.nEval == 689
     assert sel.best.formulaStr == "y ~= y~1 + icu~5 + icu~4 + icu~3 + pRate~6 + pRate~4 + pRate~3 + pRate~1"
     assert nums(rw) == [42.117, 33.639, 42.117, 45.712] and rw.best.formula is None and rw.best.model is not None
-    assert base.best.hp == {"lambda": 1.0} and base.best.lam == 1.0 and rw.best.hp is None   # the knobs of the fit (none for a random walk)
+    assert base.best.hp == {"lambda": 1.0, "l1_ratio": 0.5} and rw.best.hp is None   # the knobs of the fit (none for a random walk)
     assert all(r.valRatio == pytest.approx(24 / 116) and r.rc == 5 for r in runs.values())
     assert rw.best.label.startswith("RandomWalk") and rw.exoUsed == [] and all(v > 0 for v in rw.smapeTest)
     seed = sc.score(NARX_FormulaParser.parseFormula(cfg.baselineFormulaStr(6), sc.vars, 6))
@@ -76,13 +79,16 @@ def test_auto_exo_anchors_match_scalation():
     auto exo, the screening's shortlist exMort, cases; the deterministic arms' score, in-sample, validation and
     TnT sMAPE and their equations (rev2.0: baseline 25.089 / 18.417 / 25.089 / 61.807, tuned-arx 24.730 /
     19.761 / 24.730 / 61.913, sel-arx 22.837 / 20.386 / 22.837 / 73.976 with cases~4 kept; rev2.2: the in-sample
-    column on the FS rows of the fit rows, the rest unchanged)."""
+    column on the FS rows of the fit rows, the rest unchanged; rev2.3: the elastic net -- baseline 28.560 / 15.999 /
+    28.560 / 78.562, and the tuned ARX keeps the full baseline, which the net now scores best (rev2.2: 30.045 /
+    16.529 / 30.045 / 76.315 and 29.738 / 16.852 / 29.738 / 74.697 at y~1 + the two sets of lags), sel-arx
+    24.249 / 18.195 / 24.249 / 70.792 at the same formula)."""
     cfg = Datasets.COVID_ALL
     sc = FormulaScorer(cfg.load(), hh=6, validating=True)
     assert sc.shortlist(cfg) == ["exMort", "cases"] and sc.splitStr == "68 / 24 / 24"
-    expect = {Method.Baseline: ([30.045, 16.529, 30.045, 76.315], None),
-              Method.TunedARX: ([29.738, 16.852, 29.738, 74.697], "y ~= y~1 + exMort~6 + exMort~5 + exMort~4 + exMort~3 + exMort~2 + exMort~1 + cases~6 + cases~5 + cases~4 + cases~3 + cases~2 + cases~1"),
-              Method.SelARX: ([24.399, 18.261, 24.399, 69.993], "y ~= y~1 + cases~5 + cases~1"),
+    expect = {Method.Baseline: ([28.560, 15.999, 28.560, 78.562], None),
+              Method.TunedARX: ([28.560, 15.999, 28.560, 78.562], "y ~= y~6 + y~5 + y~4 + y~3 + y~2 + y~1 + exMort~6 + exMort~5 + exMort~4 + exMort~3 + exMort~2 + exMort~1 + cases~6 + cases~5 + cases~4 + cases~3 + cases~2 + cases~1"),
+              Method.SelARX: ([24.249, 18.195, 24.249, 70.792], "y ~= y~1 + cases~5 + cases~1"),
               Method.RandomWalk: ([42.117, 33.639, 42.117, 45.712], None)}
     for k, (nums, eq) in expect.items():
         r = BaselineArm(k, verbose=False).run(cfg, sc, 0)

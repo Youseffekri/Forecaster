@@ -11,7 +11,8 @@ from modeling.fit import QoF
 from modeling.forecasting.args import Args
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.forecaster import Forecaster, Model, teRng, trSize
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.term_library import TermLibrary
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import arxFormulaStr
@@ -40,7 +41,7 @@ def test_model_split_and_switch():
     assert Model.TE_RATIO == 0.2 and Model.VAL_RATIO == 0.2 and Model.validating is False
     assert (Model.teSize(116), Model.trSize(116), Model.valSize(116), Model.fitSize(116)) == (24, 92, 24, 68)
     assert Model.valRng(116) == range(68, 92) and Model.teRng(116) == range(92, 116) and Model.fitRng(116) == range(0, 68)
-    assert Model.splitStr(116) == "68 / 24 / 24" and trSize(116) == 92 and teRng(116) == range(92, 116)
+    assert Model.splitStr(116) == "68 / 24 / 24" and Model.trSize(116) == 92 and Model.teRng(116) == range(92, 116)
     assert Model.valSize(116, 0.1) == 12 and Model.splitStr(116, val_ratio=0.1) == "80 / 12 / 24"
     with Model.withValidation():
         assert Model.validating and Model.VAL_RATIO == 0.2
@@ -64,7 +65,7 @@ def test_roll_test_is_the_one_rolling_routine_and_restores_the_skip():
     assert Forecaster.RC == 5 and mod.getSkip() == 6
     qt = quiet(mod.tnT_Test)                                             # over the testing rows
     assert qt.shape == (6, 26) and mod.getSkip() == 6                   # the skip is restored (rev4.1 left it at 0)
-    direct = quiet(mod.rollTest, teRng(116), 5, "TnT", False)
+    direct = quiet(mod.rollTest, Model.teRng(116), 5, "TnT", False)
     assert np.allclose(direct, qt)
     qv = quiet(mod.valTest, verbose=False)                              # over the validation rows: trained on the 68 fit rows
     assert qv.shape == (6, 26) and qv[0, QoF.m.ordinal] == 24 and qv[5, QoF.m.ordinal] == 19
@@ -154,28 +155,29 @@ def test_knobs_and_the_tags():
 def test_model_names_carry_the_knobs():
     y, xe = covid()
     m = ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, lam=1.0, method="ridge"))
-    assert m.modelName == "ARX_D_6_6_2_L1.0" and m.lam == 1.0 and m.knobs == (Knob.LAMBDA,) and m.penalized and m.hpTag == "_L1.0"
+    assert m.modelName == "ARX_D_6_6_2_L1.0" and m.hparameter["lambda"] == 1.0 and m.knobs == (Knob.LAMBDA,) and m.hpTag == "_L1.0"
     assert ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, lam=0.25, method="ridge")).modelName == "ARX_D_6_6_2_L0.2"   # one decimal
     assert ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, lam=0.01, method="ridge")).modelName == "ARX_D_6_6_2_L0.01"  # ... unless < 0.1
     e = ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, lam=1.0, method="enet"))
-    assert e.modelName == "ARX_D_6_6_2_L1.0_A0.5" and e.knobs == (Knob.LAMBDA, Knob.L1_RATIO) and e.hpAll["l1_ratio"] == 0.5   # the elastic net: two knobs
+    assert e.modelName == "ARX_D_6_6_2_L1.0_A0.5" and e.knobs == (Knob.LAMBDA, Knob.L1_RATIO) and e.hparameter["l1_ratio"] == 0.5   # the elastic net: two knobs
     assert ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, lam=10.0, method="enet", l1_ratio=0.3)).modelName == "ARX_D_6_6_2_L10.0_A0.3"
-    plain = ARX_D(y, 6, xe, Args(p=6, px=6, spec=1))                     # sm_ols: no knobs, no tag (rev2.2: was _L0.0)
-    assert plain.modelName == "ARX_D_6_6_2" and plain.lam == 0.0 and plain.knobs == () and not plain.penalized and plain.hpTag == ""
+    plain = ARX_D(y, 6, xe, Args(p=6, px=6, spec=1, method="sm_ols"))    # least squares: no knobs, no tag (rev2.3: the default is the net)
+    assert plain.modelName == "ARX_D_6_6_2" and "lambda" not in plain.hparameter and plain.knobs == () and plain.hpTag == ""
+    assert ARX_D(y, 6, xe, Args(p=6, px=6, spec=1)).modelName == "ARX_D_6_6_2_L0.1_A0.5"   # the default: lambda 0.1, l1_ratio 0.5
     from modeling.forecasting.random_walk import RandomWalk
     rw = RandomWalk(y, 6)
-    assert rw.modelName == "RandomWalk" and rw.lam is None and rw.knobs == ()   # no regression: no tag
+    assert rw.modelName == "RandomWalk" and rw.hparameter is None and rw.knobs == ()   # no regression: no tag
     with Model.withValidation(tuning=True):
         hp0, score = quiet(plain.tune)                                    # nothing to tune without knobs
         assert hp0 == {} and score == quiet(plain.valScore)
         quiet(plain.selectFeatures, SelectionTech.Backward)              # the switch is harmless for a plain regression
-        assert plain.getBest().mod.lam == 0.0 and plain.bestHP(plain.getBest().mod_cols) is None
+        assert plain.getBest().mod.knobs == () and plain.bestHP(plain.getBest().mod_cols) is None
     assert m.getModel([0, 1]).modelName == "ARX_D_6_6_2_L1.0" and m.getModel_h(h=1).modelName == "ARX_6_6_2_L1.0"
     w = m.withHP({"lambda": 10.0})
-    assert w.modelName == "ARX_D_6_6_2_L10.0" and w.lam == 10.0 and m.lam == 1.0 and w.X is m.X and w is not m
+    assert w.modelName == "ARX_D_6_6_2_L10.0" and w.hparameter["lambda"] == 10.0 and m.hparameter["lambda"] == 1.0 and w.X is m.X and w is not m
     assert w.withHP({"lambda": 0.5}).modelName == "ARX_D_6_6_2_L0.5"      # re-tagged, not appended
     w2 = e.withHP({"lambda": 0.1, "l1_ratio": 0.75})
-    assert w2.modelName == "ARX_D_6_6_2_L0.1_A0.75" and w2.hpAll["l1_ratio"] == 0.75 and w2._args.l1_ratio == 0.75 and e.hpAll["l1_ratio"] == 0.5
+    assert w2.modelName == "ARX_D_6_6_2_L0.1_A0.75" and w2.hparameter["l1_ratio"] == 0.75 and w2._args.l1_ratio == 0.75 and e.hparameter["l1_ratio"] == 0.5
     assert e.withHP({"l1_ratio": 1.0}).modelName == "ARX_D_6_6_2_L1.0_A1.0"   # one knob turned, the other kept
     with pytest.raises(ValueError):
         plain.withHP({"lambda": 1.0})
@@ -210,16 +212,16 @@ def test_tune_picks_the_best_validation_score_and_needs_the_switch():
         scores = {lam: quiet(m.withHP({"lambda": lam}).valScore) for lam in (0.1, 1.0, 10.0)}
         hp2, score = quiet(m.tune, SMALL)                                 # ({name: value}, score), as ScalaTion's tune
         assert hp2 == {"lambda": min(scores, key=scores.get)} and score == scores[hp2["lambda"]]
-        assert m.lam == 1.0 and m.modelName == "ARX_D_6_6_2_L1.0"       # the model itself is untouched
+        assert m.hparameter["lambda"] == 1.0 and m.modelName == "ARX_D_6_6_2_L1.0"   # the model itself is untouched
         best = m.withHP(hp2)
-        assert best.lam == hp2["lambda"] and best.modelName == f"ARX_D_6_6_2{best.hpTag}" and best._params is None
+        assert best.hparameter["lambda"] == hp2["lambda"] and best.modelName == f"ARX_D_6_6_2{best.hpTag}" and best._params is None
         hp1, s1 = quiet(m.tune, SMALL, QoF.smape, [1])                    # by the first horizon only
         assert s1 == quiet(m.withHP(hp1).valScore, None, QoF.smape, [1])
         hp_mae, _ = quiet(m.tune, SMALL, QoF.mae)
         assert hp_mae["lambda"] in (0.1, 1.0, 10.0)
         r = quiet(ARX_D.rescale, y, 6, xe, Args(p=3, px=2, spec=1, lam=1.0, method="ridge"), TransformT.Log1p)
         rb = r.withHP(quiet(r.tune, (Knob("lambda", (0.1, 1.0), True, "L"),))[0])
-        assert rb.refitTransform().lam == rb.lam                          # a refit of the transforms keeps the knobs found
+        assert rb.refitTransform().hparameter["lambda"] == rb.hparameter["lambda"]   # a refit of the transforms keeps the knobs found
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             m.tune(SMALL, verbose=True)
@@ -259,7 +261,7 @@ def test_tune_golden_random_and_k_fold():
         m.cvScore(1)
     rec = ARX(y, 6, xe, Args(p=3, px=2, spec=1, lam=1.0, method="ridge"))
     assert np.isfinite(quiet(rec.cvScore, 4))                             # a recursive model: its h = 1 regression
-    plain = ARX_D(y, 6, xe, Args(p=3, px=2, spec=1))
+    plain = ARX_D(y, 6, xe, Args(p=3, px=2, spec=1, method="sm_ols"))
     assert quiet(plain.tune, folds=5)[0] == {}                            # least squares: nothing to tune
     with Model.withValidation():                                          # the folds come from the fit rows then
         assert quiet(m.cvScore, 4) != s5
@@ -281,7 +283,7 @@ def test_tune_turns_two_knobs_for_the_elastic_net():
         hpR, _ = quiet(e.tune, two, search="random", trials=5, seed=3)
         assert 0.1 <= hpR["lambda"] <= 10.0 and 0.0 <= hpR["l1_ratio"] <= 1.0
         one, _ = quiet(e.tune, (Knob.L1_RATIO,))                           # one knob of the two: lambda stays
-        assert set(one) == {"l1_ratio"} and e.withHP(one).lam == 1.0
+        assert set(one) == {"l1_ratio"} and e.withHP(one).hparameter["lambda"] == 1.0
     best = e.withHP(hpG)
     assert best.modelName == f"ARX_D_3_2_2{Knob.LAMBDA.tagOf(hpG['lambda'])}{Knob.L1_RATIO.tagOf(hpG['l1_ratio'])}"
     assert best._args.l1_ratio == hpG["l1_ratio"] and best.hparameter["lambda"] == hpG["lambda"]
@@ -296,34 +298,34 @@ def test_tuning_switch_gives_every_candidate_its_own_knobs():
         fs1 = mod.getModel_h(h=1)
         s_full = quiet(fs1.evalCols, fs1.mcols)
         s_two = quiet(fs1.evalCols, [0, 1, 2])
-        assert s_full.mod.lam in LAMS and s_two.mod.lam in LAMS
+        assert s_full.mod.hparameter["lambda"] in LAMS and s_two.mod.hparameter["lambda"] in LAMS
         assert s_full.mod.modelName.endswith(s_full.mod.hpTag)
         cols, rSq = quiet(mod.selectFeatures, SelectionTech.Backward)   # joint selection: every set at its best knobs
         best = mod.getBest()
-        assert best.mod.lam in LAMS and best.mod.lam == best.mod.hparameter["lambda"]
+        assert best.mod.hparameter["lambda"] in LAMS
         models, _, qT = quiet(mod.reportSelection, cols, rSq, inSample=False, showTrace=False)
-        assert models[0].lam == best.mod.lam and models[0].modelName.endswith(best.mod.hpTag)   # the reported model keeps them
+        assert models[0].hparameter["lambda"] == best.mod.hparameter["lambda"] and models[0].modelName.endswith(best.mod.hpTag)   # the reported model keeps them
         assert qT.shape == (6, 26)
         sub, qof = mod.fitCols(best.mod_cols)
-        assert sub.lam == best.mod.lam and qof.shape == (6, 26)
-        assert mod.bestHP(best.mod_cols) == {"lambda": best.mod.lam} and mod.bestHP([0]) is None
+        assert sub.hparameter["lambda"] == best.mod.hparameter["lambda"] and qof.shape == (6, 26)
+        assert mod.bestHP(best.mod_cols) == {"lambda": best.mod.hparameter["lambda"]} and mod.bestHP([0]) is None
         out = io.StringIO()
         with contextlib.redirect_stdout(out):                             # the banners name the SELECTED model
             m7 = ARX_D(y, 6, xe, args.copy(lam=7.0))
             c7, r7 = m7.selectFeatures(SelectionTech.Ranked)
             m7.reportSelection(c7, r7, inSample=False, showTrace=False)
         b7 = m7.getBest()
-        assert m7.modelName == "ARX_D_4_3_2_L7.0" and b7.mod.lam != 7.0   # the parent keeps its own knobs
+        assert m7.modelName == "ARX_D_4_3_2_L7.0" and b7.mod.hparameter["lambda"] != 7.0   # the parent keeps its own knobs
         assert f"| {b7.mod.modelName}: selected: k = {len(b7.mod_cols)} of n = " in out.getvalue()
         assert f"| {b7.mod.modelName}: TnT Test (rolling validation) of the selected model on " in out.getvalue()
         assert "ARX_D_4_3_2_L7.0: selected" not in out.getvalue()
-        assert mod.getModel(best.mod_cols).lam == best.mod.lam             # getModel (getBest ().mod_cols) carries them
+        assert mod.getModel(best.mod_cols).hparameter["lambda"] == best.mod.hparameter["lambda"]   # getModel (getBest ().mod_cols) carries them
         assert mod.getModel(best.mod_cols).modelName.endswith(best.mod.hpTag)
-    assert mod.getModel(best.mod_cols).lam == best.mod.lam                 # ... with the switches off too
+    assert mod.getModel(best.mod_cols).hparameter["lambda"] == best.mod.hparameter["lambda"]   # ... with the switches off too
     with Model.withValidation():                                         # tuning off: the model's own knobs everywhere
         mod = ARX_D(y, 6, xe, args)
         quiet(mod.selectFeatures, SelectionTech.Backward)
-        assert mod.getBest().mod.lam == 1.0
+        assert mod.getBest().mod.hparameter["lambda"] == 1.0
     assert Model.tuning is False
 
 
@@ -331,22 +333,22 @@ def test_scorer_tunes_per_candidate_and_carries_the_knobs_to_the_tnt():
     cfg = Datasets.COVID2
     sc0 = FormulaScorer(cfg.load(), hh=6, validating=True)
     c0 = sc0.score("y ~= y~(3,1) + icu~1")
-    assert c0.hp == {"lambda": 1.0} and c0.lam == 1.0 and not sc0.tuning and "lam=1" in repr(c0)
+    assert c0.hp == {"lambda": 1.0, "l1_ratio": 0.5} and not sc0.tuning and "lambda=1, l1_ratio=0.5" in repr(c0)   # rev2.3: the net's two knobs
     with Model.withValidation(tuning=True):
         sc = FormulaScorer(cfg.load(), hh=6)
         assert sc.validating and sc.tuning
         n0 = sc.evaluations
         c = sc.score("y ~= y~(3,1) + icu~1")
-        assert c.lam in LAMS and c.hp == {"lambda": c.lam} and c.score <= c0.score + 1e-12   # its own best knobs score no worse than lambda = 1
+        assert c.hp["lambda"] in LAMS and set(c.hp) == {"lambda", "l1_ratio"} and c.score <= c0.score + 1e-12   # its own best knobs score no worse than lambda = 1
         assert sc.evaluations - n0 >= len(LAMS) + 2                       # the grid points count toward the budget
         mod, qt = sc.tnt(c.formula, c.hp)
-        assert mod.lam == c.lam and mod.modelName.endswith(mod.hpTag) and len(qt) == 6
+        assert mod.hparameter["lambda"] == c.hp["lambda"] and mod.modelName.endswith(mod.hpTag) and len(qt) == 6
         assert "lambda = " in sc.report(c, tnt=False)
         maxLag = int(sc.hp["maxLag"])
         f = NARX_FormulaParser.parseFormula(arxFormulaStr(cfg.resp, 2, 1, list(cfg.exo)), sc.vars, maxLag)
         lib = TermLibrary(f.resp, f.preds, f.tFormT)
         cand, _, nEv = lib.selectBy(SelectionTech.Backward, sc)
-        assert not cand.failed and cand.lam in LAMS and nEv > 0
+        assert not cand.failed and cand.hp["lambda"] in LAMS and nEv > 0
     assert Model.tuning is False
 
 

@@ -24,8 +24,9 @@ import statsmodels.api as sm
 
 from Util.make_matrix4ts import makeMatrix4L
 from Util.transform import NormForm
-from modeling.forecasting.args import AR_METHODS
-from modeling.forecasting.forecaster import Forecaster, hp as AR_hp, trSize
+from modeling.forecasting.args import AR_METHODS, hp as AR_hp
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 
 
 class AR(Forecaster):
@@ -84,7 +85,7 @@ class AR(Forecaster):
         """
         args = cls._argsOf(y, args)
         y = np.asarray(y, dtype=float)
-        tForm_y = NormForm(y[:trSize(len(y), args.te_ratio)])           # (mean, std) of the training rows
+        tForm_y = NormForm(y[:Model.trSize(len(y), args.te_ratio)])           # (mean, std) of the training rows
         mod = cls(tForm_y.f(y), hh, args)
         mod._setYForm(tForm_y, y)
         return mod

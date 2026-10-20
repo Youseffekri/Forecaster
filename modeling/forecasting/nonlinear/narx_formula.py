@@ -40,7 +40,7 @@ import numpy as np
 from Util.transform import TransformT
 from modeling.forecasting.arx_formula import (ARX_Formula, FormulaVar, LabelMode, PowerTerm, ProductTerm, Term,
                                               TransformedTerm, _each, fmt, wave as wave_k)
-from modeling.forecasting.forecaster import trSize as tr_size_of
+from modeling.model import Model
 
 if TYPE_CHECKING:
     from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
@@ -182,7 +182,7 @@ class Par:
         """
         if self.resolved:
             return
-        m = min(trSize, len(x)) if trSize > 0 else tr_size_of(len(x))
+        m = min(trSize, len(x)) if trSize > 0 else Model.trSize(len(x))
         xt = np.asarray(x[:m], dtype=float)
         lo, hi = float(np.min(xt)), float(np.max(xt))
         rng = hi - lo if hi > lo else max(abs(hi), 1.0)

@@ -436,14 +436,14 @@ class Args:
     def hparam(self) -> HyperParameter:
         """
         The hyper-parameters of a model built with these settings: `AR.hp` (its defaults kept) with
-        the values of the Scala hyper-parameters, crx / nneg as 0 / 1 (as ScalaTion keeps them), and
-        the Python-only "lambda" (= lam) and, when set, "skip" (unregistered: not printed).
+        the values of the Scala hyper-parameters, crx / nneg as 0 / 1 (as ScalaTion keeps them), and,
+        when set, the Python-only "skip" (unregistered: not printed).  The knobs of the regression
+        (`lam`, `l1_ratio`) stay in the args: `Forecaster.hparameter` merges them (rev2.3).
         """
         h = hp.copy()
         for n in hp.registered():
             v = self._v[n]
             h[n] = int(v) if isinstance(v, bool) else v
-        h["lambda"] = self._v["lam"]
         if self._v["skip"] is not None:
             h["skip"] = self._v["skip"]
         return h

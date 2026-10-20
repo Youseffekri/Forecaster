@@ -14,7 +14,7 @@ The proposer is an LLM, a genetic rule or random grammar sampling (`Proposer`); 
 techniques on term columns (`SelectionTech`, `SubsetSearch`: the cross-entropy method
 `CEM_Selector` as the selector, any technique as either).  Every searching arm is one `ArmSpec` run
 by `PipelineArm` (`mainArms`, `ablationArms`); the anchors are `BaselineArm` (V0, no search).  This
-module holds the hyper-parameters (`hp`, the same dict as `FormulaScorer`'s `DEFAULT_HP`), the
+module holds the hyper-parameters (`hp`, the same dict as `FormulaScorer.hp`), the
 client factories, the arm sets (main table and ablation table), runs arms x streams (`runGrid`) and
 nested prefixes of the series (`runFolds`), prints the results the way the rest of the project
 prints them -- the cross-arm table, and for the winners `showBest`: the REPORT block, the
@@ -61,7 +61,7 @@ from modeling.forecasting.forecaster import Forecaster
 from modeling.forecasting.datasets import DatasetConfig, Datasets
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import BaselineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.explainer import Explainer
-from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import (DEFAULT_HP, Candidate, FormulaScorer, qof_table_full,
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import (Candidate, FormulaScorer, qof_table_full,
                                                                       qof_vector)
 from modeling.forecasting.nonlinear.llm_narx_sr.pipeline_arm import ClientFactory, PipelineArm
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import ArmSpec, ExpRun, Method, SearchArm
@@ -96,10 +96,10 @@ class LLM_NARX_SR:
     """The experiment harness: hyper-parameters, client factories, the arm sets, the grid and fold
     runners, the report and the ARX_D-style display of the winners (ScalaTion's `LLM_NARX_SR` object)."""
 
-    #: The search hyper-parameters (the same dict as `FormulaScorer`'s `DEFAULT_HP`, so
+    #: The search hyper-parameters (the same dict as `FormulaScorer.hp`, as in ScalaTion, so
     #: `LLM_NARX_SR.hp["maxLag"] = 7` reaches every scorer built afterwards; the split and the switch are
     #: `Model`'s, the retraining cycle `Forecaster.RC`).
-    hp: Dict = DEFAULT_HP
+    hp: Dict = FormulaScorer.hp
 
     STREAMS = [0, 1, 2, 3, 4, 5, 6, 7]                                   # random streams / LLM run tags
     LLM_MODEL = LLMModel.GPT4oMini                                       # OpenAI model for the cloud experiments
@@ -360,8 +360,12 @@ class LLM_NARX_SR:
             print("the best candidate failed to fit -- nothing to show")
             return
         mod = cls.toModel(run.best, scorer)
-        q = scorer.qofTrain(mod)
+        q = scorer.qofIn(mod, scorer.trRng)                               # the FS rows of the training rows (the base's `qofOn`)
         print(mod.report(qof_vector(q[0])))                               # REPORT block (h = 1 QoF)
+        if hasattr(mod, "summary"):
+            for h in range(1, scorer.hh + 1):
+                mod.qofOn(scorer.fs_rng(scorer.trRng), h)                 # `summary (h)` reads the last diagnose: horizon h's
+                print(mod.summary() if h == 1 else mod.summary(h))
         if getattr(mod, "nFree", 0) > 0:
             print(f"fitted nonlinear parameters ({mod.nFree} free, by {mod.optimizer}) = {vector_str(mod.w_nl)}")
         if getattr(mod, "X", None) is not None:
@@ -383,7 +387,7 @@ class LLM_NARX_SR:
                 print(ex.text)
             except Exception as e:
                 print(f"ERROR @ LLM_NARX_SR.showBest: no explanation -- {e!r}")
-        banner(f"In-Sample fitMap QoF on the training rows {scorer.trRng} (skip = {scorer.skip})")
+        banner(f"In-Sample fitMap QoF on the FS rows of the training rows {scorer.fs_rng(scorer.trRng)} (skip = {scorer.skip})")
         print(qof_table_full(q))
         banner(f"TnT: tnT_Test (rc = {scorer.rc}) on the testing rows {scorer.teRng}")
         mod.tnT_Test(scorer.rc)                                           # rollTest over the testing rows, QoF table printed

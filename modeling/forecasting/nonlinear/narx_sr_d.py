@@ -51,7 +51,9 @@ from modeling.centered_ridge import CenteredRidge
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.arx_formula import ARX_Formula
 from modeling.forecasting.arx_sr import ARX_SR, srMatrix
-from modeling.forecasting.forecaster import Args, Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.forecasting.args import Args
+from modeling.model import Model
 from modeling.forecasting.arx import _checkTFormT
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula, Par
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
@@ -148,8 +150,7 @@ class NARX_SR_D(ARX_D):
     ARX_D : the direct forecasting logic (forecast, getModel, getModel_h); Forecaster_D the regression.
     """
 
-    METHOD = "ridge"
-    ARGS = ("p", "px", "spec", "crx", "lam", "scaled", "optimizer", "tune") + Forecaster.ARGS
+    ARGS = ("p", "px", "spec", "crx", "method", "lam", "l1_ratio", "scaled", "optimizer", "tune") + Forecaster.ARGS
 
     def __init__(self,
                  y: np.ndarray,
@@ -164,8 +165,9 @@ class NARX_SR_D(ARX_D):
                  n_exo: Optional[int] = None) -> None:
         """
         Initializes the model on a GIVEN design matrix (ScalaTion's constructor; use `apply`,
-        `rescale` or `fromTerms` to build one).  The coefficients are fitted by the centered ridge
-        regression (penalty args.lam, default 0.1; args.method is not read: always "ridge").
+        `rescale` or `fromTerms` to build one).  The coefficients are fitted by the regression of
+        args.method (the elastic net by default, as every direct model; penalty args.lam, default 0.1)
+        once the nonlinear parameters are fitted; VarPro's own linear step is the ridge solve.
 
         Parameters
         ----------
@@ -193,7 +195,6 @@ class NARX_SR_D(ARX_D):
             The number of exogenous variables (defaults to the formula's).
         """
         args = self._argsOf(y, args)
-        args.method = "ridge"                                            # the regression of NARX_SR_D (and its sub-models)
         super().__init__(y, hh, None, args, X=np.asarray(X, dtype=float))
         self.formula = NARX_Formula.of(formula) if formula is not None else None
         self._fname = list(fname) if fname is not None else \
@@ -321,7 +322,7 @@ class NARX_SR_D(ARX_D):
         tune = args.tune
         stepCounts: Dict[str, int] = {}
         if tune:
-            w_nl, stepCounts = cls.optimize(xe_bfill, y, hh, hp_, fEndo, fExo, trSize, args.scaled, args.optimizer, **opt_kwargs)
+            w_nl, stepCounts = cls.optimize(xe_bfill, y, hh, hp_, fEndo, fExo, trSize, args.lam, args.scaled, args.optimizer, **opt_kwargs)
         else:
             w_nl = cls.initializeW(fEndo, fExo)[0]
         if DEBUG:
@@ -356,7 +357,7 @@ class NARX_SR_D(ARX_D):
     @classmethod
     def optimize(cls, xe_bfill: Optional[np.ndarray], y: np.ndarray, hh: int, hparam: Dict[str, Any],
                  fEndo: TSet = (TransformT.Root,), fExo: Sequence[TSet] = (), trSize: int = -1,
-                 scaled: bool = False, optimizer: Union[OptimizerNL, str, None] = None,
+                 lam: Optional[float] = None, scaled: bool = False, optimizer: Union[OptimizerNL, str, None] = None,
                  **opt_kwargs) -> Tuple[np.ndarray, Dict[str, int]]:
         """
         Fits the nonlinear parameters of the transforms (ScalaTion's `NARX_SR_D.optimize`) with the
@@ -377,11 +378,14 @@ class NARX_SR_D(ARX_D):
         hh : int
             The maximum forecasting horizon.
         hparam : dict
-            The hyper-parameters ("lambda" is the ridge penalty, `ridge`).
+            The hyper-parameters (the lags of the matrix).
         fEndo, fExo : transform types
             As in `apply`.
         trSize : int, default=-1
             The number of training rows (-1 => `trSize`).
+        lam : float, optional
+            The ridge penalty of VarPro's inner regression (None => `CenteredRidge.hp["lambda"]`; ScalaTion's
+            `ridge (hparam)`).
         scaled : bool, default=False
             Whether the regression standardizes the columns.
         optimizer : OptimizerNL or str, optional
@@ -414,7 +418,8 @@ class NARX_SR_D(ARX_D):
 
         if DEBUG:
             print(f"DEBUG @ NARX_SR_D.optimize: fit on rows Range 0 until {fitRng.stop} the parameters ({', '.join(map(str, free))})")
-        a, stepCounts = cls.fitNL(basis, yy, w0[free], lb, ub, cls.ridge(hparam), scaled, optimizer, **opt_kwargs)
+        lam = float(CenteredRidge.hp["lambda"] if lam is None else lam)
+        a, stepCounts = cls.fitNL(basis, yy, w0[free], lb, ub, lam, scaled, optimizer, **opt_kwargs)
         return full(a), stepCounts
 
     # -- factory: a formula (ScalaTion's `fromTerms`) -------------------------------------------
@@ -527,12 +532,6 @@ class NARX_SR_D(ARX_D):
         mod._tForms = {"tForm_y": td.tForm_y}
         mod._recipe = lambda: cls.fromTerms(f, dataset, hh, args, tFormT, -1, maxLag, freqs, **opt_kwargs)
         return mod
-
-    @staticmethod
-    def ridge(hparam: Optional[Dict[str, Any]]) -> float:
-        """The ridge penalty the model's regression will use: hparam["lambda"] if present, the
-        default `CenteredRidge.hp["lambda"]` otherwise (ScalaTion's `NARX_SR_D.ridge`)."""
-        return CenteredRidge.ridge(hparam)
 
     # -- the nonlinear parameters --------------------------------------------------------------
 
@@ -745,11 +744,6 @@ class NARX_SR_D(ARX_D):
         return self.w_nl
 
     @property
-    def lam(self) -> float:
-        """The ridge penalty of the regression (args.lam, hparameter "lambda", default 0.1)."""
-        return self.ridge(self._hparam)
-
-    @property
     def n_coef(self) -> int:
         """The number of coefficients per horizon, intercept included."""
         return self._X.shape[1] + 1
@@ -776,5 +770,5 @@ class NARX_SR_D(ARX_D):
         return self.formula.formulaStr if self.formula is not None else " + ".join(self.fname)
 
     def __repr__(self) -> str:
-        s = f"{self.modelName}(nTerms={self._X.shape[1]}, nFree={self.nFree}, lam={self.lam}), hh = {self.hh}, skip = {self._hparam['skip']}"
+        s = f"{self.modelName}(nTerms={self._X.shape[1]}, nFree={self.nFree}, lam={self.hparameter['lambda']}), hh = {self.hh}, skip = {self._hparam['skip']}"
         return s + (f", optimizer={self.optimizer}" if self.optimizer is not None else "")

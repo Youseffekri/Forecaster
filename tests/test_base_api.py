@@ -14,10 +14,9 @@ from Util.transform import MinMaxForm, NormForm, TransformT
 from modeling.centered_ridge import CenteredRidge
 from modeling.fit import QoF, vif
 from modeling.forecasting.ar import AR
-from modeling.forecasting.args import Args
+from modeling.forecasting.args import Args, hp as AR_hp
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
-from modeling.forecasting.forecaster import hp as AR_hp
 from modeling.forecasting.forecaster_d import Forecaster_D
 from modeling.forecasting.random_walk import RandomWalk
 from modeling.hyper_parameter import HyperParameter
@@ -56,11 +55,12 @@ def test_ar_hp_is_read_only_and_hparameter_is_a_copy():
     mod = ARX_D(y, 3, xe, Args(p=3, px=2))
     h = mod.hparameter
     h["p"] = 9
-    assert mod.hparameter["p"] == 3 and mod.modelName == "ARX_D_3_2_2" and not hasattr(mod, "hparam")
+    assert mod.hparameter["p"] == 3 and mod.modelName == "ARX_D_3_2_2_L0.1_A0.5" and not hasattr(mod, "hparam")   # rev2.3: the elastic net by default
 
 
 def test_defaults_are_ar_hp_and_report_line_is_the_scala_log(capsys):
-    """ARX_D_1_0_0 on Covid-19 (aRX_DTest4): the REPORT's hyper-parameter line is the Scala log's."""
+    """ARX_D_1_0_0 on Covid-19 (aRX_DTest4): the REPORT's hyper-parameter line is the Scala log's (the model's keys; rev2.3:
+    the knobs of the regression follow -- ScalaTion prints the whole merged map, `RidgeRegression.hp` first)."""
     y, _ = covid()
     mod = ARX_D(y, 6, None, Args(p=1, px=0, spec=0, method="ridge"))
     hp = mod.hparameter
@@ -68,9 +68,9 @@ def test_defaults_are_ar_hp_and_report_line_is_the_scala_log(capsys):
     mod.inSample_Test()
     out = capsys.readouterr().out
     assert ("    hparameter hp  = HyperParameter(p -> (1,1), d -> (1,1), q -> (1,1), P -> (1,1), D -> (1,1), "
-            "Q -> (1,1), s -> (7,7), px -> (0,1), spec -> (0,1), crx -> (0,0), nneg -> (1,1))") in out
+            "Q -> (1,1), s -> (7,7), px -> (0,1), spec -> (0,1), crx -> (0,0), nneg -> (1,1), lambda -> (0.1,0.1))") in out
     m = ARX(y, 2, None, Args(crx=True))                                # the switches are kept as 0 / 1
-    assert m.hparameter["crx"] == 1 and m.hparameter["p"] == 1 and m.hparameter["px"] == 1 and m.modelName == "ARX_1_1_0"
+    assert m.hparameter["crx"] == 1 and m.hparameter["p"] == 1 and m.hparameter["px"] == 1 and m.modelName == "ARX_1_1_0_L0.1_A0.5"
     RandomWalk(y, 2).inSample_Test()
     assert "hparameter hp  = null" in capsys.readouterr().out          # ScalaTion's RandomWalk has hparam = null
 
@@ -94,7 +94,7 @@ def test_summary_and_vif():
     """The coefficient table (ScalaTion's `Fit.summary`): standard errors from (X' X)^-1 and the MSE of the last
     diagnosis, Student t p-values, VIFs as statsmodels' (column 0 the intercept)."""
     y, xe = covid()
-    mod = ARX(y, 1, xe, Args(p=2, px=1, spec=0))
+    mod = ARX(y, 1, xe, Args(p=2, px=1, spec=0, method="sm_ols"))        # least squares: the textbook standard errors
     mod.train()
     yp = mod.forecast()[:, 0]
     mod.mod_resetDF(len(y))
@@ -147,7 +147,7 @@ def test_forecast_at_and_trend():
     with pytest.raises(ValueError):
         mod.forecastAt(4)
     tr = ARX.trend(y, 3, None, Args(spec=2))
-    assert tr.fname == ["cons", "lin"] and tr.X.shape == (len(y), 2) and tr.modelName == "ARX_0_0_0"
+    assert tr.fname == ["cons", "lin"] and tr.X.shape == (len(y), 2) and tr.modelName == "ARX_0_0_0_L0.1_A0.5"
     tr.train()
     assert np.isfinite(tr.forecast()).all()
 

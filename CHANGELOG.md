@@ -1,5 +1,54 @@
 # Changelog
 
+## 3.3.0 (ForecasterPy_rev2.3) -- 2026-10-20: consistent with ScalaTion rev5.4 (the elastic net by default, the standard errors of a penalized fit, the cleanup)
+
+ScalaTion rev5.4 made the elastic net the `REGRESSION` import of both bases, gave the penalized regressions their own
+standard errors (the NaN SUMMARY of a direct model on collinear lags is gone), merged the hyper-parameter map and
+removed what the knobs made redundant; this release does the same in Python.
+
+1. The elastic net by default.  `METHOD = "enet"` in `Forecaster_Reg` and `Forecaster_D` (`ElasticNet (lam, l1_ratio,
+   scaled)`; the overrides in `ARX`, `ARX_D`, `ARX_SR`, `NARX_SR_D` are gone -- `NARX_SR_D` reads `method` like every
+   direct model, "l1_ratio" and "method" are in its ARGS); `ElasticNet.fit` at l1_ratio = 0 uses the ridge's own solver
+   (`ridge_solve`: exact, so l1_ratio = 0 IS the ridge; coordinate descent stops short of it on collinear columns) and
+   otherwise scikit-learn's descent at `tol = 1e-6` (ScalaTion's `solve` stops at a coefficient change of 1e-6: the two
+   agree to five digits, at the default 1e-4 they differed in the fourth); no negative zeros.  The names carry both
+   knobs, `ARX_D_6_6_2_L0.1_A0.5`; a least-squares fit must be asked for (`method = "sm_ols"`).
+2. The standard errors of a penalized fit.  NEW `modeling/regularized.py` (ScalaTion's `object Regularized`):
+   `stdErr (xc, b, sse, lam, alpha, xm, sd)`, the sandwich covariance sigma^2 M Xa'Xa M over the active set A, M =
+   (Xa'Xa + D)^-1, D = diag (lambda (1 - alpha) + lambda alpha / |b_j|), sigma^2 = sse / (m - 1 - tr (M Xa'Xa)); the slopes in
+   original units, the intercept sigma^2 (1/m + xm' Cov xm); NaN (the SUMMARY prints `NA NA NA`) for a coefficient the
+   L1 penalty set to zero or a constant column, every coefficient when the residual degrees of freedom are gone.
+   `CenteredRidge.stdErr (k)` and `ElasticNet.stdErr (k)` call it on the last training window; `Forecaster.stdErrOf`
+   takes them for any penalized regression (`_penalizedSE`, was `_ridgeSE`) and keeps the textbook formula for least
+   squares with diag ((X'X)^-1) as the squared row norms of R^-1 (`Fit.summary`'s fix); `Fit.diagnose` skips the F
+   p-value when fStat < 0 (an out-of-sample block with R^2 < 0: no `fisherCDF` error).
+3. The cleanup.  `Forecaster.hparameter` IS the merged map (the model's keys plus the knobs of its regression, from the
+   args; what the REPORT prints), `hpAll`, `penalized` and `lam` are gone (`knobs` says whether there is anything to tune,
+   `hparameter["lambda"]` is the penalty; `NARX_SR_D.lam` too); `Forecaster.slant (yf = None => getYf_org)` (from
+   `ForecastMatrix`, original units) is what `inSample_Test` / `rollTest` print, `diagnoseAll (y_, yf, tRng)` without
+   `showYf`; `Forecaster_D.tnT_Test`'s override is gone (a test passes `showYf = True`); `Fit.dfWarned`: the DF warning
+   once per RUN (a tuner or a selection builds a fresh model per evaluation); `tune` warns (verbose) when a log knob's
+   best grid value sits at the grid's edge; `FeatureSelection.reportSelection`: `bestOf (cols)` (a per-horizon set is
+   its own best step; every horizon got the last horizon's best step before).  `FormulaScorer.hp` is the ONE map
+   (the class attribute; `LLM_NARX_SR.hp` its alias, as in ScalaTion; `DEFAULT_HP` gone), `Candidate.lam` gone
+   (`hp["lambda"]`), `qofIn (mod, rows)`, `residuals (mod, rows, noSkip)`, infinity the failed score.  Protocol:
+   `test (rows)`, `trainNtest (..., rows)`, `trainNtestWindow (n)` (the REPORT on the window), `qofOn (rng, hmax)` (the
+   block's table, what `rollTest` returns); `qofOn` / `errorTable` bound the diagnosis by the shifted series of a
+   single-horizon model (22 testing rows at h = 3, not 20).  `forecaster.py` re-exports nothing (`__all__ =
+   ["Forecaster"]`): `Model` comes from `modeling.model`, `Args` / `hp` / the method lists from `forecasting.args`;
+   unused imports removed.
+4. Docs: README (the default, the standard errors, `modeling/regularized.py`), `docs/CONVENTIONS.md` (the table
+   "ScalaTion rev5.4 <-> Python rev2.3"); Examples unchanged in substance (`Example_FeatureSelection`: the `Ranked`
+   technique's rank, no `showYf`).
+5. Tests: re-pinned for the elastic net -- the names (`_L0.1_A0.5`), the merged REPORT line, the least-squares
+   comparisons say `method = "sm_ols"` / `"ridge"` (`test_summary_and_vif`, the OLS equivalence of `ARX_SR_D` and
+   `NARX_SR_D`, the VarPro recoveries at lambda 1e-12); `test_narx_sr_d.py` reproduces ScalaTion rev5.4's
+   `nARX_SR_DTest5` log under the net (In-Sample rSq 0.948873, sMAPE 11.0590, TnT 14.2521 ..; the VarPro fit 0.950549,
+   10.8298, 13.5901 ..) -- the Backward paths part at the first removal, where a coefficient AT the soft threshold is a
+   tiny nonzero in ScalaTion's descent and an exact zero in scikit-learn's (the FPE charge differs by one; ScalaTion
+   selects {0, 5, 6, 20, 24}, Python {0, 6, 16, 24}); the baseline arms' anchors (Covid-19 23.586 / 16.774 / 23.586 /
+   47.484 ..); `test_scalation_signatures.py` (`slant`, `tnT_Test`); 261 tests pass.
+
 ## 3.2.0 (ForecasterPy_rev2.2) -- 2026-10-20: consistent with ScalaTion rev5.3 (the knobs), plus the measurement protocol
 
 ScalaTion rev5.3 generalized the penalty search to the KNOBS of whatever regression is bound, moved the `llm_narx_sr`

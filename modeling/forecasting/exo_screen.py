@@ -41,7 +41,7 @@ import pandas as pd
 
 from Util.correlogram import ccorr, corr
 from Util.tools import banner
-from modeling.forecasting.forecaster import trSize
+from modeling.model import Model
 
 
 # ---------------------------------------------------------------------------------------------
@@ -228,7 +228,7 @@ class ExoScreen:
         """
         mat, names = cls._data(data, header)
         m = mat.shape[0]
-        tr = tr if tr > 0 else trSize(m)
+        tr = tr if tr > 0 else Model.trSize(m)
         if len(names) != mat.shape[1]:
             raise ValueError(f"pool: {len(names)} names for {mat.shape[1]} columns")
         if not 0 < tr <= m:
@@ -427,7 +427,7 @@ class ExoScreen:
             xe (m, n_chosen), y (m,) and the chosen names in the file's order.
         """
         mat, names = cls._data(data, header)
-        tr_ = tr if tr > 0 else trSize(mat.shape[0])
+        tr_ = tr if tr > 0 else Model.trSize(mat.shape[0])
         p = cls.pool(mat, names, resp, tr_, exclude)
         ranks, kept = cls.shortlist(p.y, p.xe, maxLag, tr_, k, thr1, thr2)
         chosen = [nm for nm in names if nm in kept]                       # the chosen columns in the file's order

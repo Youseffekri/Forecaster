@@ -15,8 +15,8 @@ from modeling.forecasting.args import Args
 from modeling.forecasting.arx import ARX
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.datasets import Example_Covid
-from modeling.forecasting.forecaster import Forecaster, Model, teRng, trSize
-from modeling.forecasting.forecaster_d import Forecaster_D
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.centered_ridge import CenteredRidge
 from modeling.hyper_parameter import Knob
 
@@ -121,7 +121,7 @@ def test_te_ratio_zero_is_the_competition_mode():
     assert args.te_ratio is None                                            # None: Model.TE_RATIO when the model is built
     try:
         Model.TE_RATIO = 0.0
-        assert Model.teSize(116) == 0 and teRng(116) == range(116, 116) and Model.splitStr(116) == "92 / 24 / 0"
+        assert Model.teSize(116) == 0 and Model.teRng(116) == range(116, 116) and Model.splitStr(116) == "92 / 24 / 0"
         mod = ARX_D.rescale(y, 6, xe, args, TransformT.MinMax)            # transforms on all 116 rows
         assert mod.te_ratio == 0.0 and mod.tr_size == 116 and mod.te_size == 0
         assert mod._tForms["tForm_y"]._hi == pytest.approx(y.max())
@@ -140,13 +140,13 @@ def test_te_ratio_zero_is_the_competition_mode():
             assert hp2["lambda"] in (0.1, 1.0, 10.0) and np.isfinite(sc)
         final = mod.withHP(hp2)
         quiet(final.inSample_Test)                                          # the model entered: fit on all 116 rows
-        assert final.lam == hp2["lambda"] and final.tr_size == 116
+        assert final.hparameter["lambda"] == hp2["lambda"] and final.tr_size == 116
     finally:
         Model.TE_RATIO = 0.2
     assert ARX_D(y, 6, xe, args).tr_size == 92                              # back to the default split
     direct = ARX_D(y, 6, xe, args.copy(te_ratio=0.0))                       # or per model
     assert direct.tr_size == 116 and quiet(direct.tnT_Test) is None
-    assert ARX_D(y, 6, xe, args.copy(te_ratio=0.3)).tr_size == trSize(116, 0.3) == 81
+    assert ARX_D(y, 6, xe, args.copy(te_ratio=0.3)).tr_size == Model.trSize(116, 0.3) == 81
     with pytest.raises(ValueError, match="te_ratio"):
         Args(te_ratio=0.96)
 

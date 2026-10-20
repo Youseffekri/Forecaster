@@ -11,7 +11,7 @@ It prints as ScalaTion prints it in a REPORT block,
 
 listing the registered parameters only (value, default).  It is a `dict` of the values, so
 `hp["p"]`, `hp.get("crx", 0)`, `{**hp}` and `dict(hp)` work as for any dict; entries set without
-registration (the Python-only "skip", or "lambda" of the regression) are values without a default
+registration (the Python-only "skip") are values without a default
 and are not printed, as in ScalaTion, where they live in other objects.
 
 `freeze` makes one read-only (Python only): `AR.hp`, the defaults of every forecaster, is frozen, so

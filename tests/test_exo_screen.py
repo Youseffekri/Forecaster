@@ -9,7 +9,7 @@ from modeling.forecasting.args import Args
 from modeling.forecasting.arx_d import ARX_D
 from modeling.forecasting.datasets import Example_Covid, loadH
 from modeling.forecasting.exo_screen import ExoPool, ExoRank, ExoScreen, corr_matrix, model_screen
-from modeling.forecasting.forecaster import trSize
+from modeling.model import Model
 
 POOL = ["new_cases", "reproduction_rate", "icu_patients", "hosp_patients", "new_tests",
         "positive_rate", "tests_per_case", "new_vaccinations", "excess_mortality"]
@@ -27,7 +27,7 @@ def covid_frame() -> pd.DataFrame:
 def covid_pool():
     df = covid_frame()
     y = df["new_deaths"].to_numpy(dtype=float)
-    return y, {c: df[c].to_numpy(dtype=float) for c in POOL}, trSize(len(y))
+    return y, {c: df[c].to_numpy(dtype=float) for c in POOL}, Model.trSize(len(y))
 
 
 def test_ccorr_and_corr_follow_the_scalation_definitions():
@@ -116,7 +116,7 @@ def test_lead_dependency_against_the_lag_0_screen():
 def test_pool_drops_exactly_the_five_running_totals():
     """exoScreenTest2: from the file with its header, `pool` keeps the ten other columns in column order."""
     df = covid_frame()
-    tr = trSize(len(df))
+    tr = Model.trSize(len(df))
     p = ExoScreen.pool(df, None, "new_deaths", tr)
     assert isinstance(p, ExoPool) and "new_deaths" not in p.xe
     assert {nm for nm, _ in p.dropped} == CUMULATIVE
@@ -167,7 +167,7 @@ def test_screen_in_one_call_prints_and_feeds_arx_d(capsys):
     assert capsys.readouterr().out == ""
     assert names == ["hosp_patients", "positive_rate"] and xe.shape == (116, 2) and y.shape == (116,)
     mod = ARX_D(y, 6, xe, Args(p=6, px=6, spec=0))
-    assert mod.modelName == "ARX_D_6_6_2"
+    assert mod.modelName == "ARX_D_6_6_2_L0.1_A0.5"                    # rev2.3: the elastic net by default
     ft = mod.tnT_Test(rc=20)
     assert ft.shape == (6, 26) and np.all(ft[:, 9] < 100)
 

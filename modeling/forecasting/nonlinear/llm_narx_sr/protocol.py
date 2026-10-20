@@ -39,14 +39,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.stats import t as student_t
 
 from Util.tools import banner
-from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.forecasting.nonlinear.llm_narx_sr.llm_narx_sr import LLM_NARX_SR
 from modeling.forecasting.nonlinear.llm_narx_sr.significance import dm_test, hacVar, wilcoxon_test
 

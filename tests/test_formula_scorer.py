@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from modeling.forecasting.forecaster import Model
+from modeling.model import Model
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.datasets import Datasets
 
@@ -21,7 +21,7 @@ def planted():
 
 
 def test_exact_linear_series():
-    """formulaScorerTest (rev5.3 / rev2.2): y = 10 + 2 t, y ~= y~1, near-OLS ridge, in-sample J; the candidate is
+    """formulaScorerTest (rev5.3 / rev2.2): y = 10 + 2 t, y ~= y~1, a near-OLS elastic net (rev2.3; lambda 1e-9), in-sample J; the candidate is
     fitted AND diagnosed on the FS rows of the training rows (0 until 31 - hh + 1 = 29: the boundary rule, as
     `Forecaster_D.fitCols`), every horizon h on the rows whose targets y(t+h-1) lie in them (ScalaTion's qofOn)."""
     y = np.array([10.0 + 2.0 * t for t in range(40)])
@@ -31,10 +31,10 @@ def test_exact_linear_series():
     assert sc.trRng == range(0, 31) and sc.teRng == range(31, 40) and sc.skip == 6 and sc.fs_rng(sc.trRng) == range(0, 29)
     assert np.allclose(c.smapeH, [0.2267184, 0.2150100, 0.2051937], atol=5e-7)
     assert mod.intercept[0] == pytest.approx(1.6963123657217238, abs=1e-9) and mod.slopes[0, 0] == pytest.approx(1.0065075921549427, abs=1e-9)
-    assert c.score == pytest.approx(0.2548428618706658, abs=1e-12) and c.nTerms == 1
+    assert c.score == pytest.approx(0.2548428618706658, abs=1e-8) and c.nTerms == 1     # the coordinate descent's tolerance at a tiny penalty
     assert [q["m"] for q in c.qofTrain] == [23, 22, 21]                  # 29 - skip - (h - 1) rows per horizon (the FS rows)
-    assert c.hp == {"lambda": 1e-9} and c.lam == 1e-9                     # the knobs of the fit (the scorer's penalty)
-    assert mod.modelName.endswith("_L1.0E-9")                             # the tag of a small penalty: all its digits
+    assert c.hp == {"lambda": 1e-9, "l1_ratio": 0.5}                      # the knobs of the fit (the scorer's penalty, the net's share)
+    assert mod.modelName.endswith("_L1.0E-9_A0.5")                        # the tag of a small penalty: all its digits
 
 
 def test_rows_and_the_switch():
@@ -71,7 +71,7 @@ def test_fit_cache_and_scala_names():
     assert c.nTerms == 2 and c.nFree == 1 and c.formulaStr == repr(c.formula) and c.proposalStr.count("?") == 1
     assert c.qofVal is None and c.qofV == c.qofTrain and c.smapeVal == pytest.approx(c.smape)   # in-sample J: no validation QoF
     assert c.score == pytest.approx(sc.scoreOf(c.qofTrain, nParams=c.nParams)) and c.score == pytest.approx(float(c.scoreH.mean()))
-    assert c.nParams is not None and 1.0 < float(c.nParams[0]) < c.nTerms + 1.0      # a ridge: 1 + tr H_lambda < the columns + 1
+    assert c.nParams is not None and float(c.nParams[0]) == c.nTerms + 1.0           # an elastic net: 1 + the nonzero coefficients (rev2.3)
     assert c.qofTrain[0]["dfr"] == 3.0, "two slopes + one free parameter = 3 degrees of freedom"
 
 

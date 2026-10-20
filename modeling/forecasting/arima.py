@@ -40,8 +40,8 @@ from typing import Any, List, Optional, Sequence, Union
 import numpy as np
 from statsmodels.tsa.arima.model import ARIMA as _SM_ARIMA
 
-from modeling.forecasting.args import ARIMA_METHODS
-from modeling.forecasting.forecaster import Forecaster, hp as AR_hp
+from modeling.forecasting.args import ARIMA_METHODS, hp as AR_hp
+from modeling.forecasting.forecaster import Forecaster
 
 
 class ARIMA(Forecaster):

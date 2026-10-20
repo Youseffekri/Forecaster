@@ -34,7 +34,8 @@ from modeling.feature_selection import SelectionTech, qk as QK           # noqa:
 from modeling.forecasting.args import Args                               # noqa: E402
 from modeling.forecasting.arx_d import ARX_D                             # noqa: E402
 from modeling.forecasting.datasets import Datasets                       # noqa: E402
-from modeling.forecasting.forecaster import Forecaster, Model            # noqa: E402
+from modeling.forecasting.forecaster import Forecaster            # noqa: E402
+from modeling.model import Model            # noqa: E402
 from modeling.forecasting.nonlinear.llm_narx_sr.baseline_arm import arxFormulaStr   # noqa: E402
 from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer   # noqa: E402
 from modeling.forecasting.nonlinear.llm_narx_sr.term_library import TermLibrary       # noqa: E402

@@ -312,11 +312,11 @@ class SelectionReport:
         best = getattr(self, "_theBest", None)
         if best is None or best.mod is None or best.mod_cols is None or list(best.mod_cols) != list(cols):
             return None
-        mod = best.mod
-        if not getattr(mod, "penalized", False):
+        knobs = getattr(best.mod, "knobs", ())
+        if not knobs:
             return None
-        h = mod.hpAll
-        return {k.name: float(h[k.name]) for k in mod.knobs}
+        h = best.mod.hparameter
+        return {k.name: float(h[k.name]) for k in knobs}
 
     def colName(self, j: int) -> str:
         """The name of column j for the report: the feature name, or x_j when the model names fewer columns."""
@@ -371,12 +371,15 @@ class SelectionReport:
             raise ValueError("reportSelection: a single-horizon selection has one column set")
         n = self.getX().shape[1]
 
-        models = [self.selectedModel(self.bestCols(list(colsArr[k])), k + 1 if perH else h)
+        def bestOf(cols: Cols) -> Cols:                                  # rev2.3: `bestCols` reads the LAST selection's best step,
+            return cols if perH else self.bestCols(cols)                 #   so per horizon it returned horizon hh's columns for EVERY
+                                                                         #   horizon; a per-horizon set is already its own best step
+        models = [self.selectedModel(bestOf(list(colsArr[k])), k + 1 if perH else h)
                   for k in range(len(colsArr))]
         for k in range(len(colsArr)):                                    # report the selection(s), under the SELECTED model's
             # name: its _L tag is the lambda its best step found, which may differ from this model's
             cols = list(colsArr[k])
-            best = self.bestCols(cols)
+            best = bestOf(cols)
             what = f" for horizon {k + 1}" if perH else (f" for horizon {h}" if h > 0 else "")
             banner(f"{models[k].modelName}: selected{what}: k = {len(cols)} of n = {n}, cols = {set_str(cols)}")
             if list(best) != cols:

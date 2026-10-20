@@ -10,21 +10,23 @@ lambda (lambda = 0 gives OLS).  `method="ridge"` of the forecasters and the coef
 standardized when scaled) space, `slopes` and `intercept` the original-unit ones, and `hp` the
 default penalty (ScalaTion's `CenteredRidge.hp = RidgeRegression.hp`, lambda = 0.1).  `effDF` (the
 trace of the ridge hat matrix plus the intercept) and `stdErr` (the sandwich covariance of the ridge
-estimator) are the ridge-aware statistics the SUMMARY and the penalised selection score use.
+estimator, `regularized.stdErr`) are the ridge-aware statistics the SUMMARY and the penalised
+selection score use.
 
 Author: Yousef Fekri Dabanloo
 Date: 2026-10-20
-Version: 1.7
+Version: 1.8
 License: MIT License
 Note: AI assisted code
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Optional
 
 import numpy as np
 
+from modeling import regularized
 from modeling.hyper_parameter import HyperParameter, Knob
 from modeling.optimization.varpro import ridge_solve
 
@@ -63,14 +65,6 @@ class CenteredRidge:
         self.slopes: Optional[np.ndarray] = None
         self.intercept: Optional[np.ndarray] = None
 
-    @classmethod
-    def ridge(cls, hparam: Optional[Mapping[str, Any]]) -> float:
-        """The penalty a model's regression uses: hparam["lambda"] if present, `hp["lambda"]` otherwise
-        (ScalaTion's `NARX_SR_D.ridge`)."""
-        if hparam is not None and "lambda" in hparam:
-            return float(hparam["lambda"])
-        return float(cls.hp["lambda"])
-
     @staticmethod
     def xSig(Xc: np.ndarray) -> np.ndarray:
         """The column scales of a centered matrix: the unbiased standard deviations, 1 for a constant
@@ -98,7 +92,8 @@ class CenteredRidge:
         self.slopes = self.parameter / sd[:, None]
         self.intercept = ym - xm @ self.slopes
         self._m, self._xm, self._sd = X.shape[0], xm, sd                 # for `effDF` and `stdErr`
-        self._d, self._Vt = np.linalg.svd(Xs, full_matrices=False)[1:]  # the singular values of the fitted basis
+        self._Xs = Xs                                                    # the training window in the fitted space (`stdErr`)
+        self._d = np.linalg.svd(Xs, full_matrices=False, compute_uv=False)   # the singular values of the fitted basis (`effDF`)
         self._sse = np.sum((Yc - Xs @ self.parameter) ** 2, axis=0)     # the residual sum of squares per response
         return self
 
@@ -132,22 +127,11 @@ class CenteredRidge:
         """
         The standard errors of the intercept and the original-unit slopes of response k, (n + 1,),
         from the covariance of the ridge estimator (the sandwich form, NOT the OLS (X'X)^-1):
-
-            Cov (b) = sigma^2 (X'X + lambda I)^-1 X'X (X'X + lambda I)^-1 = sigma^2 V diag (d^2 / (d^2 + lambda)^2) V'
-
-        with sigma^2 = SSE / (m - effDF) (the residual degrees of freedom of the ridge), the slopes'
-        variances divided by the column scales squared when scaled, and the intercept's
-        sigma^2 / m + xbar' Cov (slopes) xbar.  At lambda = 0 these are the OLS standard errors; with
-        lambda > 0 they are finite even when X'X is singular (the NaN of the OLS formula on collinear lags).
+        `regularized.stdErr` at alpha = 0 on the last training window --
+        Cov (b) = sigma^2 (X'X + lambda I)^-1 X'X (X'X + lambda I)^-1 with sigma^2 = SSE / (m - effDF).
+        At lambda = 0 these are the OLS standard errors; with lambda > 0 they are finite even when X'X is
+        singular (the NaN of the OLS formula on collinear lags).
         """
         if self.parameter is None:
             raise ValueError("CenteredRidge.stdErr: fit first")
-        d2 = self._d ** 2
-        dfRes = self._m - self.effDF
-        sigma2 = float(self._sse[k]) / dfRes if dfRes > 0 else float("nan")
-        shrink = d2 / (d2 + self.lam) ** 2                                # diag (d^2 / (d^2 + lambda)^2)
-        cov_b = (self._Vt.T * shrink) @ self._Vt                         # V diag (.) V' in the fitted space
-        cov_s = cov_b / np.outer(self._sd, self._sd)                      # the original-unit slopes
-        var_s = np.diag(cov_s)
-        var_0 = 1.0 / self._m + float(self._xm @ cov_s @ self._xm)
-        return np.sqrt(sigma2 * np.append(var_0, var_s))
+        return regularized.stdErr(self._Xs, self.parameter[:, k], float(self._sse[k]), self.lam, 0.0, self._xm, self._sd)

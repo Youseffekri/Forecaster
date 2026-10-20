@@ -95,7 +95,7 @@ def aRX_DTest6_test(techs=(SelectionTech.CEM,)):
     FeatureSelection.fullset_FS = False                                # TnT test: select on the training rows
 
     mod = ARX_D.rescale(y, HH, xe, args, TransformT.Log1p)
-    mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY,
+    mod.getModel().tnT_Test()                                          # the full model: the reference -- a COPY,
                                                                        # as `tnT_Test` sets skip = 0 and the
                                                                        # selection below must keep the burn-in
     for tech in techs:
@@ -135,7 +135,7 @@ def aRX_DTest8_test(techs=(SelectionTech.CEM,)):
     FeatureSelection.fullset_FS = False
 
     mod = ARX_D.rescale(y, HH, xe, args, TransformT.Log1p)             # the rescaled version
-    mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY
+    mod.getModel().tnT_Test()                                          # the full model: the reference -- a COPY
 
     for tech in techs:
         banner(f"Feature Selection Technique: {tech} (all horizons, J = mean FPE-form sMAPE)")
@@ -155,7 +155,7 @@ def aRX_DTest9_test(techs=(SelectionTech.Backward,)):
     FeatureSelection.fullset_FS = False
 
     mod = ARX_D(y, HH, xe, args)
-    mod.getModel().tnT_Test(showYf=False)                              # the full model: the reference -- a COPY
+    mod.getModel().tnT_Test()                                          # the full model: the reference -- a COPY
 
     for tech in techs:
         banner(f"Feature Selection Technique: {tech} (per horizon)")
@@ -216,8 +216,9 @@ def subsetSearch_test():
     assert set(pc.cols) == planted and pc.probs is not None and len(pc.probs) == n
 
     banner("run: every technique through the dispatcher agrees")
+    rank = [1.0 if j in planted else 0.0 for j in range(n)]              # the Ranked technique needs an importance per column
     for tech in SelectionTech:
-        p = SubsetSearch.run(tech, n, ev, qk=qk)
+        p = SubsetSearch.run(tech, n, ev, qk=qk, rank=rank)
         print(f"{tech}: cols = {set_str(p.cols)}")
         assert set(p.cols) == planted
 

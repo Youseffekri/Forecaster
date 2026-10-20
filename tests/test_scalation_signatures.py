@@ -16,7 +16,8 @@ from modeling.forecasting.arx_formula import ARX_Formula, FormulaVar
 from modeling.forecasting.arx_sr import ARX_SR
 from modeling.forecasting.arx_sr_d import ARX_SR_D
 from modeling.forecasting.datasets import Example_Covid
-from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.forecasting.forecaster_d import Forecaster_D
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula
 from modeling.forecasting.nonlinear.narx_sr_d import NARX_SR_D
@@ -124,14 +125,22 @@ def test_arx_formula_names_is_the_one_name():
     assert not hasattr(f, "labels"), "ScalaTion's name is `names`; `labels` belongs to TermLibrary only"
 
 
-# -- Forecaster_D.tnT_Test prints the forecast matrix by default (ScalaTion's override) ------------------
+# -- tnT_Test is the base's for every model (rev2.3: the Forecaster_D override that flipped showYf is gone); the
+#    matrix is printed on request, slanted (ScalaTion's `Forecaster.slant`, rev5.4) ---------------------------
 
-def test_forecaster_d_tnt_test_shows_yf_by_default():
+def test_tnt_test_prints_the_slanted_matrix_on_request_only():
     assert inspect.signature(Forecaster.tnT_Test).parameters["showYf"].default is False
-    assert inspect.signature(Forecaster_D.tnT_Test).parameters["showYf"].default is True
-    assert params(Forecaster_D.tnT_Test) == params(Forecaster.tnT_Test)
+    assert "tnT_Test" not in Forecaster_D.__dict__, "no override: a test that wants the matrix passes showYf = True"
     y, xe = covid()
+    mod = ARX_D(y, 2, xe, Args(p=2, px=1, spec=1))
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        ARX_D(y, 2, xe, Args(p=2, px=1, spec=1)).tnT_Test(rc=24)
+        mod.tnT_Test(rc=24)
+    assert "Final TnT Forecast Matrix yf" not in out.getvalue()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        mod.tnT_Test(rc=24, showYf=True)
     assert "Final TnT Forecast Matrix yf" in out.getvalue()
+    s = mod.slant()
+    assert s.shape == mod.Yf.shape and np.allclose(s[:, 0], mod.Yf[:, 0]) and np.allclose(s[:, -1], np.arange(len(y)))
+    assert np.allclose(s[1:, 1], mod.Yf[:-1, 1]) and np.allclose(s[2:, 2], mod.Yf[:-2, 2]) and s[0, 1] == 0.0 and s[1, 2] == 0.0

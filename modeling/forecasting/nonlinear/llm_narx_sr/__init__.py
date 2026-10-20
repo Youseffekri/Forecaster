@@ -2,7 +2,7 @@
 LLM-NARX-SR: LLM-guided symbolic regression over NARX models -- the Python port of ScalaTion's
 `modeling/forecasting/nonlinear/llm_narx_sr` package (rev4.0), module by module:
 
-    formula_scorer        FormulaScorer, Candidate, DEFAULT_HP (the fit-and-score engine, L1)
+    formula_scorer        FormulaScorer (and its `hp`), Candidate (the fit-and-score engine, L1)
     eda4ts                EDA4TS, topFreqs, ljungBox, ... (the data profile and the prompt block, L1)
     datasets              DatasetConfig, Datasets, ExoMode, ExoScreen (what an experiment runs on, L2)
     term_library          TermLibrary (term libraries and the CEM / backward / ... selection, L2)

@@ -67,7 +67,8 @@ from modeling.forecasting.arx_sr_d import ARX_SR_D
 from modeling.forecasting.nonlinear.narx_formula import NARX_Formula, decay, ema, half, sat, thresh, trans, width
 from modeling.forecasting.nonlinear.narx_sr_d import OPTIMIZER_NL, NARX_SR_D, OptimizerNL
 from modeling.forecasting.datasets import Example_Covid
-from modeling.forecasting.forecaster import Forecaster, Model
+from modeling.forecasting.forecaster import Forecaster
+from modeling.model import Model
 from modeling.hyper_parameter import Knob
 from modeling.forecasting.random_walk import RandomWalk
 from modeling.forecasting.runner import run

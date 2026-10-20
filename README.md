@@ -41,7 +41,7 @@ args = Args()                      # every setting at its default (ScalaTion's A
 args.p = 6                         # checked when set: name, type and range
 args.px = 6
 args.spec = 1
-args.method = "ridge"              # the regression ("sm_ols" | "sk_lr" | "ridge" | "enet"); args.lam its penalty
+args.method = "ridge"              # the regression ("enet" by default | "ridge" | "sm_ols" | "sk_lr"); args.lam its penalty
 args.pX = 6                        # AttributeError: Args has no setting 'pX'; did you mean 'px'?
 args.p = -1                        # ValueError: Args.p = -1: must be an integer >= 0
 args.help()                        # the table: value, default, meaning, allowed values; * = changed
@@ -53,8 +53,8 @@ args.save("covid.json"); args = Args.load("covid.json")      # a preset (the cha
 | group | settings |
 |---|---|
 | hyper-parameters (ScalaTion's `AR.hp`, printed in the REPORT) | `p` (lags of y, 1), `d`, `q`, `P`, `D`, `Q`, `s` (ARIMA), `px` (lags of each exogenous variable, 1), `spec` (trend columns, 1), `crx` (cross terms, False), `nneg` (forecasts clipped at 0, True) |
-| hyper-parameters (Python only) | `skip` (rows left out of the In-Sample diagnosis; None: the model's rule, usually p), `lam` (ScalaTion's `RidgeRegression.hp("lambda")`, 0.1; `Args(**{"lambda": 1.0})` is accepted) |
-| model settings | `method` (None: the model's own), `scaled` (the penalized regression standardizes the columns), `l1_ratio` (the L1 share of `enet`, 0.5), `optimizer`, `tune` (NARX_SR_D), `te_ratio` (the testing fraction; None: `Model.TE_RATIO` when the model is built; 0: no testing set) |
+| hyper-parameters (Python only) | `skip` (rows left out of the In-Sample diagnosis; None: the model's rule, usually p), `lam` (ScalaTion's `RidgeRegression.hp("lambda")`, 0.1; `Args(**{"lambda": 1.0})` is accepted), `l1_ratio` (ScalaTion's `ElasticNetRegression.hp("l1_ratio")`, 0.5); `mod.hparameter` is the MERGED map, the model's keys plus the knobs of its regression, as ScalaTion's since rev5.4 |
+| model settings | `method` (None: the model's own -- the elastic net for every regression-based forecaster, ScalaTion's `REGRESSION` import), `scaled` (the penalized regression standardizes the columns), `optimizer`, `tune` (NARX_SR_D), `te_ratio` (the testing fraction; None: `Model.TE_RATIO` when the model is built; 0: no testing set) |
 | run settings (`run (args)`) | `dataset`, `exo`, `model`, `tFormT` (the transform `run` passes to the model's `rescale`; None: no rescaling), `hh`, `validation` ("inSample", "tnT", "both"), `rc` |
 
 The transform type of a rescaling is an argument of the factory, as in ScalaTion -- `ARX_D.rescale(y, hh, xe, args,
@@ -64,7 +64,7 @@ never reads `args.tFormT`, and `rescale` refuses an `args.tFormT` that differs f
 fits the transform on the rows `Model` gives (the training rows, ScalaTion's `Model.trSize`; the fit rows while
 choosing under `Model.validating`), so it takes no `trSize`, exactly as ScalaTion's; `fromTerms` and `NARX_SR_D.apply`
 / `rescale` keep ScalaTion's `trSize = -1`.  The signatures follow ScalaTion rev5.0 argument for argument
-(`docs/CONVENTIONS.md`, "ScalaTion rev5.0 <-> Python rev2.0" and "ScalaTion rev5.2 <-> Python rev2.1: the protocol" and "ScalaTion rev5.3 <-> Python rev2.2: the knobs").
+(`docs/CONVENTIONS.md`, "ScalaTion rev5.0 <-> Python rev2.0", "ScalaTion rev5.2 <-> Python rev2.1: the protocol", "ScalaTion rev5.3 <-> Python rev2.2: the knobs" and "ScalaTion rev5.4 <-> Python rev2.3: the elastic net by default").
 
 A model keeps a private SNAPSHOT of its args (later changes to `args` do not reach it); `mod.hparameter` returns a copy
 of its `HyperParameter` (`AR.hp` with the values of args, as ScalaTion's `hparameter`), which the REPORT prints as
@@ -101,7 +101,7 @@ mod.parameter, mod.slopes, mod.intercept, mod.fname, mod.modelName, mod.hparamet
   (**0 implicit constant, 1 linear t/m, 2 + quadratic, 3 + cubic**; the columns are named as `MakeMatrix4TS.trend`:
   "cons", "lin", "quad").
 * The regression lives in the bases, as ScalaTion's `reg`: `Forecaster_Reg` (recursive) and `Forecaster_D` (direct)
-  make it (`_make_model`: "sm_ols", "sk_lr", or "ridge" = `CenteredRidge`), fit it (`train`) and expose `parameter`
+  make it (`_make_model`: "enet" = `ElasticNet` by default, "ridge" = `CenteredRidge`, "sm_ols", "sk_lr"), fit it (`train`) and expose `parameter`
   (ScalaTion's b / bb), `slopes`, `intercept`; the model classes add the matrix, the forecasts and the sub-models.
 * Quality of Fit (`modeling/fit.py`, ScalaTion's `Fit`): the 26 measures in `QoF` order with ScalaTion's
   formulas (R²-bar through the DF ratio, AIC/BIC with kParam = dfr + 2, sMAPE-IC), the first `skip` rows
@@ -132,7 +132,7 @@ mod.parameter, mod.slopes, mod.intercept, mod.fname, mod.modelName, mod.hparamet
 | `ARX_SR`, `ARX_SR_D` | ARX_SR.scala, ARX_SR_D.scala | + transformations of the lags: `fEndo=[PowForm(), RootForm()]`, `fExo=[[LogForm()], []]` (instances, as ScalaTion's `LSET [Transform]`; `Util/transform.py` = `mathstat/Transform.scala`), cross terms (`crx`) |
 | `ARX_Formula` + `FormulaParser` | ARX_Formula.scala, FormulaParser.scala | the linear formula DSL and grammar: `y ~= y~(3,1) + log1p(icu~1) + y~1 * icu~1 + wave(2) TFORM: Log1p`; `fit(data, hh)` -> `ARX.fromTerms`, `fit_D` -> `ARX_D.fromTerms` |
 | `NARX_Formula` + `NARX_FormulaParser` | nonlinear/NARX_Formula.scala, NARX_FormulaParser.scala | + free parameters `Par` with roles (Shift, Phase, Rate, Power, Freq, Decay, Thresh, Width, Half, Cap): `log(? + icu~1)`, `pow(y~(3,1), ?)`, `hinge(temp~1, ?)`, `trans(y~1, ?, ?)`, `ema(x~1, ?)`, `dq(x~1, ?)`, `wave(?)`; `fitNL_D(data, hh)` |
-| `NARX_SR_D` (an `ARX_D`): `apply` / `rescale(y, hh, xe, args, fEndo=[TransformT.Root], fExo)`, `fromTerms(formula, dataset, hh, args)` (args.tune, scaled, optimizer, lam) | nonlinear/NARX_SR_D.scala | the direct model whose columns carry nonlinear parameters -- of transform TYPES (`TransformT.wlu` start values and bounds, `initializeW`, `tunable`, `getTransforms`, `optimize`) or of a formula's free parameters: coefficients by centered ridge per horizon, the nonlinear parameters by `OptimizerNL.VarPro` (variable projection, the default `OPTIMIZER_NL`), `LBFGS_B` or `Joint` (`fitNL`, `stepCounts`); each fitted parameter is a degree of freedom (`nFree`); reproduces nARX_SR_DTest5 and nARX_SR_DTest8 |
+| `NARX_SR_D` (an `ARX_D`): `apply` / `rescale(y, hh, xe, args, fEndo=[TransformT.Root], fExo)`, `fromTerms(formula, dataset, hh, args)` (args.tune, scaled, optimizer, lam) | nonlinear/NARX_SR_D.scala | the direct model whose columns carry nonlinear parameters -- of transform TYPES (`TransformT.wlu` start values and bounds, `initializeW`, `tunable`, `getTransforms`, `optimize`) or of a formula's free parameters: coefficients by the model's regression per horizon (the elastic net by default), the nonlinear parameters by `OptimizerNL.VarPro` (its inner ridge) (variable projection, the default `OPTIMIZER_NL`), `LBFGS_B` or `Joint` (`fitNL`, `stepCounts`); each fitted parameter is a degree of freedom (`nFree`); reproduces nARX_SR_DTest5 and nARX_SR_DTest8 |
 | `ExoScreen.screen(data, header, resp, k, maxLag)` | ExoScreen.scala | pool / rank (lead cross-correlation) / shortlist of candidate exogenous variables |
 | `MHAttn_Regressor` (optional torch) | -- | the NARX_SR paper's multi-head attention regressor (as written) |
 | `Attn_Ranker(x, y, ...)` (`modeling/attn_ranker.py`, optional torch) | autograd/Attn_Ranker (to follow) | attention scores as an importance per column (`run()` -> `scores`, eq. 4; `gradScores`), per-column embedding, seed-averaged; the ranking `Ranked` consumes |
@@ -165,7 +165,7 @@ n evaluations against n(n+1)/2).  As in ScalaTion, the selection methods live in
 `stepwiseSelAll`, `beamSelAll`, `cemSelAll`, `rankedElimAll` with the rankers `coefImportance` / `tImportance` /
 `vifImportance` / `permImportance`, `correctQoF`, `getModel`) and `Forecaster_D` (the direct models: the three
 scenarios below).  A ranker is named in the call (`rank="coef"`, the default, the standardized coefficients;
-`"t"` the t-statistics, i.e. backward elimination by p-value, a ridge using its own standard errors; `"vif"` minus
+`"t"` the t-statistics, i.e. backward elimination by p-value, a penalized fit using its own standard errors; `"vif"` minus
 the variance inflation factors, the most collinear column first; `"perm"`), or given as a callable or an array.
 
 ```python
@@ -186,18 +186,20 @@ with Backward and CEM (a 4-column set at TnT sMAPE 38.6 against 54 for Backward 
 validation) but not better in general, and the VIF ranker keeps almost everything: the collinearity of consecutive
 lags is structural (no column of the 19 has a VIF below 10), so a VIF gate or ranker removes the lag structure first.
 
-### The knobs: `tune`, `withHP`, the `Model.tuning` switch, the elastic net and the ridge-aware statistics
+### The knobs: `tune`, `withHP`, the `Model.tuning` switch, the elastic net and the standard errors of a penalized fit
 
-Every regression-based model class writes its KNOBS into its name (`hpTag`): `ARX_D_6_6_2_L1.0` under the ridge
-(`_L` + lambda with one decimal; below 0.1 the digits are kept, `_L0.01`, since one decimal would print every small
-value as 0.0), `ARX_D_6_6_2_L1.0_A0.5` under the elastic net (`_A` + l1_ratio with up to two decimals); a plain
-least-squares fit (the default `method = "sm_ols"`) has no knobs and no tag, `ARX_D_6_6_2`, as have AR, ARIMA and
-RandomWalk -- so a printed number always says which knobs made it.  Two penalized methods: `method = "ridge"`
-(ScalaTion's `CenteredRidge`) and `method = "enet"`, the elastic net (`modeling/elastic_net.py`, scikit-learn's
-coordinate descent on the centered, optionally standardized columns; `Args.l1_ratio`, 0 the ridge, 1 the lasso, 0.5
-by default; `lam` on the ridge's scale, so l1_ratio = 0 reproduces the ridge), whose L1 part sets weak columns to
-exactly zero while the L2 part keeps correlated lags together -- the continuous selection every hard selection
-should be measured against (`python Examples/Example_Covid.py enet`).
+Every regression-based model class writes its KNOBS into its name (`hpTag`): `ARX_D_6_6_2_L0.1_A0.5` under the
+elastic net, the default (`_L` + lambda with one decimal; below 0.1 the digits are kept, `_L0.01`, since one decimal
+would print every small value as 0.0; `_A` + l1_ratio with up to two decimals), `ARX_D_6_6_2_L1.0` under the ridge;
+a plain least-squares fit (`method = "sm_ols"`) has no knobs and no tag, `ARX_D_6_6_2`, as have AR, ARIMA and
+RandomWalk -- so a printed number always says which knobs made it.  Two penalized methods: `method = "enet"`, the
+elastic net (`modeling/elastic_net.py`, scikit-learn's coordinate descent on the centered, optionally standardized
+columns, at a tolerance of 1e-6 so its coefficients agree with ScalaTion's own descent to five digits; `Args.l1_ratio`,
+0 the ridge, 1 the lasso, 0.5 by default; `lam` on the ridge's scale; at l1_ratio = 0 the ridge's own solver, so
+l1_ratio = 0 IS the ridge), whose L1 part sets weak columns to exactly zero while the L2 part keeps correlated lags
+together -- the continuous selection every hard selection should be measured against -- and `method = "ridge"`
+(ScalaTion's `CenteredRidge`).  Since rev2.3 the elastic net is the default of every regression-based forecaster, as
+`CenteredElasticNet(MV)` is ScalaTion rev5.4's `REGRESSION` import (`python Examples/Example_Covid.py enet`).
 
 A `Knob` (`modeling/hyper_parameter.py`, ScalaTion rev5.3) is a hyper-parameter a tuner may turn: its name, the grid
 a grid search tries, whether a continuous search moves in log10 (`Knob.LAMBDA`: 0.001 .. 1000 by decades) or
@@ -237,10 +239,15 @@ with Model.withValidation(tuning=True):
     mod.reportSelection(colsArr, rSqArr)                            # ... and so does the reported model
 ```
 
-The SUMMARY of a ridge fit is ridge-aware: `CenteredRidge.stdErr` gives the standard errors from the covariance of
-the ridge estimator, sigma^2 (X'X + lI)^-1 X'X (X'X + lI)^-1 with sigma^2 = SSE / (m - effDF) -- equal to the OLS
-errors at lambda = 0, finite and small on collinear lags where the OLS formula (X'X)^-1 prints NaN or 0.999 p-values
--- and `summary()` / `summary(h)` use them; the VIF is a property of X and stays.
+The SUMMARY of a penalized fit takes its standard errors from the covariance of the penalized estimator
+(`modeling/regularized.py`, ScalaTion rev5.4's `Regularized.stdErr`, through `CenteredRidge.stdErr` and
+`ElasticNet.stdErr`): over the active set A (the columns the L1 penalty kept), Cov = sigma^2 M Xa'Xa M with
+M = (Xa'Xa + D)^-1 and D = diag (lambda (1 - alpha) + lambda alpha / |b_j|) (the L1 part as its local quadratic), sigma^2 =
+SSE / (m - 1 - tr (M Xa'Xa)) -- the ridge sandwich at alpha = 0, the OLS (X'X)^-1 at lambda = 0, finite on collinear lags
+where the OLS formula prints NaN -- the slopes back in original units, the intercept sigma^2 (1/m + xm' Cov xm); a
+coefficient set to zero prints `NA` (no standard error, no t, no p), as does a constant column.  `summary()` /
+`summary(h)` use them; a least-squares fit keeps the textbook errors (diag ((X'X)^-1) = the squared row norms of
+R^-1); the VIF is a property of X and stays.
 
 `python Examples/Example_Covid.py arx_d2` runs the whole story on Covid-19: `tune` on the validation rows, the
 lambda landscape on raw and on standardized columns (`scaled=True`; on raw columns lambda = 1 is heavy for
@@ -355,6 +362,7 @@ quantified).
 
 ```
 modeling/fit.py                      QoF, summary, vif (ScalaTion Fit / FitM)   modeling/centered_ridge.py   CenteredRidge
+modeling/regularized.py              stdErr: the standard errors of a penalized fit (ScalaTion's Regularized)   modeling/elastic_net.py   ElasticNet
 modeling/model.py                    Model: the split (TE_RATIO, VAL_RATIO, trSize, valSize, fitSize, valRng) and the switches (validating, tuning, folds, withValidation)
 modeling/hyper_parameter.py          HyperParameter (ScalaTion's; `freeze` for the read-only AR.hp), Knob (LAMBDA, L1_RATIO)
 modeling/feature_selection.py        SelectionTech (+ Ranked), BestStep, FeatureSelection   modeling/subset_search.py   SubsetSearch (+ ranked)

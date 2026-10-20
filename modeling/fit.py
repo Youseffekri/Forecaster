@@ -242,6 +242,9 @@ class Fit:
     """
 
     PIC = 2.0                                                    # penalty multiplier for sMAPE IC
+    #: Whether `resetDF_k` has warned about a non-positive error DF in this run (ScalaTion's
+    #: `Forecaster.dfWarned`): said once.
+    dfWarned = False
 
     def __init__(self, dfr: float = 1.0, df: float = 1.0, hasIntercept: bool = True) -> None:
         self._dfr = float(dfr)
@@ -306,9 +309,9 @@ class Fit:
             The number of slope parameters (excluding any intercept).
         """
         df0 = size - k - (1 if self._hasIntercept else 0)
-        if df0 <= 0 and not getattr(self, "_dfWarned", False):
-            print(f"resetDF_k: error DF = {df0} <= 0 (size = {size}, k = {k}): clamped to 1, DF-based QoF unreliable (said once per model)")
-            self._dfWarned = True
+        if df0 <= 0 and not Fit.dfWarned:                       # said ONCE per run (ScalaTion's `Forecaster.dfWarned`):
+            print(f"resetDF_k: error DF = {df0} <= 0 (size = {size}, k = {k}): clamped to 1, DF-based QoF unreliable (said once)")
+            Fit.dfWarned = True                                   #   a tuner or a selection builds a fresh model per evaluation
         self.resetDF(float(k), float(max(1, df0)))
 
     # -- diagnosis ------------------------------------------------------------------------
@@ -367,7 +370,7 @@ class Fit:
         rse = sqrt(mse)                                          # Residual Standard Error
         rSqBar = 1.0 - (1.0 - rSq) * self._r_df                  # adjusted R-squared
         fStat = msr / mse if mse != 0.0 else float("inf")        # F statistic
-        if dfr == 0:
+        if dfr == 0 or fStat < 0.0:                              # an out-of-sample block with R^2 < 0 (SSR < 0): no F test
             p_fS = -0.0
         else:
             p_fS = float(1.0 - fisher_dist.cdf(fStat, int(dfr), int(df)))   # p-value of the F statistic
@@ -475,7 +478,9 @@ class Fit:
 
     def sumCoeff(self, b: np.ndarray, stdErr: Optional[np.ndarray], vf: Optional[np.ndarray]) -> str:
         """The coefficient rows of the summary (ScalaTion's `Fit.sumCoeff`): x_j, estimate, standard
-        error, t value, p-value (2 P(T < -|t|), 0 when undefined) and VIF ("NA" for column 0)."""
+        error, t value, p-value (2 P(T < -|t|), 0 when undefined at a finite error) and VIF ("NA" for
+        column 0); a row without a standard error (NaN: a coefficient the L1 penalty set to zero, a
+        singular fit) prints NA for the error, the t value and the p-value."""
         out = []
         t = p = None
         if stdErr is not None:
@@ -486,8 +491,11 @@ class Fit:
             if stdErr is None:
                 out.append(f"    x{j}\t {fmt(b[j])}?")
                 continue
-            p_j = 0.0 if np.isnan(p[j]) else p[j]
             v = "NA" if j == 0 or vf is None else fmt(vf[j - 1])
+            if np.isnan(stdErr[j]):
+                out.append(f"    x{j}\t {fmt(b[j])}\t NA\t NA\t NA\t {v}\n")
+                continue
+            p_j = 0.0 if np.isnan(p[j]) else p[j]
             out.append(f"    x{j}\t {fmt(b[j])}\t {fmt(stdErr[j])}\t {fmt(t[j])}\t {fmt(p_j)}\t {v}\n")
         return "".join(out)
 

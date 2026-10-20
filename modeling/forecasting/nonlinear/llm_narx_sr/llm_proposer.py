@@ -42,7 +42,7 @@ from modeling.llm_client import LLMClient
 from modeling.forecasting.datasets import DatasetConfig
 from modeling.forecasting.eda4ts import EDA4TS
 from modeling.forecasting.nonlinear.narx_formula_parser import NARX_FormulaParser
-from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import DEFAULT_HP
+from modeling.forecasting.nonlinear.llm_narx_sr.formula_scorer import FormulaScorer
 from modeling.forecasting.nonlinear.llm_narx_sr.search_arm import Source, Trace
 from modeling.forecasting.nonlinear.llm_narx_sr.search_loop import Proposal, Proposer, Reject
 
@@ -63,7 +63,7 @@ def _g3(v: float) -> str:
 
 def maxFreeShown(maxFree: Optional[int] = None) -> str:
     """The free-parameter cap as the prompt states it (hp["maxFree"]; "any number" when there is no cap)."""
-    k = int(DEFAULT_HP["maxFree"]) if maxFree is None else int(maxFree)
+    k = int(FormulaScorer.hp["maxFree"]) if maxFree is None else int(maxFree)
     return "any number" if k < 0 else str(k)
 
 
@@ -108,7 +108,7 @@ class LLMProposer(Proposer):
         self.llm, self.cfg, self.vars, self.maxLag = llm, cfg, list(vars_), int(maxLag)
         self.freqs = [] if freqs is None else list(freqs)
         self.eda, self.named, self.tag = eda, named, tag
-        self.nonlinear = (int(DEFAULT_HP["nlTerms"]) == 1) if nonlinear is None else bool(nonlinear)
+        self.nonlinear = (int(FormulaScorer.hp["nlTerms"]) == 1) if nonlinear is None else bool(nonlinear)
         self.nFreqs = len(self.freqs)
         self.toShown: Dict[str, str] = {} if named else dict(cfg.blindNames)   # real -> shown name
         self.toReal: Dict[str, str] = {v: k for k, v in self.toShown.items()}  # shown -> real name

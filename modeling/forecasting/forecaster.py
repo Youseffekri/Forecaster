@@ -58,23 +58,12 @@ from Util.tools import array_str, banner, matrix_str, vector_str
 from modeling.centered_ridge import CenteredRidge
 from modeling.elastic_net import ElasticNet
 from modeling.fit import N_QoF, QoF, fitMap, mae_n, showFitMap
-from modeling.forecasting.args import ALIASES, PENALIZED_METHODS, REGRESSION_METHODS, Args, hp
+from modeling.forecasting.args import ALIASES, REGRESSION_METHODS, SETTINGS, Args
 from modeling.forecasting.diagnoser import Diagnoser
 from modeling.hyper_parameter import HyperParameter, Knob
 from modeling.model import Model
 
-#: ScalaTion's `AR.hp` (`AR.hp` is this object): the hyper-parameters every forecaster starts from,
-#: READ-ONLY, built from the settings table of `Args` (args.py):
-#:     p 1 (AR lags of y), d 1 (differences), q 1 (MA), P 1, D 1, Q 1 (seasonal), s 7 (season),
-#:     px 1 (lags of each exogenous variable), spec 1 (trend terms), crx 0 (ENDO-EXO cross terms),
-#:     nneg 1 (non-negative forecasts).
-#: `REGRESSION_METHODS` ("sm_ols", "sk_lr", "ridge") comes from there too; the split is `Model`'s.
-__all__ = ["Forecaster", "hp", "REGRESSION_METHODS", "PENALIZED_METHODS", "Args", "Model", "teSize", "trSize", "teRng"]
-
-#: The split functions are `Model`'s (modeling/model.py); these names stay for the callers that import them here.
-teSize = Model.teSize
-trSize = Model.trSize
-teRng = Model.teRng
+__all__ = ["Forecaster"]
 
 
 class Forecaster(Diagnoser, ABC):
@@ -88,7 +77,8 @@ class Forecaster(Diagnoser, ABC):
         "p" lags of y, "px" lags of each exogenous variable, "spec" trend terms -- 0 implicit constant,
         1 linear, 2 quadratic, 3 cubic --, "crx" ENDO-EXO cross terms, "nneg" non-negative forecasts,
         ...) with the values of the model's args, plus the Python-only "skip" (rows skipped in the
-        In-Sample diagnosis, args.skip, by default p) and "lambda" (args.lam, the ridge penalty).
+        In-Sample diagnosis, args.skip, by default p); `hparameter` adds the knobs of the regression
+        ("lambda" = args.lam, "l1_ratio" = args.l1_ratio for the elastic net): the MERGED map (rev2.3).
     ARGS : tuple of str (class attribute)
         The names of the `Args` settings the model reads (`Args.help (Model)` lists them).
     hh : int
@@ -165,7 +155,7 @@ class Forecaster(Diagnoser, ABC):
         self._scaled = False
         self._nneg = self._hparam["nneg"] == 1
         self._te_ratio = Model.TE_RATIO if self._args.te_ratio is None else self._args.te_ratio   # the split of THIS model
-        self._tr_size = trSize(len(y), self._te_ratio)
+        self._tr_size = Model.trSize(len(y), self._te_ratio)
         self._te_size = len(y) - self._tr_size
         self._lead = 0                                                # the offset of the targets: h - 1 for the single-horizon
                                                                       # model at h of a direct model (`getModel_h`), 0 for a series
@@ -182,18 +172,8 @@ class Forecaster(Diagnoser, ABC):
         """The model name, e.g., "ARX_D_6_6_2_L1.0" (set by the subclasses; the class name otherwise)."""
         return self._modelName if self._modelName is not None else self.__class__.__name__
 
-    @property
-    def lam(self) -> Optional[float]:
-        """The penalty lambda of a regression-based model: hparameter "lambda" under a penalized method
-        ("ridge", "enet"), 0.0 under the plain regressions ("sm_ols", "sk_lr": ordinary least squares
-        is the ridge at lambda = 0); None for a model without a regression (AR, ARIMA, RandomWalk)."""
-        if self._method is None:
-            return None
-        if self._method in PENALIZED_METHODS and "lambda" in self._hparam:
-            return float(self._hparam["lambda"])
-        return 0.0
-
-    # -- the knobs (ScalaTion rev5.3) --------------------------------------------------------
+    # -- the knobs (ScalaTion rev5.3; rev2.3: `lam`, `penalized` and `hpAll` are gone -- `hparameter` IS the
+    #    map the regression reads, `knobs` says whether there is anything to tune, "lambda" is the penalty)
 
     @property
     def knobs(self) -> Tuple[Knob, ...]:
@@ -207,35 +187,22 @@ class Forecaster(Diagnoser, ABC):
         return ()
 
     @property
-    def penalized(self) -> bool:
-        """Whether the regression has knobs to tune (method "ridge" or "enet")."""
-        return len(self.knobs) > 0
-
-    @property
-    def hpAll(self) -> Dict[str, Any]:
-        """The hyper-parameters the regression reads (ScalaTion's merged `hparam`): the model's
-        hyper-parameters plus the knobs that live in its args only (l1_ratio)."""
-        h: Dict[str, Any] = dict(self._hparam)
-        for k in self.knobs:
-            if k.name not in h:
-                h[k.name] = self._args[ALIASES.get(k.name, k.name)]
-        return h
-
-    @property
     def hpTag(self) -> str:
         """The tag the knobs write into a model's name: "_L1.0" for a ridge at lambda = 1, "_L1.0_A0.5" for
         an elastic net at l1_ratio = 0.5 (`Knob.tagOf`); "" without knobs."""
-        h = self.hpAll
+        h = self.hparameter
         return "".join(k.tagOf(float(h[k.name])) for k in self.knobs)
 
     def stdErrOf(self, X_fit: np.ndarray, resid: np.ndarray, k: int = 0) -> np.ndarray:
         """
         The standard errors, intercept first, of the regression last fitted on the rows `X_fit`
-        (no constant column) with residuals `resid`: a ridge's own sandwich covariance (`CenteredRidge.stdErr`,
-        response k), else the least-squares formula sqrt (diag ((X1'X1)^-1) SSE / (m - n - 1)) on
-        X1 = [1, X_fit] -- what `summary` prints and what the t-statistic ranker divides by.
+        (no constant column) with residuals `resid`: a penalized regression's own sandwich covariance
+        (`regularized.stdErr` through `CenteredRidge.stdErr` / `ElasticNet.stdErr`, response k; ScalaTion
+        rev5.4), else the least-squares formula sqrt (diag ((X1'X1)^-1) SSE / (m - n - 1)) on
+        X1 = [1, X_fit], diag ((X1'X1)^-1) = the squared row norms of R^-1 (`Fit.summary`) -- what
+        `summary` prints and what the t-statistic ranker divides by.
         """
-        if self._ridgeSE():
+        if self._penalizedSE():
             return self._model.stdErr(k)
         X1 = np.column_stack((np.ones(X_fit.shape[0]), X_fit))
         m, n1 = X1.shape
@@ -249,9 +216,9 @@ class Forecaster(Diagnoser, ABC):
         with np.errstate(invalid="ignore", divide="ignore"):
             return np.sqrt(diag * sse / max(m - n1, 1))
 
-    def _ridgeSE(self) -> bool:
-        """Whether the SUMMARY can take its standard errors from the regression's own covariance (a
-        trained `CenteredRidge`: the sandwich form; an elastic net has none, least squares uses (X'X)^-1)."""
+    def _penalizedSE(self) -> bool:
+        """Whether the SUMMARY takes its standard errors from the regression's own covariance (a trained
+        `CenteredRidge` or `ElasticNet`: the sandwich form over the active set; least squares uses (X'X)^-1)."""
         return self._params is not None and hasattr(self._model, "stdErr")
 
     @property
@@ -263,15 +230,21 @@ class Forecaster(Diagnoser, ABC):
         `summary` uses for the residual degrees of freedom; None for a plain regression or before
         training, where the QoF's dfr + 1 is the count.
         """
-        if not self.penalized or self._params is None:
+        if not self.knobs or self._params is None:
             return None
         return np.atleast_1d(np.asarray(self._model.effDF, dtype=float))
 
     @property
-    def hparameter(self) -> Optional[HyperParameter]:
-        """A COPY of the model's hyper-parameters (ScalaTion's `hparameter`): read it, print it (the
-        REPORT's form) or reuse its values; changing the copy does not change the model."""
-        return self._hparam.copy()
+    def hparameter(self) -> HyperParameter:
+        """A COPY of the hyper-parameters this model reads (ScalaTion's `hparameter`, the MERGED map of a
+        regression-based model since rev5.4): the model's own plus the knobs of its regression, registered
+        so the REPORT prints them (lambda, and l1_ratio for the elastic net, from the args); read it,
+        print it or reuse its values -- changing the copy does not change the model."""
+        h = self._hparam.copy()
+        for k in self.knobs:
+            name = ALIASES.get(k.name, k.name)                            # the Args name ("lam")
+            h.add(k.name, self._args[name], SETTINGS[name].default)
+        return h
 
     @classmethod
     def _argsOf(cls, y: Any, args: Any) -> Args:
@@ -408,9 +381,27 @@ class Forecaster(Diagnoser, ABC):
         time = np.arange(self._y.shape[0])
         return np.column_stack([self._y, y_fcast, time])
 
-    def _reset_Yf(self) -> None:
-        """Resets the forecast columns of Yf to zero."""
-        self._Yf[:, 1:-1] = 0.0
+    def slant(self, yf: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        The slanted/diagonalized-down version of a forecast matrix (ScalaTion's `Forecaster.slant`,
+        rev5.4): the h-step forecast FOR time t sits in row t, column h (a random walk pushes the
+        values down the diagonals), so the forecasts of one target time stand on one row next to the
+        actual value; the last column (the time index) is reset to 0, 1, 2, ...; the first h - 1 rows
+        of column h are 0 (no forecast reaches them).  The form the tests print.
+
+        Parameters
+        ----------
+        yf : np.ndarray, shape (m, hh + 2), optional
+            The forecast matrix (`Yf`, original units, by default).
+        """
+        yf = self._Yf if yf is None else np.asarray(yf, dtype=float)
+        m, w = yf.shape
+        out = np.zeros_like(yf)
+        out[:, 0] = yf[:, 0]
+        for h in range(1, w - 1):
+            out[h:, h] = yf[: m - h, h]                                   # yf(t, h) is the forecast for time t + h
+        out[:, w - 1] = np.arange(m)
+        return out
 
     @property
     def Yf(self) -> np.ndarray:
@@ -505,9 +496,9 @@ class Forecaster(Diagnoser, ABC):
         if self._method == "sk_lr":
             return LinearRegression()
         if self._method == "ridge":
-            return CenteredRidge(CenteredRidge.ridge(self._hparam), self._scaled)
+            return CenteredRidge(self._args.lam, self._scaled)
         if self._method == "enet":
-            return ElasticNet(CenteredRidge.ridge(self._hparam), self._args.l1_ratio, self._scaled)
+            return ElasticNet(self._args.lam, self._args.l1_ratio, self._scaled)
         if self._method == "sm_ols":
             return None
         raise ValueError(f"method '{self._method}' unknown: {' | '.join(REGRESSION_METHODS)}")
@@ -570,7 +561,7 @@ class Forecaster(Diagnoser, ABC):
         sub._modelName = self.modelName if modelName is None else modelName
         sub._useforge = False                                             # the skip is the sub-model's own default
         hp2 = self.bestHP(cols)                                           # (a new ScalaTion model), not this one's current
-        if hp2 is not None and sub.penalized:
+        if hp2 is not None and sub.knobs:
             sub._setHP(hp2)                                               # the best step's knobs for its own columns
         return sub
 
@@ -723,11 +714,16 @@ class Forecaster(Diagnoser, ABC):
 
     # -- testing --------------------------------------------------------------------------
 
-    def test(self) -> Tuple[np.ndarray, np.ndarray]:
+    def test(self, rows: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Tests the trained model in-sample for horizon 1 (ScalaTion's `test`): forecasts all rows,
-        resets the degrees of freedom to m - skip rows and diagnoses column 1 of Yf against y
-        (the first `skip` rows dropped).
+        resets the degrees of freedom to the rows diagnosed minus skip and diagnoses column 1 of Yf
+        against y over the first `rows` rows (all by default; the first `skip` rows dropped).
+
+        Parameters
+        ----------
+        rows : int, optional
+            The leading rows diagnosed (ScalaTion's `test` on a window: the REPORT of a rolling test).
 
         Returns
         -------
@@ -735,8 +731,9 @@ class Forecaster(Diagnoser, ABC):
             The h = 1 predictions (original units) and the QoF vector.
         """
         self.forecast()
-        y0, yf1 = self._Yf[:, 0], self._Yf[:, 1]
-        self.mod_resetDF(len(y0) - self.getSkip())
+        m = len(self._y) if rows is None else rows
+        y0, yf1 = self._Yf[:m, 0], self._Yf[:m, 1]
+        self.mod_resetDF(m - self.getSkip())
         return yf1, self.diagnose(y0, yf1)
 
     def report(self, qof: np.ndarray) -> str:
@@ -757,11 +754,11 @@ class Forecaster(Diagnoser, ABC):
                 f"    parameter  b   = {vector_str(b)}\n{rule}\n"
                 f"    fitMap     qof = {fitMap(qof)}\n{rule}\n        ")
 
-    def trainNtest(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None
-                   ) -> Tuple[np.ndarray, np.ndarray]:
+    def trainNtest(self, y_: Optional[np.ndarray] = None, X_: Optional[np.ndarray] = None,
+                   rows: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Trains on (X_, y_) (the full data by default), tests in-sample for horizon 1 and prints
-        the REPORT (ScalaTion's `trainNtest`).
+        Trains on (X_, y_) (the full data by default), tests in-sample for horizon 1 over the first
+        `rows` rows (all by default) and prints the REPORT (ScalaTion's `trainNtest`).
 
         Returns
         -------
@@ -769,18 +766,19 @@ class Forecaster(Diagnoser, ABC):
             The h = 1 predictions and the QoF vector.
         """
         self.train(y_, X_)
-        yp, qof = self.test()
+        yp, qof = self.test(rows)
         if self.DO_REPORT:
             print(self.report(qof))
         return yp, qof
 
     def diagnoseAll(self, y_: Optional[np.ndarray] = None, yf: Optional[np.ndarray] = None,
-                    tRng: Optional[range] = None, showYf: bool = False) -> np.ndarray:
+                    tRng: Optional[range] = None) -> np.ndarray:
         """
         Diagnoses the model for all horizons (ScalaTion's `ForecastMatrix.diagnoseAll`): for each
         h, the actual values y[t1 + h - 1 .. m) are compared with column h of the forecast matrix
         over rows [t1, m - h + 1), the degrees of freedom reset to the number of rows minus `skip`,
-        and the first `skip` rows dropped.  Prints the QoF table ("fitMap QoF = ...").
+        and the first `skip` rows dropped.  Prints the QoF table ("fitMap QoF = ...").  (rev2.3: no
+        `showYf` -- `inSample_Test` and `rollTest` print the matrix, `slant`ed, themselves.)
 
         Parameters
         ----------
@@ -790,8 +788,6 @@ class Forecaster(Diagnoser, ABC):
             The forecast matrix (Yf by default).
         tRng : range, optional
             The time range to diagnose (the testing rows for TnT); all rows by default.
-        showYf : bool, default=False
-            Whether to print the forecast matrix.
 
         Returns
         -------
@@ -809,8 +805,6 @@ class Forecaster(Diagnoser, ABC):
             assert len(yy) == len(yfh)
             self.mod_resetDF(len(yy) - self.getSkip())
             ftMat[h - 1] = self.diagnose(yy, yfh)
-        if showYf:
-            print(f"Final Forecast Matrix yf = {matrix_str(yf)}")
         if self.SHOW_QoF:
             print("fitMap QoF = ")
             print(showFitMap(ftMat.T))
@@ -842,11 +836,10 @@ class Forecaster(Diagnoser, ABC):
             The block of forecasts for the rows (model units); `Yf` holds them in original units.
         """
         rc = self.RC if rc is None else rc
-        rng = teRng(self.mSeries, self._te_ratio) if rng is None else rng
+        rng = Model.teRng(self.mSeries, self._te_ratio) if rng is None else rng
         rng = range(rng.start, min(rng.stop, len(self._y)))              # a horizon-h model: its last rows have no target
         if verbose:
             banner(f"rollValidate: Evaluate {self.modelName}'s QoF for horizons 1 to {self.hh}:")
-        self._reset_Yf()
         n = rng.stop - rng.start
         y_fcast = np.zeros((n, self.hh))
         for i in range(0, n, rc):
@@ -870,6 +863,21 @@ class Forecaster(Diagnoser, ABC):
             raise ValueError(f"_trainWindow: the window [{is_}, {te}) is empty (t = {t}, lead = {self._lead})")
         return self._y[is_:te], (self._X[is_:te] if self._X is not None else None)
 
+    def trainNtestWindow(self, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Trains and tests on the first n - `lead` rows (ScalaTion's hook `trainNtestWindow`: the rows
+        whose targets lie before n): the model that makes the first forecasts of a rolling test, its
+        REPORT on those rows (rev2.3: the REPORT was on the full series).  A direct model trains on the
+        rows whose hh targets all lie before n and tests on the first n rows (`Forecaster_D`).
+
+        Parameters
+        ----------
+        n : int
+            The number of leading rows.
+        """
+        te = n - self._lead
+        return self.trainNtest(self._y[:te], self._X[:te] if self._X is not None else None, rows=te)
+
     def inSample_Test(self, showYf: bool = False, showParams: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         In-Sample testing (ScalaTion's `inSample_Test`): trains and tests on the full data set,
@@ -878,7 +886,7 @@ class Forecaster(Diagnoser, ABC):
         Parameters
         ----------
         showYf : bool, default=False
-            Whether to print the forecast matrix.
+            Whether to print the forecast matrix (`slant`, original units).
         showParams : bool, default=False
             Whether to print the full parameter array (intercept first).
 
@@ -893,7 +901,7 @@ class Forecaster(Diagnoser, ABC):
         banner(f"diagnoseAll: {self.modelName}")
         self.diagnoseAll()
         if showYf:
-            print(f"Final In-Sample Forecast Matrix yf = {matrix_str(self._Yf)}")
+            print(f"Final In-Sample Forecast Matrix yf = {matrix_str(self.slant())}")
         if showParams:
             print(f"params = \n{self.params}")
         return yp, qof
@@ -920,7 +928,7 @@ class Forecaster(Diagnoser, ABC):
         verbose : bool, default=True
             Whether to print the banners, the REPORT and the QoF table.
         showYf : bool, default=False
-            Whether to print the forecast matrix (verbose only).
+            Whether to print the forecast matrix (`slant`, original units; verbose only).
         showParams : bool, default=False
             Whether to print the full parameter array of the last retraining (verbose only).
 
@@ -940,28 +948,52 @@ class Forecaster(Diagnoser, ABC):
         skip0 = self.getSkip()
         if verbose:
             banner(f"{label} Test: {self.modelName}")
-            self.trainNtest(*self._trainWindow(0, rng.start))           # the model that makes the first forecasts
+            self.trainNtestWindow(rng.start)                             # the model that makes the first forecasts (REPORT)
             self.forecastAll()
         else:
             self.train(*self._trainWindow(0, rng.start))
-        self.setSkip(0)
+        self.setSkip(0)                                                   # diagnose: don't skip any rows
         try:
             self.rollValidate(rc, rng=rng, verbose=verbose)              # the sliding training windows
-            if verbose:
-                banner(f"diagnoseAll: {self.modelName}")
-            show = self.SHOW_QoF
-            if not verbose:
-                Forecaster.SHOW_QoF = False
-            try:
-                ftMat = self.diagnoseAll(self._Yf[:rng.stop, 0], self._Yf[:rng.stop], tRng=rng)
-            finally:
-                Forecaster.SHOW_QoF = show
+            ftMat = self.qofOn(rng)
         finally:
             self.setSkip(skip0)                                           # restore the skip
+        if verbose:
+            banner(f"diagnoseAll: {self.modelName}")
+            print("fitMap QoF = ")
+            print(showFitMap(ftMat.T))
         if verbose and showYf:
-            print(f"Final {label} Forecast Matrix yf = {matrix_str(self._Yf)}")
+            print(f"Final {label} Forecast Matrix yf = {matrix_str(self.slant())}")
         if verbose and showParams:
             print(f"params = \n{self.params}")
+        return ftMat
+
+    def qofOn(self, rng: range, hmax: Optional[int] = None) -> np.ndarray:
+        """
+        The QoF matrix (one row per horizon) of the forecast matrix over a block of rows, QUIETLY
+        (ScalaTion's `Forecaster.qofOn`): for h = 1..hmax the actual values y[t1 + h - 1 .. t2) are
+        paired with column h of `Yf` over the rows [t1, t2 - h + 1) -- t2 the block's end, bounded by
+        the rows with a target --, the degrees of freedom reset to the rows diagnosed minus `skip`,
+        and the first `skip` rows dropped (`diagnose`); original units.  The table `rollTest` returns
+        (the block rolled over) and the in-sample table of a scorer (the FS rows of its block).
+
+        Parameters
+        ----------
+        rng : range
+            The rows t1 .. t2 (a block's end bounds the diagnosis, so a validation pass never reads
+            a testing row).
+        hmax : int, optional
+            The horizons diagnosed (None => hh); the table has hmax rows.
+        """
+        y_ = self._Yf[:, 0]
+        end = min(rng.stop, len(y_))                                      # a horizon-h model: its last rows have no target
+        hmax = self.hh if hmax is None else hmax
+        ftMat = np.zeros((hmax, N_QoF))
+        for h in range(1, hmax + 1):
+            yy = y_[rng.start + h - 1: end]                               # align the actual response values
+            yfh = self._Yf[rng.start: end - h + 1, h]                     # align column h of the forecast matrix
+            self.mod_resetDF(len(yy) - self.getSkip())
+            ftMat[h - 1] = self.diagnose(yy, yfh)
         return ftMat
 
     def errorTable(self, rng: range, scale: Optional[float] = None) -> pd.DataFrame:
@@ -983,8 +1015,7 @@ class Forecaster(Diagnoser, ABC):
             MASE's denominator (None => the naive MAE of the rows before the block, original units).
         """
         y = self._Yf[:, 0]
-        m = len(y)
-        end = min(rng.stop, m - self._lead)
+        end = min(rng.stop, len(y))                                       # a horizon-h model: its last rows have no target
         if scale is None:
             scale = mae_n(y[:rng.start], 1) if rng.start > 1 else float("nan")
         rows = []
@@ -1021,16 +1052,13 @@ class Forecaster(Diagnoser, ABC):
 
     def _setHP(self, hp2: Mapping[str, Any]) -> None:
         """Sets the knobs of an UNTRAINED model in place: its args (a knob's `Args` name, `lam` for
-        "lambda") and hparameter, a new regression, and the name re-tagged (`hpTag` is the last part of
-        every regression-based model's name)."""
+        "lambda"; `hparameter` reads them from there), a new regression, and the name re-tagged (`hpTag`
+        is the last part of every regression-based model's name)."""
         old = self.hpTag
         changes = {ALIASES.get(k, k): float(v) for k, v in hp2.items() if k in {kn.name for kn in self.knobs}}
         if not changes:
             return
         self._args = self._args.copy(**changes)
-        self._hparam = self._hparam.copy()
-        if "lambda" in hp2:
-            self._hparam["lambda"] = float(hp2["lambda"])
         self._model = self._make_model()                                  # the regression at the new knobs
         name = self.modelName
         base = name[: len(name) - len(old)] if old and name.endswith(old) else name
@@ -1052,7 +1080,7 @@ class Forecaster(Diagnoser, ABC):
         ValueError
             If the model's regression has no knobs (not "ridge" or "enet").
         """
-        if not self.penalized:
+        if not self.knobs:
             raise ValueError(f"withHP: {self.modelName} is fitted by {self._method}, which has no knobs to turn")
         cp = copy.copy(self)
         cp._setHP(hp2)
@@ -1098,7 +1126,8 @@ class Forecaster(Diagnoser, ABC):
         hs : sequence of int, optional
             The horizons averaged (None => all; [1] => the first, a recursive sub-model's own).
         verbose : bool, default=False
-            Prints every evaluation.
+            Prints every evaluation, and a log knob whose best value sits on its grid's end (the optimum
+            may lie beyond it).
         search : {"grid", "golden", "random"}, default="grid"
         folds : int, optional
             None => `Model.folds`; 0 => the validation block (`valScore`, needs `Model.validating`);
@@ -1124,7 +1153,7 @@ class Forecaster(Diagnoser, ABC):
             return mod.valScore(measure=measure, hs=hs) if folds == 0 else mod.cvScore(folds, measure, hs)
 
         ks = list(self.knobs if knobs is None else knobs)
-        if not self.penalized or not ks:
+        if not ks:
             return {}, scoreAt(self)                                      # no knobs: nothing to tune
         memo: Dict[Tuple[float, ...], float] = {}
 
@@ -1189,6 +1218,11 @@ class Forecaster(Diagnoser, ABC):
                 for i in range(len(ks)):
                     golden(i)
         pt = best()
+        if verbose:                                                       # a log knob's grid is a window on an unbounded scale
+            for k, v in zip(ks, pt):
+                if k.log and (v <= min(k.grid) or v >= max(k.grid)):
+                    end = "lower" if v <= min(k.grid) else "upper"
+                    print(f"tune: {k.name} = {v:g} lies at the {end} end of its grid {min(k.grid):g} .. {max(k.grid):g}: the optimum may lie beyond it")
         return hpAt(pt), memo[pt]
 
     def cvScore(self, folds: int = 5, measure: QoF = QoF.smape, hs: Optional[Sequence[int]] = None) -> float:
@@ -1270,7 +1304,7 @@ class Forecaster(Diagnoser, ABC):
         np.ndarray, shape (hh, N_QoF)
             One QoF vector per horizon on the testing rows.
         """
-        return self.rollTest(teRng(self.mSeries, self._te_ratio), rc, "TnT", verbose, showYf, showParams)
+        return self.rollTest(Model.teRng(self.mSeries, self._te_ratio), rc, "TnT", verbose, showYf, showParams)
 
     def tvT_Test(self, rc: Optional[int] = None, showYf: bool = False,
                  verbose: bool = True) -> Tuple[np.ndarray, np.ndarray]:
